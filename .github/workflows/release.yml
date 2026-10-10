@@ -1,0 +1,11 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "spk release build is added in milestone M5"
