@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 import pytest
 
 from homeward.core.photos import FAVORITES_ALBUM, Library
-from homeward.providers.icloud_photos import ICloudPhotosSource
+from homeward.providers.icloud_photos import RENEW_AFTER, ICloudPhotosSource
 
 
 @dataclass
@@ -399,4 +399,139 @@ def test_expired_url_of_a_deleted_photo_fails() -> None:
     del service.photos.libraries["root"].all.photos[0]
 
     with pytest.raises(Gone):
+        source.open_read(item)
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_old_links_are_renewed_in_one_lookup_per_library() -> None:
+    service, clock = rich_service(), Clock()
+    lookups: list[tuple[list[str], list[str]]] = []
+    root = service.photos.libraries["root"]
+
+    def lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -> list[Asset]:
+        assert library is root
+        lookups.append((asset_ids, master_ids))
+        fresh = Asset(
+            "r", "r.DNG", resources={"original": Resource("r.DNG", "https://cdn/r-new")},
+            asset_record=record(resJPEGFullRes={"downloadURL": "https://cdn/r-edit-new"}),
+        )  # fmt: skip
+        return [fresh]
+
+    source = ICloudPhotosSource(service, [Library.PERSONAL], lookup=lookup, clock=clock)
+    items = {item.key: item for item in source.list_items()}
+    wanted = [
+        items["personal/r/original"],
+        items["personal/r/edited"],
+        items["personal/p/original"],
+    ]
+
+    source.prepare(wanted)
+    assert lookups == []  # still fresh
+
+    clock.now += RENEW_AFTER
+    source.prepare(wanted)
+    assert lookups == [(["r", "p"], ["r", "p"])]
+    with source.open_read(items["personal/r/original"]) as stream:
+        assert stream.read() == b"https://cdn/r-new"
+    with source.open_read(items["personal/r/edited"]) as stream:
+        assert stream.read() == b"https://cdn/r-edit-new"
+    with source.open_read(items["personal/p/original"]) as stream:  # not returned: kept as is
+        assert stream.read() == b"https://cdn/p"
+
+    source.prepare(wanted[:2])
+    assert len(lookups) == 1  # renewed links count as fresh again
+
+
+def test_failed_renewal_keeps_the_listed_links(caplog: pytest.LogCaptureFixture) -> None:
+    clock = Clock()
+
+    def broken(library: Any, asset_ids: list[str], master_ids: list[str]) -> list[Asset]:
+        raise RuntimeError("lookup refused")
+
+    source = ICloudPhotosSource(make_service(), [Library.PERSONAL], lookup=broken, clock=clock)
+    item = next(i for i in source.list_items() if i.key == "personal/a/original")
+    clock.now += RENEW_AFTER
+    with caplog.at_level("WARNING", logger="homeward"):
+        source.prepare([item])
+    assert "could not renew download links" in caplog.text
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/a"
+
+
+def test_pyicloud_lookup_builds_assets_with_new_urls() -> None:
+    pytest.importorskip("pyicloud")
+    from pyicloud.common.cloudkit.models import CKLookupResponse
+    from pyicloud.services.photos_cloudkit.service import PhotoAsset
+
+    from homeward.providers.icloud_photos import pyicloud_lookup
+
+    response = CKLookupResponse.model_validate(
+        {
+            "records": [
+                {
+                    "recordName": "M1",
+                    "recordType": "CPLMaster",
+                    "fields": {
+                        "resOriginalRes": {
+                            "type": "ASSETID",
+                            "value": {"downloadURL": "https://cdn/new", "size": 3},
+                        },
+                        "filenameEnc": {"type": "ENCRYPTED_BYTES", "value": "SU1HLkhFSUM="},
+                    },
+                },
+                {
+                    "recordName": "A1",
+                    "recordType": "CPLAsset",
+                    "fields": {"masterRef": {"type": "REFERENCE", "value": {"recordName": "M1"}}},
+                },
+                {"recordName": "A2", "serverErrorCode": "NOT_FOUND", "reason": "gone"},
+            ]
+        }
+    )
+
+    class Client:
+        def lookup(self, *, record_names: list[str], zone_id: Any) -> Any:
+            assert record_names == ["A1", "A2", "M1", "M2"]
+            assert zone_id.zoneName == "PrimarySync"
+            return response
+
+    class Lib:
+        _client = Client()
+        zone_id: ClassVar[dict[str, str]] = {"zoneName": "PrimarySync"}
+        service = None
+        asset_type = PhotoAsset
+
+    [asset] = pyicloud_lookup(Lib(), ["A1", "A2"], ["M1", "M2"])
+    assert asset.id == "A1" and asset.resources["original"].url == "https://cdn/new"
+
+
+class BadGateway(Exception):
+    code = 503
+
+
+def test_cdn_hiccup_is_retried_once() -> None:
+    service, pauses = make_service(), []
+    source = ICloudPhotosSource(service, [Library.PERSONAL], sleep=pauses.append)
+    item = next(i for i in source.list_items() if i.key == "personal/a/original")
+    real_get, failures = service.session.get, [BadGateway("Bad Gateway")]
+
+    def flaky(url: str, **kwargs: Any) -> Response:
+        if failures:
+            raise failures.pop()
+        return real_get(url, **kwargs)
+
+    service.session.get = flaky  # type: ignore[method-assign]
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/a"
+    assert len(pauses) == 1
+
+    failures.extend([BadGateway("again"), BadGateway("Bad Gateway")])
+    with pytest.raises(BadGateway):
         source.open_read(item)

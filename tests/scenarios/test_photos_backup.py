@@ -381,3 +381,28 @@ def test_xmp_sidecar_follows_a_numbered_original(
     source.edit(sidecar.key, b"<v2/>")
     assert run(source, tmp_path, pstate) == {PhotoActionKind.REPLACE: 1}
     assert (month / "IMG_1 (2).HEIC.xmp").read_bytes() == b"<v2/>"
+
+
+def test_downloads_are_prepared_in_batches_in_download_order(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    for n in range(250):
+        source.add(f"a{n:03}", f"IMG_{n:04}.HEIC", created=at(2020, 1 + n % 12, 1 + n // 12))
+
+    run(source, tmp_path, pstate)
+
+    assert [len(batch) for batch in source.prepared] == [100, 100, 50]
+    assert [key for batch in source.prepared for key in batch] == source.downloads
+
+
+def test_a_failing_prepare_does_not_stop_the_backup(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_0001.HEIC", b"one", created=at(2023, 1, 15))
+
+    def broken(items: object) -> None:
+        raise RuntimeError("lookup refused")
+
+    source.prepare = broken  # type: ignore[method-assign]
+    assert run(source, tmp_path, pstate) == {PhotoActionKind.DOWNLOAD: 1}
+    assert (tmp_path / "2023/01/IMG_0001.HEIC").read_bytes() == b"one"

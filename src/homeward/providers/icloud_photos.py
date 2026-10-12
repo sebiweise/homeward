@@ -10,8 +10,9 @@ import hashlib
 import importlib
 import io
 import logging
+import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -28,8 +29,13 @@ SMART_ALBUM_CLASS = "SmartPhotoAlbum"
 HIDDEN_ALBUM = "Hidden"
 EDITED_SUFFIX = " (bearbeitet)"
 TIMEOUT = 60
-# CloudKit download URLs are signed and expire after some hours; Apple then answers 410.
+# CloudKit download URLs are signed and expire (seen after about an hour); Apple then
+# answers 410. URLs older than RENEW_AFTER are renewed in batches before downloading.
 EXPIRED_STATUS = 410
+RENEW_AFTER = 30 * 60
+LOOKUP_BATCH = 100  # photos per lookup request (two records each)
+TRANSIENT_STATUS = (500, 502, 503, 504)
+RETRY_DELAY = 10.0
 PROGRESS_EVERY = 500
 
 # Edited renders live on the asset record (the master record holds the originals).
@@ -39,6 +45,8 @@ XMP_WORTH_KEEPING = (
     "title", "description", "keywords", "gps_latitude", "gps_longitude", "rating",
 )  # fmt: skip
 XmpBuilder = Callable[[Any], bytes | None]
+# (library, asset ids, master ids) -> fresh assets of that library
+Lookup = Callable[[Any, list[str], list[str]], Iterable[Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +55,17 @@ class _Resource:
     url: str | None
     size: int | None
     checksum: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Origin:
+    """Where to look an asset up again for a new download URL."""
+
+    library: Any  # the CloudKit zone, for batch lookups
+    container: Any  # the album it was listed from, for single lookups
+    asset_id: str
+    master_id: str
+    resource: str
 
 
 class ICloudPhotosSource:
@@ -64,6 +83,9 @@ class ICloudPhotosSource:
         hidden: bool = False,
         xmp: bool = True,
         xmp_builder: XmpBuilder | None = None,
+        lookup: Lookup | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
         name: str = "icloud-photos",
     ) -> None:
         self.name = name
@@ -78,10 +100,13 @@ class ICloudPhotosSource:
         self.hidden = hidden
         self.xmp = xmp
         self._xmp_builder = xmp_builder or pyicloud_xmp
+        self._lookup = lookup or pyicloud_lookup
+        self._clock = clock
+        self._sleep = sleep
         self._urls: dict[str, str] = {}
         self._blobs: dict[str, bytes] = {}
-        # Where to look an asset up again when its URL has expired: (container, id, resource).
-        self._origins: dict[str, tuple[Any, str, str]] = {}
+        self._origins: dict[str, _Origin] = {}
+        self._fetched_at: dict[str, float] = {}
 
     # PhotoSource interface
 
@@ -114,6 +139,7 @@ class ICloudPhotosSource:
         self._urls.clear()
         self._blobs.clear()
         self._origins.clear()
+        self._fetched_at.clear()
         personal = self.service.photos.libraries[PERSONAL_KEY]
         # Albums live in the personal library but may hold Shared Library photos too.
         # (pyicloud 2.7 cannot read the Shared Library's own albums.)
@@ -123,7 +149,9 @@ class ICloudPhotosSource:
             count = 0
             for count, asset in enumerate(library.all.photos, 1):
                 unmatched.discard(asset.id)
-                yield from self._items(asset, lib, members.get(asset.id, ()), origin=library.all)
+                yield from self._items(
+                    asset, lib, members.get(asset.id, ()), origin=(library, library.all)
+                )
                 if count % PROGRESS_EVERY == 0:
                     log.info("library %s: %d photos read", key, count)
             log.info("library %s: %d photos read, done", key, count)
@@ -144,12 +172,20 @@ class ICloudPhotosSource:
         try:
             response = self._get(url)
         except Exception as exc:
+            if _status(exc) in TRANSIENT_STATUS:  # Apple's CDN hiccups now and then
+                self._sleep(RETRY_DELAY)
+                return self._stream(self._get(url))
             fresh = self._fresh_url(item.key) if _expired(exc) else None
             if fresh is None:
                 raise
             log.debug("download URL of %s expired, fetched a new one", item.key)
             self._urls[item.key] = fresh
+            self._fetched_at[item.key] = self._clock()
             response = self._get(fresh)
+        return self._stream(response)
+
+    @staticmethod
+    def _stream(response: Any) -> BinaryIO:
         raw = response.raw
         raw.decode_content = True
         return cast(BinaryIO, raw)
@@ -159,25 +195,58 @@ class ICloudPhotosSource:
         response.raise_for_status()
         return response
 
+    def prepare(self, items: Sequence[PhotoItem]) -> None:
+        """Renew URLs that may have expired since listing, a batch lookup per library."""
+        now = self._clock()
+        due: dict[int, list[tuple[str, _Origin]]] = defaultdict(list)
+        for item in items:
+            origin = self._origins.get(item.key)
+            if origin is not None and now - self._fetched_at.get(item.key, now) >= RENEW_AFTER:
+                due[id(origin.library)].append((item.key, origin))
+        renewed = 0
+        for entries in due.values():
+            by_asset: dict[str, list[tuple[str, _Origin]]] = defaultdict(list)
+            for key, origin in entries:
+                by_asset[origin.asset_id].append((key, origin))
+            groups = list(by_asset.values())
+            for start in range(0, len(groups), LOOKUP_BATCH):
+                renewed += self._renew(groups[start : start + LOOKUP_BATCH], now)
+        if due:
+            total = sum(len(e) for e in due.values())
+            log.info("renewed %d of %d expiring download links", renewed, total)
+
+    def _renew(self, groups: list[list[tuple[str, _Origin]]], now: float) -> int:
+        origins = [group[0][1] for group in groups]
+        try:
+            found = self._lookup(
+                origins[0].library, [o.asset_id for o in origins], [o.master_id for o in origins]
+            )
+            fresh = {asset.id: asset for asset in found}
+        except Exception as exc:  # each download falls back to a single lookup on 410
+            log.warning("could not renew download links: %s", exc)
+            return 0
+        renewed = 0
+        for group in groups:
+            for key, origin in group:
+                asset = fresh.get(origin.asset_id)
+                url = _url(asset, origin.resource) if asset is not None else None
+                if url:
+                    self._urls[key] = url
+                    self._fetched_at[key] = now
+                    renewed += 1
+        return renewed
+
     def _fresh_url(self, key: str) -> str | None:
         """Look the asset up again for a new signed URL of the same resource."""
         origin = self._origins.get(key)
         if origin is None:
             return None
-        container, asset_id, resource = origin
         try:
-            asset = container.get(asset_id)
+            asset = origin.container.get(origin.asset_id)
         except Exception as exc:
             log.warning("could not refresh %s: %s", key, exc)
             return None
-        if asset is None:
-            return None
-        resources = _resources(asset)
-        record = getattr(asset, "asset_record", None)
-        if record is not None:
-            resources.update(_edited(asset, record))
-        found = resources.get(resource)
-        return found.url if found is not None and found.url else None
+        return _url(asset, origin.resource) if asset is not None else None
 
     # Listing
 
@@ -221,7 +290,7 @@ class ICloudPhotosSource:
                 for count, asset in enumerate(album.photos, 1):  # noqa: B007
                     yield from self._items(
                         asset, Library.PERSONAL, members.get(asset.id, ()), hidden=True,
-                        origin=album,
+                        origin=(library, album),
                     )  # fmt: skip
                 log.info("hidden photos: %d read", count)
                 return
@@ -244,7 +313,7 @@ class ICloudPhotosSource:
         hidden: bool = False,
         collection: str | None = None,
         id_prefix: str | None = None,
-        origin: Any = None,
+        origin: tuple[Any, Any] | None = None,
     ) -> Iterator[PhotoItem]:
         is_movie = asset.item_type == "movie"
         if is_movie and not self.videos:
@@ -292,8 +361,10 @@ class ICloudPhotosSource:
             if key == "original":
                 original_name = item.filename
             self._urls[item.key] = resource.url
+            self._fetched_at[item.key] = self._clock()
             if origin is not None:
-                self._origins[item.key] = (origin, asset.id, key)
+                master_id = getattr(asset, "master_id", asset.id)
+                self._origins[item.key] = _Origin(*origin, asset.id, master_id, key)
             yield item
 
         if self.xmp and record is not None and original_name is not None:
@@ -356,15 +427,27 @@ def _edited(asset: Any, record: Any) -> dict[str, _Resource]:
     return result
 
 
+def _url(asset: Any, resource: str) -> str | None:
+    """The current download URL of one resource of a freshly fetched asset."""
+    resources = _resources(asset)
+    record = getattr(asset, "asset_record", None)
+    if record is not None:
+        resources.update(_edited(asset, record))
+    found = resources.get(resource)
+    return found.url if found is not None and found.url else None
+
+
+def _status(exc: Exception) -> object:
+    """The HTTP status of a failed request, as pyicloud or requests report it."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    return getattr(getattr(exc, "response", None), "status_code", None)
+
+
 def _expired(exc: Exception) -> bool:
     """An expired download URL: pyicloud reports Apple's 410 as a withdrawn endpoint."""
-    for value in (
-        getattr(exc, "code", None),
-        getattr(getattr(exc, "response", None), "status_code", None),
-    ):
-        if value == EXPIRED_STATUS:
-            return True
-    return type(exc).__name__ == "PyiCloudEndpointGoneException"
+    return _status(exc) == EXPIRED_STATUS or type(exc).__name__ == "PyiCloudEndpointGoneException"
 
 
 def _field(record: Any, name: str) -> Any:
@@ -397,3 +480,24 @@ def pyicloud_xmp(asset: Any) -> bytes | None:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def pyicloud_lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -> list[Any]:
+    """Fetch assets of a pyicloud CloudKit library by record name in one request."""
+    models = importlib.import_module("pyicloud.common.cloudkit.models")
+    mappers = importlib.import_module("pyicloud.services.photos_cloudkit.mappers")
+    client = getattr(library, "_client", None)
+    if client is None:
+        raise RuntimeError("this pyicloud session has no CloudKit client")
+    response = client.lookup(
+        record_names=[*asset_ids, *master_ids], zone_id=models.CKZoneIDReq(**library.zone_id)
+    )
+    records = [record for record in response.records if isinstance(record, models.CKRecord)]
+    assets_by_master, masters = mappers.master_asset_pairs(records)
+    return [
+        library.asset_type(
+            library.service, master, assets_by_master[master.recordName], library=library
+        )
+        for master in masters
+        if master.recordName in assets_by_master
+    ]

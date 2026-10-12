@@ -14,7 +14,8 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Callable, Iterable
+import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import StrEnum
@@ -77,6 +78,11 @@ class PhotoSource(Protocol):
 
     def list_items(self) -> Iterable[PhotoItem]:
         """Every file of every photo in the selected libraries."""
+        ...
+
+    def prepare(self, items: Sequence[PhotoItem]) -> None:
+        """Called before the next batch of downloads; a source whose download URLs
+        expire renews them here."""
         ...
 
     def open_read(self, item: PhotoItem) -> BinaryIO:
@@ -153,6 +159,7 @@ _FILE_KINDS = frozenset(
     {PhotoActionKind.DOWNLOAD, PhotoActionKind.RESTORE, PhotoActionKind.REPLACE}
 )
 PROGRESS_EVERY = 50
+PREPARE_BATCH = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,14 +343,21 @@ class PhotoExecutor:
         self.state = state
         self.job = job
         self._today = today
+        self._bytes = 0
 
     def run(self, plan: PhotoPlan) -> PhotoRunResult:
         result = PhotoRunResult()
         # Files first, so links of the same run find their target.
         order = {kind: i for i, kind in enumerate(PhotoActionKind)}
-        files = sum(1 for a in plan.actions if a.kind in _FILE_KINDS)
+        actions = sorted(plan.actions, key=lambda a: order[a.kind])
+        downloads = [_need(a.item) for a in actions if a.kind in _FILE_KINDS]
+        files = len(downloads)
         fetched = 0
-        for action in sorted(plan.actions, key=lambda a: order[a.kind]):
+        self._bytes = 0
+        started = time.monotonic()
+        for action in actions:
+            if action.kind in _FILE_KINDS and fetched % PREPARE_BATCH == 0:
+                self._prepare(downloads[fetched : fetched + PREPARE_BATCH])
             try:
                 self._apply(action)
             except Exception as exc:
@@ -354,10 +368,20 @@ class PhotoExecutor:
             if action.kind in _FILE_KINDS:
                 fetched += 1
                 if fetched % PROGRESS_EVERY == 0 or fetched == files:
-                    log.info("%d of %d files downloaded", fetched, files)
+                    elapsed = max(time.monotonic() - started, 1e-6)
+                    log.info(
+                        "%d of %d files downloaded (%.2f GB, %.1f MB/s)",
+                        fetched, files, self._bytes / 1e9, self._bytes / 1e6 / elapsed,
+                    )  # fmt: skip
         if result.ok and not plan.unchanged:
             self.state.set_cursor(self.job, plan.cursor)
         return result
+
+    def _prepare(self, items: list[PhotoItem]) -> None:
+        try:
+            self.source.prepare(items)
+        except Exception as exc:  # downloads still try their URLs as listed
+            log.warning("could not prepare the next downloads: %s", exc)
 
     def _apply(self, action: PhotoAction) -> None:
         match action.kind:
@@ -400,6 +424,7 @@ class PhotoExecutor:
             os.link(tmp, target)  # never replaces an existing file
         finally:
             tmp.unlink(missing_ok=True)
+        self._bytes += size
         self.state.record(self.job, item.key, action.path, size, item.checksum)
 
     def _trash(self, path: str) -> None:

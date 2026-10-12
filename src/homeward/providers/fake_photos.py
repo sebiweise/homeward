@@ -2,6 +2,7 @@
 
 import io
 import itertools
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import BinaryIO
@@ -22,6 +23,7 @@ class FakePhotoSource:
         self.fail_keys: set[str] = set()
         self.listed = 0
         self.downloads: list[str] = []
+        self.prepared: list[list[str]] = []
         self._cursor = f"c{next(_tokens)}"
 
     def add(
@@ -74,6 +76,9 @@ class FakePhotoSource:
     def list_items(self) -> list[PhotoItem]:
         self.listed += 1
         return list(self.items.values())
+
+    def prepare(self, items: Sequence[PhotoItem]) -> None:
+        self.prepared.append([item.key for item in items])
 
     def open_read(self, item: PhotoItem) -> BinaryIO:
         if item.key in self.fail_keys:
