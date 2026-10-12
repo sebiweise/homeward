@@ -282,7 +282,7 @@ function pickFolder(start, onPick) {
                     {},
                     el(
                         "button",
-                        { type: "button", class: "folder", title: folder.path, onclick: () => load(folder.path, false) },
+                        { type: "button", class: "folder", title: folder.path, onclick: () => { load(folder.path, false); } },
                         el("span", { class: "name", text: folder.name }),
                         data.path ? null : el("span", { class: "muted", text: folder.path }),
                         folder.writable ? null : el("span", { class: "muted", text: t("picker:read_only") })
@@ -294,20 +294,25 @@ function pickFolder(start, onPick) {
             list.append(el("li", { class: "muted", text: t(data.path ? "picker:empty" : "picker:no_shares") }));
     }
 
-    up.addEventListener("click", () => load(current && current.parent, false));
+    up.addEventListener("click", () => {
+        load(current && current.parent, false);
+    });
     newFolder.addEventListener("click", () => {
         newRow.hidden = false;
         newName.value = "";
         newName.focus();
     });
-    create.addEventListener("click", async () => {
-        if (!newName.value.trim()) return;
+    async function createFolder() {
         try {
             const folder = await api("folders.create", { path: current.path, name: newName.value.trim() }, true);
             await load(folder.path, false);
         } catch (e) {
             fail(e);
         }
+    }
+
+    create.addEventListener("click", () => {
+        if (newName.value.trim()) createFolder();
     });
     newName.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
