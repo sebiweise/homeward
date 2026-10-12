@@ -5,12 +5,14 @@ does the actual sign-in, two-factor verification and session storage; the
 password is passed through once and never stored by Homeward.
 """
 
-import importlib
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from homeward.api.errors import ApiError
+
+if TYPE_CHECKING:
+    from homeward.runtime import Paths
 
 
 class SessionState(StrEnum):
@@ -59,11 +61,10 @@ class UnavailableBackend:
         return None
 
 
-def default_backend() -> AccountBackend:
-    """The pyicloud-based backend when installed, else :class:`UnavailableBackend`."""
-    try:
-        module = importlib.import_module("homeward.auth.backend")
-    except ImportError:
+def default_backend(paths: "Paths") -> AccountBackend:
+    """The pyicloud sign-in when pyicloud is installed, else :class:`UnavailableBackend`."""
+    from homeward.api.login import PyiCloudBackend, pyicloud_available
+
+    if not pyicloud_available():
         return UnavailableBackend()
-    backend: AccountBackend = module.PyiCloudBackend()
-    return backend
+    return PyiCloudBackend(paths)

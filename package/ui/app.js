@@ -256,6 +256,28 @@ function resultBadge(pair) {
     return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
 }
 
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle" };
+
+function jobBadge(item) {
+    if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
+    const job = item.job;
+    if (!job || !job.result) return el("span", { class: "muted", text: t("common:never") });
+    return el("span", { class: "badge " + (JOB_BADGE[job.result] || "bad"), text: t("status:job_" + job.result) });
+}
+
+function nextRun(item) {
+    const due = item.job && item.job.next_due;
+    return due ? el("div", { class: "muted", text: t("status:next_run", formatTime(due)) }) : null;
+}
+
+function runPhotos(job, options) {
+    return guarded(async () => {
+        await api("photos.run", Object.assign({ name: job.name }, options), true);
+        showMessage(t("status:run_queued", job.name));
+        await renderStatus();
+    });
+}
+
 function runPair(pair, options) {
     return guarded(async () => {
         await api("pairs.run", Object.assign({ name: pair.name }, options), true);
@@ -283,7 +305,7 @@ async function renderStatus() {
             {},
             el("td", { text: pair.name }),
             el("td", { text: t("mode:" + pair.mode) }),
-            el("td", { text: run ? formatTime(run.finished_at) : t("common:never") }),
+            el("td", {}, run ? formatTime(run.finished_at) : t("common:never"), nextRun(pair)),
             el("td", {}, resultBadge(pair), blocked ? el("div", { class: "muted", text: run.blocked }) : null),
             el(
                 "td",
@@ -305,6 +327,25 @@ async function renderStatus() {
             )
         );
     });
+    for (const job of data.photos || []) {
+        const finished = job.job && job.job.finished_at;
+        rows.push(
+            el(
+                "tr",
+                {},
+                el("td", { text: job.name }),
+                el("td", { text: t("status:photos_kind") }),
+                el("td", {}, finished ? formatTime(finished) : t("common:never"), nextRun(job)),
+                el("td", {}, jobBadge(job)),
+                el(
+                    "td",
+                    { class: "actions" },
+                    el("button", { text: t("status:dry_run"), onclick: () => runPhotos(job, { dry_run: "true" }) }),
+                    el("button", { class: "primary", text: t("status:backup_now"), onclick: () => runPhotos(job, {}) })
+                )
+            )
+        );
+    }
     document
         .getElementById("status-table")
         .replaceChildren(

@@ -320,12 +320,12 @@ def test_log_tail(client: Client) -> None:
 
 def test_store_keeps_unknown_settings_and_backups(tmp_path: Path) -> None:
     paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
-    paths.config.write_text('state_dir = "state"\n\n[photos]\nlibrary = "/volume1/photo"\n')
+    paths.config.write_text('state_dir = "state"\n\n[extra]\nlibrary = "/volume1/photo"\n')
     store = ConfigStore(paths)
     for i in range(KEEP_BACKUPS + 3):
         store.update(lambda raw, i=i: raw.__setitem__("counter", i))
     data = tomllib.loads(paths.config.read_text())
-    assert data["photos"] == {"library": "/volume1/photo"}
+    assert data["extra"] == {"library": "/volume1/photo"}
     assert data["counter"] == KEEP_BACKUPS + 2
     assert len(list(paths.backup_dir.iterdir())) == KEEP_BACKUPS
     assert stat.S_IMODE(paths.config.stat().st_mode) == 0o640
@@ -493,3 +493,25 @@ def test_event_log_rotates_and_never_raises(
                                                                 "attempt 7"]  # fmt: skip
     blocked = Paths(var_dir=paths.events_file, config=tmp_path / "x")  # a file, not a folder
     record_event(Level.ERROR, "service", "retry", paths=blocked)
+
+
+def test_photos_run_and_status(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    client.call("photos.create", post=True, photos=_photos(tmp_path))
+    client.paths.status_file.write_text(
+        json.dumps({"running": None, "jobs": {"photos:fotos": {"result": "ok", "next_due": 5.0}}})
+    )
+    client.call("photos.run", post=True, name="fotos", dry_run="1")
+    (photos,) = client.call("status.get")["photos"]
+    assert photos["pending"] and photos["job"]["result"] == "ok"
+    (request,) = take_requests(client.paths)
+    assert request.pair == "photos:fotos" and request.dry_run
+    with pytest.raises(ApiError):
+        client.call("photos.run", post=True, name="other")
+
+
+def test_pairs_get_the_apple_id_of_their_account(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    client.call("pairs.create", post=True, pair=_pair(tmp_path, remote_provider="icloud_drive"))
+    (pair,) = tomllib.loads(client.paths.config.read_text())["pair"]
+    assert pair["apple_id"] == "a@b.de"

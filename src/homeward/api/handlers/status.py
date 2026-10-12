@@ -1,5 +1,7 @@
 """Overview for the status page: version, daemon state and each pair's last run."""
 
+import os
+import pwd
 import time
 from dataclasses import asdict
 from typing import Any
@@ -15,6 +17,10 @@ MAX_NOTICES = 10
 def get(ctx: Context, request: Request) -> dict[str, Any]:
     config = ctx.store.load()
     pending = {r.pair for r in pending_requests(ctx.paths)}
+    daemon = read_status(ctx.paths)
+    jobs: dict[str, Any] = daemon.get("jobs") or {}
+    if not isinstance(jobs, dict):
+        jobs = {}
     pairs = []
     for pair in config.pairs:
         with existing_state(config, pair.account) as state:
@@ -25,13 +31,25 @@ def get(ctx: Context, request: Request) -> dict[str, Any]:
                 "account": pair.account,
                 "mode": pair.mode.value,
                 "last_run": asdict(runs[0]) if runs else None,
+                "job": jobs.get(f"pair:{pair.name}"),
                 "pending": pair.name in pending,
             }
         )
+    photos = [
+        {
+            "name": job.name,
+            "account": job.account,
+            "job": jobs.get(f"photos:{job.name}"),
+            "pending": f"photos:{job.name}" in pending,
+        }
+        for job in config.photos
+    ]
     return {
         "version": package_version(),
-        "daemon": read_status(ctx.paths),
+        "api_user": _user(),
+        "daemon": daemon,
         "pairs": pairs,
+        "photos": photos,
         "notices": notices(ctx),
     }
 
@@ -55,3 +73,11 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
         if len(result) >= MAX_NOTICES:
             break
     return result
+
+
+def _user() -> str:
+    """The system user the API runs as (it must be the package user, like the daemon)."""
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return str(os.getuid())

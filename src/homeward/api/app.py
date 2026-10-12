@@ -23,6 +23,7 @@ def build_api(paths: Paths, backend: AccountBackend) -> Api:
     api.add("photos.create", photos.create, write=True)
     api.add("photos.update", photos.update, write=True)
     api.add("photos.delete", photos.delete, write=True)
+    api.add("photos.run", photos.run, write=True)
     api.add("accounts.list", accounts.list_accounts)
     api.add("accounts.add", accounts.add, write=True)
     api.add("accounts.login", accounts.login, write=True)

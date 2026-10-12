@@ -48,7 +48,8 @@ class Executor:
             try:
                 self._apply(action)
             except Exception as exc:
-                log.warning("%s %s failed: %s", action.kind, action.path, exc)
+                failed = {"event": "file_failed"}
+                log.warning("%s %s failed: %s", action.kind, action.path, exc, extra=failed)
                 result.failed.append(Failure(action, f"{type(exc).__name__}: {exc}"))
             else:
                 result.done.append(action)

@@ -184,13 +184,18 @@ class ICloudPhotosSource:
                 log.info(
                     "iCloud answered %s for %s, retrying in %d s",
                     _status(exc), item.filename, RETRY_DELAY,
+                    extra={"event": "apple_unavailable", "until": time.time() + RETRY_DELAY},
                 )  # fmt: skip
                 self._sleep(RETRY_DELAY)
                 return self._stream(self._get(url))
             fresh = self._fresh_url(item.key) if _expired(exc) else None
             if fresh is None:
                 raise
-            log.info("download link of %s had expired, fetched a new one", item.filename)
+            log.info(
+                "download link of %s had expired, fetched a new one",
+                item.filename,
+                extra={"event": "link_expired"},
+            )
             self._urls[item.key] = fresh
             self._fetched_at[item.key] = self._clock()
             response = self._get(fresh)
@@ -304,6 +309,7 @@ class ICloudPhotosSource:
                 log.info(
                     "iCloud is still indexing the photo library, waiting %d s and trying again",
                     wait,
+                    extra={"event": "icloud_indexing", "until": time.time() + wait},
                 )
                 self._sleep(wait)
         raise AssertionError("unreachable")

@@ -138,6 +138,8 @@ EVENT_CODES = (
     "delete_brake",
     "conflict",
     "file_failed",
+    "config_error",  # the config file is invalid; nothing runs until it is fixed
+    "already_running",  # another run for the same account still holds the lock
 )
 
 
@@ -222,3 +224,41 @@ def read_events(paths: Paths, limit: int = 200) -> list[Event]:
             if len(events) >= limit:
                 return events
     return events
+
+
+class EventLogHandler(logging.Handler):
+    """Turns log records of one run into events.
+
+    Every warning and error becomes an event; info records only when they carry an
+    ``event`` code, e.g. ``log.info("...", extra={"event": "icloud_indexing",
+    "until": time.time() + 60})``.
+    """
+
+    def __init__(self, source: str, paths: Paths) -> None:
+        super().__init__(logging.INFO)
+        self.source = source
+        self.paths = paths
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.name == __name__:
+            return  # never turn a failure to record an event into another event
+        code = getattr(record, "event", None)
+        if code is None and record.levelno < logging.WARNING:
+            return
+        if record.levelno >= logging.ERROR:
+            level = Level.ERROR
+        elif record.levelno >= logging.WARNING:
+            level = Level.WARNING
+        else:
+            level = Level.INFO
+        until = getattr(record, "until", None)
+        details = {key: getattr(record, key) for key in ("account",) if hasattr(record, key)}
+        record_event(
+            level,
+            self.source,
+            str(code or "log"),
+            record.getMessage(),
+            until=float(until) if until is not None else None,
+            paths=self.paths,
+            **details,
+        )

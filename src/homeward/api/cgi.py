@@ -70,13 +70,16 @@ def write_response(status: int, body: dict[str, Any], out: TextIO) -> None:
 
 def main() -> int:
     paths = Paths.from_env()
-    logging.basicConfig(
-        filename=paths.log_file if paths.log_file.parent.is_dir() else None,
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s api: %(message)s",
-    )
+    try:
+        logging.basicConfig(
+            filename=paths.log_file if paths.log_file.parent.is_dir() else None,
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s api: %(message)s",
+        )
+    except OSError:  # e.g. not running as the package user: log to the web server
+        logging.basicConfig(level=logging.INFO)
     status, body = handle(
-        dict(os.environ), sys.stdin.buffer, DsmAuthenticator(), default_backend(), paths
+        dict(os.environ), sys.stdin.buffer, DsmAuthenticator(), default_backend(paths), paths
     )
     write_response(status, body, sys.stdout)
     return 0

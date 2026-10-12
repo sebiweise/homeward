@@ -54,7 +54,10 @@ class ConfigStore:
             raw = self.read()
             change(raw)
             config = self.parse(raw)
-            self._write(raw)
+            try:
+                self._write(raw)
+            except PermissionError as exc:
+                raise ApiError("config_not_writable", str(exc), status=500) from exc
             return config
 
     @contextmanager

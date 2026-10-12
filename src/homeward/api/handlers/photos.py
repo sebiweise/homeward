@@ -13,6 +13,7 @@ from homeward.api.errors import ApiError
 from homeward.api.handlers.common import check_name
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
+from homeward.runtime import RunRequest, request_run
 
 LIBRARIES = ("personal", "shared", "shared_albums")
 SCHEME_FIELDS = ("year", "month", "day")
@@ -99,6 +100,15 @@ def delete(ctx: Context, request: Request) -> dict[str, Any]:
 
     ctx.store.update(change)
     return {"name": name}
+
+
+def run(ctx: Context, request: Request) -> dict[str, Any]:
+    """Ask the daemon to back up one photos job now (``dry_run`` only lists changes)."""
+    name = request.get("name")
+    if not any(job["name"] == name for job in _entries(ctx.store.read())):
+        raise ApiError("photos_not_found", name, status=404)
+    request_run(ctx.paths, RunRequest(pair=f"photos:{name}", dry_run=request.flag("dry_run")))
+    return {"name": name, "queued": True}
 
 
 def _entries(raw: RawConfig) -> list[dict[str, Any]]:

@@ -142,7 +142,8 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     if not local.is_dir():
         raise ApiError("local_missing", str(local))
     account = check_name(text("account"), "account")
-    if provider == "icloud_drive" and account not in _accounts(ctx):
+    accounts = _accounts(ctx)
+    if provider == "icloud_drive" and account not in accounts:
         raise ApiError("account_not_found", account)
     exclude = data.get("exclude", [])
     if not isinstance(exclude, list) or not all(isinstance(p, str) for p in exclude):
@@ -157,6 +158,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     return {
         "name": check_name(text("name"), "pair"),
         "account": account,
+        **({"apple_id": accounts[account]} if account in accounts else {}),
         "local": str(local),
         "remote": text("remote"),
         "mode": mode,
@@ -167,6 +169,11 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     }
 
 
-def _accounts(ctx: Context) -> set[str]:
+def _accounts(ctx: Context) -> dict[str, str]:
+    """Account name -> Apple ID."""
     accounts = ctx.store.read().get("account", [])
-    return {a["name"] for a in accounts if isinstance(a, dict) and "name" in a}
+    return {
+        a["name"]: str(a.get("apple_id", ""))
+        for a in accounts
+        if isinstance(a, dict) and isinstance(a.get("name"), str)
+    }
