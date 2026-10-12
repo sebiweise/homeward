@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homeward</title>
+<link rel="icon" href="images/icon_32.png">
+<link rel="stylesheet" href="homeward.css">
+</head>
+<body>
+<header class="bar">
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="status" data-t="tab:status"></button>
+    <button role="tab" data-tab="pairs" data-t="tab:pairs"></button>
+    <button role="tab" data-tab="photos" data-t="tab:photos"></button>
+    <button role="tab" data-tab="accounts" data-t="tab:accounts"></button>
+    <button role="tab" data-tab="log" data-t="tab:log"></button>
+  </nav>
+  <span id="version" class="muted"></span>
+</header>
+<div id="message" class="message" hidden></div>
+<main>
+  <section id="tab-status" class="tab" hidden>
+    <p id="daemon" class="muted"></p>
+    <p id="service" class="muted"></p>
+    <div id="notices"></div>
+    <div id="status-table"></div>
+  </section>
+  <section id="tab-pairs" class="tab" hidden>
+    <div class="toolbar"><button id="pair-add" class="primary" data-t="common:add"></button></div>
+    <div id="pairs-table"></div>
+  </section>
+  <section id="tab-photos" class="tab" hidden>
+    <p class="muted" data-t="photos:only_download"></p>
+    <div class="toolbar"><button id="photos-add" class="primary" data-t="common:add"></button></div>
+    <div id="photos-table"></div>
+  </section>
+  <section id="tab-accounts" class="tab" hidden>
+    <div class="toolbar"><button id="account-add" class="primary" data-t="common:add"></button></div>
+    <div id="accounts-table"></div>
+  </section>
+  <section id="tab-log" class="tab" hidden>
+    <div class="toolbar"><button id="log-refresh" data-t="common:refresh"></button></div>
+    <h3 data-t="log:events"></h3>
+    <div class="toolbar">
+      <label class="inline"><span data-t="log:level"></span>
+        <select id="event-level">
+          <option value="info" data-t="log:level_info"></option>
+          <option value="warning" data-t="log:level_warning"></option>
+          <option value="error" data-t="log:level_error"></option>
+        </select>
+      </label>
+    </div>
+    <div id="events-table"></div>
+    <h3 data-t="log:runs"></h3>
+    <div id="runs-table"></div>
+    <h3 data-t="log:lines"></h3>
+    <pre id="log-lines" class="log"></pre>
+  </section>
+</main>
+<dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
+<script src="app.js"></script>
+</body>
+</html>

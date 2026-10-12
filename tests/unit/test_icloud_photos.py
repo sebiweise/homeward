@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 import pytest
 
 from homeward.core.photos import FAVORITES_ALBUM, Library
-from homeward.providers.icloud_photos import RENEW_AFTER, ICloudPhotosSource
+from homeward.providers.icloud_photos import RENEW_AFTER, ICloudPhotosSource, PhotosNotReady
 
 
 @dataclass
@@ -568,8 +568,35 @@ def test_waits_while_icloud_is_indexing(caplog: pytest.LogCaptureFixture) -> Non
     assert "still indexing" in caplog.text
 
     refusals[0] = 10
-    with pytest.raises(PyiCloudServiceNotActivatedException):
+    with pytest.raises(PhotosNotReady):
         source.cursor()
+
+
+def test_waits_when_pyicloud_wraps_the_indexing_refusal() -> None:
+    # Opening the root library raises PyiCloudServiceUnavailable from the refusal.
+    service, pauses = make_service(), []
+    libraries, refusals = service.photos.libraries, [1]
+
+    class PyiCloudServiceUnavailable(Exception):
+        pass
+
+    class Indexing:
+        streams = None
+
+        @property
+        def libraries(self) -> dict[str, Library_]:
+            if refusals[0]:
+                refusals[0] -= 1
+                try:
+                    raise PyiCloudServiceNotActivatedException("not finished indexing")
+                except PyiCloudServiceNotActivatedException as exc:
+                    raise PyiCloudServiceUnavailable("Photos service not available") from exc
+            return libraries
+
+    service.photos = Indexing()  # type: ignore[assignment]
+    source = ICloudPhotosSource(service, [Library.PERSONAL], sleep=pauses.append)
+    assert source.cursor() is not None
+    assert pauses == [60.0]
 
 
 def test_download_threads_get_their_own_session_with_icloud_cookies() -> None:
