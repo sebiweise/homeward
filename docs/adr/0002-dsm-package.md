@@ -33,7 +33,9 @@ assumed spksrc for native wheels (`cryptography`, `pydantic-core`, `protobuf`, `
 - **Daemon:** `homeward-daemon` runs each pair every `[daemon] interval_minutes` (default
   60, minimum 5) as its own `homeward sync --pair` process, so memory used by large
   transfers is freed after each run. It re-reads the config every cycle, keeps
-  `status.json` for the UI, runs everything at once on SIGUSR1, and on SIGTERM stops the
+  `status.json` for the UI (`running` plus last result and next run per pair), runs
+  "sync now" requests from `var/requests/<pair>.json` (the M6 UI contract; dry runs do
+  not move the schedule), runs everything at once on SIGUSR1, and on SIGTERM stops the
   running sync (finished steps are recorded, the rest is planned again next run).
 
 ## Open

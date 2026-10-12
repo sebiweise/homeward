@@ -7,6 +7,11 @@ needs, ends with the run, and the long-running daemon itself stays small.
 Signals: SIGTERM/SIGINT stop the daemon (a running sync is terminated; the
 executor records every finished step, so the next run picks up the rest),
 SIGUSR1 runs every job now. The config file is re-read before every cycle.
+
+"Sync now" requests from the DSM UI are files ``requests/<pair>.json`` next to the
+config (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``); the daemon
+removes each one and runs it. ``status.json`` holds ``running`` (the pair being
+synced, if any) and the last result and next run of every pair.
 """
 
 import argparse
@@ -31,8 +36,9 @@ log = logging.getLogger("homeward.daemon")
 
 DEFAULT_INTERVAL_MINUTES = 60
 MIN_INTERVAL_MINUTES = 5
-# Upper bound for one sleep, so config changes are picked up without a signal.
-MAX_SLEEP_SECONDS = 60.0
+# Upper bound for one sleep, so config changes and run requests are picked up
+# without a signal.
+MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
 
 # Exit codes of `homeward sync` (see homeward.cli).
@@ -62,6 +68,36 @@ class Settings:
     @property
     def interval_seconds(self) -> float:
         return self.interval_minutes * 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class RunRequest:
+    """A "sync now" request for one pair, written by the DSM UI."""
+
+    pair: str
+    dry_run: bool = False
+    allow_deletes: bool = False
+
+
+def take_requests(requests_dir: Path) -> list[RunRequest]:
+    """Return and remove the pending requests; unreadable files are dropped."""
+    if not requests_dir.is_dir():
+        return []
+    requests = []
+    for file in sorted(requests_dir.glob("*.json")):
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+            requests.append(
+                RunRequest(
+                    pair=str(data["pair"]),
+                    dry_run=bool(data.get("dry_run", False)),
+                    allow_deletes=bool(data.get("allow_deletes", False)),
+                )
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning("ignoring run request %s: %s", file.name, exc)
+        file.unlink(missing_ok=True)
+    return requests
 
 
 @dataclass(slots=True)
@@ -110,6 +146,7 @@ class Scheduler:
         self.jobs: list[Job] = []
         self.status: dict[str, JobStatus] = self._load_status()
         self._forced: set[str] = set()
+        self.running: str | None = None
 
     def update(self, plan: Plan) -> None:
         self.settings = plan.settings
@@ -133,10 +170,13 @@ class Scheduler:
         wait = min(self.next_due(job) for job in self.jobs) - self._clock()
         return max(0.0, min(wait, MAX_SLEEP_SECONDS))
 
-    def run(self, job: Job) -> JobStatus:
-        self._forced.discard(job.name)
+    def run(self, job: Job, *, record: bool = True) -> JobStatus:
+        """Run one job; ``record=False`` (dry runs) leaves its schedule alone."""
         status = JobStatus(started_at=self._clock())
-        self.status[job.name] = status
+        if record:
+            self._forced.discard(job.name)
+            self.status[job.name] = status
+        self.running = job.name.removeprefix("pair:")
         self.save()
         log.info("starting %s", job.name)
         try:
@@ -148,6 +188,7 @@ class Scheduler:
         status.exit_code = code
         status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
+        self.running = None
         self.save()
         return status
 
@@ -170,6 +211,7 @@ class Scheduler:
             "updated_at": self._clock(),
             "pid": os.getpid(),
             "interval_minutes": self.settings.interval_minutes,
+            "running": self.running,
             "jobs": {
                 name: {**asdict(status), "next_due": self._next_due_by_name(name)}
                 for name, status in self.status.items()
@@ -240,6 +282,7 @@ class SubprocessRunner:
 class Daemon:
     def __init__(self, config_path: Path, scheduler: Scheduler, runner: SubprocessRunner) -> None:
         self.config_path = config_path
+        self.requests_dir = config_path.parent / "requests"
         self.scheduler = scheduler
         self.runner = runner
         self.stop = threading.Event()
@@ -287,8 +330,22 @@ class Daemon:
             if self._run_now:
                 self._run_now = False
                 self.scheduler.run_all_now()
+            self.run_requests()
             self.scheduler.run_due(self.stop)
             self.scheduler.save()
+
+    def run_requests(self) -> None:
+        jobs = {job.name: job for job in self.scheduler.jobs}
+        for request in take_requests(self.requests_dir):
+            if self.stop.is_set():
+                break
+            job = jobs.get(f"pair:{request.pair}")
+            if job is None:
+                log.warning("run request for unknown pair %r ignored", request.pair)
+                continue
+            extra = ("--dry-run",) * request.dry_run + ("--allow-deletes",) * request.allow_deletes
+            log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
+            self.scheduler.run(Job(job.name, job.argv + extra), record=not request.dry_run)
 
     def run_forever(self) -> None:
         log.info("daemon started (pid %d), config %s", os.getpid(), self.config_path)

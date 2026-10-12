@@ -13,6 +13,7 @@ from homeward.daemon.scheduler import (
     load_plan,
     main,
     parse_settings,
+    take_requests,
 )
 
 
@@ -83,7 +84,7 @@ def test_jobs_run_once_per_interval(tmp_path: Path) -> None:
     assert runner.calls == ["pair:docs"]
     clock.now += 9 * 60
     assert scheduler.run_due() == []
-    assert scheduler.seconds_until_next() == 60
+    assert scheduler.seconds_until_next() == 10  # capped, to notice config changes
     clock.now += 60
     scheduler.run_due()
     assert runner.calls == ["pair:docs", "pair:docs"]
@@ -182,3 +183,52 @@ def test_once_reports_a_broken_config(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text("[daemon]\ninterval_minutes = 0\n")
     assert main(["--config", str(config), "--once"]) == 2
+
+
+def _request(tmp_path: Path, name: str, data: str) -> None:
+    (tmp_path / "requests").mkdir(exist_ok=True)
+    (tmp_path / "requests" / f"{name}.json").write_text(data)
+
+
+def test_take_requests(tmp_path: Path) -> None:
+    assert take_requests(tmp_path / "requests") == []
+    _request(tmp_path, "a", '{"pair": "a", "dry_run": true}')
+    _request(tmp_path, "b", "{broken")
+    requests = take_requests(tmp_path / "requests")
+    assert [(r.pair, r.dry_run, r.allow_deletes) for r in requests] == [("a", True, False)]
+    assert list((tmp_path / "requests").iterdir()) == []
+
+
+class ArgvRecorder:
+    def __init__(self) -> None:
+        self.argv: list[tuple[str, ...]] = []
+
+    def __call__(self, job: Job) -> int:
+        self.argv.append(job.argv)
+        return 0
+
+
+def test_daemon_runs_requests(tmp_path: Path) -> None:
+    clock, runner = Clock(), ArgvRecorder()
+    config = _config(tmp_path, pairs=("a",))
+    scheduler = Scheduler(tmp_path / "status.json", runner, clock)
+    daemon = Daemon(config, scheduler, SubprocessRunner())
+    daemon.cycle()  # scheduled run
+    assert len(runner.argv) == 1
+    scheduled_at = scheduler.status["pair:a"].started_at
+
+    _request(tmp_path, "a", '{"pair": "a", "dry_run": true}')
+    _request(tmp_path, "zzz", '{"pair": "missing"}')
+    daemon.cycle()
+    assert runner.argv[1][-1] == "--dry-run"
+    assert len(runner.argv) == 2
+    # A dry run does not count as the scheduled run.
+    assert scheduler.status["pair:a"].started_at == scheduled_at
+
+    clock.now += 60
+    _request(tmp_path, "a", '{"pair": "a", "allow_deletes": true}')
+    daemon.cycle()
+    assert runner.argv[2][-1] == "--allow-deletes"
+    assert scheduler.status["pair:a"].started_at == clock.now
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["running"] is None
