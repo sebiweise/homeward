@@ -1,6 +1,7 @@
 """Interval-based sync scheduler.
 
-The daemon runs every sync pair and photos job once per interval. Each run is its
+The daemon runs every sync pair and photos job once per interval: ``[daemon]
+interval_minutes`` for all jobs, unless a pair or photos job sets its own. Each run is its
 own ``homeward sync --pair NAME`` (or ``homeward photos --job NAME``) process: a
 crash, or the memory a large transfer needs, ends with the run, and the
 long-running daemon itself stays small.
@@ -25,21 +26,24 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from homeward.core.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from homeward.core.config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_INTERVAL_MINUTES,
+    ConfigError,
+    check_interval,
+    load_config,
+)
 from homeward.dsm.notify import Event, notify
 from homeward.runtime import Level, Paths, record_event
 
 log = logging.getLogger("homeward.daemon")
 
-DEFAULT_INTERVAL_MINUTES = 60
-MIN_INTERVAL_MINUTES = 5
 # Upper bound for one sleep, so config changes and run requests are picked up
 # without a signal.
 MAX_SLEEP_SECONDS = 10.0
@@ -64,6 +68,7 @@ class Job:
 
     name: str
     argv: tuple[str, ...]
+    interval_minutes: int | None = None  # None: the global interval
 
 
 @dataclass(slots=True)
@@ -120,17 +125,23 @@ class Plan:
 
 
 def load_plan(config_path: Path) -> Plan:
-    """Read the ``[daemon]`` table and turn every sync pair and photos job into a job."""
+    """Read the interval and turn every sync pair and photos job into a job."""
     config = load_config(config_path)
-    with config_path.open("rb") as fh:
-        data = tomllib.load(fh)
-    settings = parse_settings(data.get("daemon", {}))
+    settings = Settings(interval_minutes=config.interval_minutes)
     jobs = [
-        Job(f"pair:{pair.name}", ("sync", "--config", str(config_path), "--pair", pair.name))
+        Job(
+            f"pair:{pair.name}",
+            ("sync", "--config", str(config_path), "--pair", pair.name),
+            pair.interval_minutes,
+        )
         for pair in config.pairs
     ]
     jobs += [
-        Job(f"photos:{photos.name}", ("photos", "--config", str(config_path), "--job", photos.name))
+        Job(
+            f"photos:{photos.name}",
+            ("photos", "--config", str(config_path), "--job", photos.name),
+            photos.interval_minutes,
+        )
         for photos in config.photos
     ]
     return Plan(settings, jobs)
@@ -140,11 +151,7 @@ def parse_settings(table: object) -> Settings:
     if not isinstance(table, dict):
         raise ConfigError("'daemon' must be a table")
     interval = table.get("interval_minutes", DEFAULT_INTERVAL_MINUTES)
-    if not isinstance(interval, int) or isinstance(interval, bool):
-        raise ConfigError("daemon: 'interval_minutes' must be an integer")
-    if interval < MIN_INTERVAL_MINUTES:
-        raise ConfigError(f"daemon: 'interval_minutes' must be at least {MIN_INTERVAL_MINUTES}")
-    return Settings(interval_minutes=interval)
+    return Settings(interval_minutes=check_interval(interval, "daemon"))
 
 
 class Scheduler:
@@ -173,13 +180,16 @@ class Scheduler:
         self.settings = plan.settings
         self.jobs = list(plan.jobs)
 
+    def interval_minutes(self, job: Job) -> int:
+        return job.interval_minutes or self.settings.interval_minutes
+
     def next_due(self, job: Job) -> float:
         if job.name in self._forced:
             return 0.0
         status = self.status.get(job.name, JobStatus())
         if status.started_at is None or status.finished_at is None or status.result == "killed":
             return 0.0  # never ran, or a stop or crash interrupted the last run
-        return status.started_at + self.settings.interval_seconds
+        return status.started_at + self.interval_minutes(job) * 60.0
 
     def due(self) -> list[Job]:
         now = self._clock()
@@ -238,16 +248,20 @@ class Scheduler:
         self._forced.update(job.name for job in self.jobs)
 
     def save(self) -> None:
-        names = {job.name for job in self.jobs}
+        jobs = {job.name: job for job in self.jobs}
         data: dict[str, Any] = {
             "updated_at": self._clock(),
             "pid": os.getpid(),
             "interval_minutes": self.settings.interval_minutes,
             "running": self.running,
             "jobs": {
-                name: {**asdict(status), "next_due": self._next_due_by_name(name)}
+                name: {
+                    **asdict(status),
+                    "next_due": self._next_due_in_status(jobs[name]),
+                    "interval_minutes": self.interval_minutes(jobs[name]),
+                }
                 for name, status in self.status.items()
-                if name in names
+                if name in jobs
             },
         }
         self.status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,11 +269,11 @@ class Scheduler:
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         tmp.replace(self.status_path)
 
-    def _next_due_by_name(self, name: str) -> float | None:
-        started = self.status[name].started_at
-        if name in self._forced or started is None:
+    def _next_due_in_status(self, job: Job) -> float | None:
+        started = self.status[job.name].started_at
+        if job.name in self._forced or started is None:
             return None
-        return started + self.settings.interval_seconds
+        return started + self.interval_minutes(job) * 60.0
 
     def _load_status(self) -> dict[str, JobStatus]:
         try:
@@ -383,7 +397,7 @@ class Daemon:
             if request.allow_deletes and name.startswith("pair:"):
                 extra += ("--allow-deletes",)
             log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
-            self.scheduler.run(Job(job.name, job.argv + extra), record=not request.dry_run)
+            self.scheduler.run(replace(job, argv=job.argv + extra), record=not request.dry_run)
 
     def run_forever(self) -> None:
         log.info("daemon started (pid %d), config %s", os.getpid(), self.config_path)

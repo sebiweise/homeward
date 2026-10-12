@@ -19,6 +19,11 @@ from homeward.core.planner import DeleteBrake
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
 REMOTE_PROVIDERS = ("icloud_drive", "folder")
 DEFAULT_TRASH_DAYS = 30
+# How often the daemon runs each job; `[daemon] interval_minutes` sets it for all jobs,
+# `interval_minutes` in a [[pair]] or [[photos]] table overrides it for that job.
+DEFAULT_INTERVAL_MINUTES = 60
+MIN_INTERVAL_MINUTES = 5
+MAX_INTERVAL_MINUTES = 7 * 24 * 60
 
 
 class ConfigError(ValueError):
@@ -39,6 +44,7 @@ class PairConfig:
     exclude: tuple[str, ...] = ()
     delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
     trash_days: int = DEFAULT_TRASH_DAYS
+    interval_minutes: int | None = None  # None: the global interval
 
 
 FOLDER_OPTIONS = (
@@ -69,6 +75,7 @@ class PhotosConfig:
     xmp: bool = True  # XMP sidecars with caption, keywords, location and rating
     workers: int = DEFAULT_WORKERS  # parallel downloads
     layout: PhotoLayout = field(default_factory=PhotoLayout)
+    interval_minutes: int | None = None  # None: the global interval
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +83,7 @@ class Config:
     state_dir: Path
     pairs: tuple[PairConfig, ...]
     photos: tuple[PhotosConfig, ...] = ()
+    interval_minutes: int = DEFAULT_INTERVAL_MINUTES
 
     def photos_job(self, name: str) -> PhotosConfig:
         for job in self.photos:
@@ -125,8 +133,31 @@ def parse_config(data: Mapping[str, Any], base: Path = Path(".")) -> Config:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ConfigError(f"duplicate photos job names: {', '.join(duplicates)}")
+    daemon = data.get("daemon", {})
+    if not isinstance(daemon, dict):
+        raise ConfigError("'daemon' must be a table")
+    interval = check_interval(daemon.get("interval_minutes", DEFAULT_INTERVAL_MINUTES), "daemon")
     return Config(state_dir=state_dir if state_dir.is_absolute() else base / state_dir,
-                  pairs=parsed, photos=photos)  # fmt: skip
+                  pairs=parsed, photos=photos, interval_minutes=interval)  # fmt: skip
+
+
+def check_interval(value: object, where: str) -> int:
+    """Validate a sync interval in minutes."""
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not MIN_INTERVAL_MINUTES <= value <= MAX_INTERVAL_MINUTES
+    ):
+        raise ConfigError(
+            f"{where}: 'interval_minutes' must be a whole number from "
+            f"{MIN_INTERVAL_MINUTES} to {MAX_INTERVAL_MINUTES}"
+        )
+    return value
+
+
+def _get_interval(table: Mapping[str, Any], where: str) -> int | None:
+    value = table.get("interval_minutes")
+    return None if value is None else check_interval(value, where)
 
 
 def _parse_photos(entry: object, index: int) -> PhotosConfig:
@@ -170,6 +201,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         hidden=_get_bool(entry, "hidden", False, where),
         xmp=_get_bool(entry, "xmp", True, where),
         workers=workers,
+        interval_minutes=_get_interval(entry, where),
         layout=PhotoLayout(
             scheme=scheme,
             **{
@@ -225,6 +257,7 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         exclude=tuple(exclude),
         delete_brake=DeleteBrake(max_ratio=float(ratio), max_count=count),
         trash_days=trash_days,
+        interval_minutes=_get_interval(entry, where),
     )
 
 

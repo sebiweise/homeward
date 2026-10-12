@@ -168,8 +168,11 @@ session ends the job with a hint to log in again.
 
 ```toml
 [daemon]
-interval_minutes = 60             # each pair and photos job runs once per interval (minimum 5)
+interval_minutes = 60             # each pair and photos job runs once per interval (5 to 10080)
 ```
+
+A `[[pair]]` or `[[photos]]` table may set its own `interval_minutes`; the DSM UI edits
+both (`settings.get`/`settings.update` for the global value).
 
 The `.spk` (built by `tools/build_spk.py`) installs into `/var/packages/homeward`:
 the venv in `target/env`, config, state, `status.json` and the log in `var/`. The

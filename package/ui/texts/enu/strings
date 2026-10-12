@@ -55,6 +55,17 @@ job_blocked="Stopped by the delete brake"
 job_config_error="Configuration error"
 job_killed="Interrupted"
 
+[schedule]
+title="Schedule"
+change="Change"
+interval="Interval in minutes"
+hint="Every sync pair and photos backup runs this often unless it has its own interval. Allowed: {0} to {1} minutes. The change applies right away, without a restart."
+saved="Schedule saved: every {0} minutes."
+every="every {0} min"
+job_interval="Own interval in minutes"
+job_hint="Leave empty to use the general schedule (every {0} minutes). At least {1} minutes."
+use_default="Default: {0}"
+
 [pair]
 name="Name"
 account="Account"
@@ -203,6 +214,7 @@ photos_not_found="This photos backup no longer exists."
 invalid_scheme="The folder structure may only use {year}, {month} and {day}: {0}"
 login_timeout="The sign-in waited too long. Please sign in again."
 config_not_writable="Homeward cannot write its configuration. Details are in the log."
+invalid_interval="The interval must be a whole number of minutes ({0})."
 
 [notify]
 sync_failed="{0}: the last run finished with errors. Details are in Homeward's event log."

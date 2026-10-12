@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name
+from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.settings import parse_interval
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 from homeward.core.config import REMOTE_PROVIDERS, PairConfig
@@ -34,6 +35,7 @@ def to_dict(pair: PairConfig) -> dict[str, Any]:
         "exclude": list(pair.exclude),
         "max_delete_ratio": pair.delete_brake.max_ratio,
         "max_delete_count": pair.delete_brake.max_count,
+        "interval_minutes": pair.interval_minutes,
     }
 
 
@@ -48,7 +50,7 @@ def create(ctx: Context, request: Request) -> dict[str, Any]:
         pairs = raw.setdefault("pair", [])
         if any(p.get("name") == entry["name"] for p in pairs):
             raise ApiError("pair_exists", entry["name"])
-        pairs.append(entry)
+        pairs.append(without_none(entry))
 
     config = ctx.store.update(change)
     return to_dict(config.pair(entry["name"]))
@@ -63,7 +65,7 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
         index = next((i for i, p in enumerate(pairs) if p.get("name") == entry["name"]), None)
         if index is None:
             raise ApiError("pair_not_found", entry["name"])
-        pairs[index] = {**pairs[index], **entry}
+        pairs[index] = without_none({**pairs[index], **entry})
 
     config = ctx.store.update(change)
     new = config.pair(entry["name"])
@@ -166,6 +168,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "exclude": [p.strip() for p in exclude if p.strip()],
         "max_delete_ratio": float(ratio),
         "max_delete_count": count,
+        "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
     }
 
 
