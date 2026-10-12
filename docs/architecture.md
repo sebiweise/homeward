@@ -56,7 +56,28 @@ Safety nets:
 - **Dry run**: `homeward sync --dry-run` prints the plan and changes nothing.
 - **Exclusions**: Synology folders, `.DS_Store`, the trash and temp files, plus patterns
   per pair.
-- NAS deletions go to `.homeward-papierkorb/<date>/` below the pair's folder.
+- NAS deletions go to the share's Synology recycle bin (`#recycle`) when it is enabled,
+  so DSM's own retention applies; otherwise, or if Homeward may not write there, to
+  `.homeward-papierkorb/<date>/` below the pair's folder. Day folders there older than
+  `trash_days` (default 30, 0 keeps them forever) are removed after each run.
+- iCloud deletions go to iCloud's "Recently Deleted" (kept 30 days by Apple).
+
+## iCloud Drive provider
+
+`providers/icloud_drive.py` maps one Drive folder to the provider interface on top of
+`providers/drive_api.py`, a thin seam over pyicloud's authenticated session:
+
+- **Uploads are streamed** (`providers/multipart.py`): the request body is read from
+  disk while it is sent, with a known `Content-Length`. pyicloud's own upload builds
+  the whole body in memory (~2x the file size, ADR 0001). A file only appears in its
+  folder after the final commit request, so a failed upload leaves nothing behind.
+- **Listing** walks the tree level by level and fetches up to 50 folders per request.
+  A folder whose etag is unchanged since the last run can be served from a cache
+  (`<state_dir>/<account>.drive-folders.json`) including its whole subtree; this is
+  off (`trust_folder_etags=False`): on a real account a rename changes no folder
+  etag (ADR 0002), so a cached listing would miss it.
+- A file's version is `docwsid:etag`. Only plain files and folders sync; app
+  libraries (Shortcuts, Scriptable) and other node types such as packages are skipped.
 
 ## Configuration
 
@@ -66,6 +87,7 @@ state_dir = "/var/packages/homeward/var/state"
 [[pair]]
 name = "docs"
 account = "sebastian"
+apple_id = "sebastian@example.com"  # optional if account is the Apple ID
 local = "/volume1/homes/sebastian/Documents"
 remote = "Documents"
 mode = "bidirectional"            # upload | download | bidirectional
@@ -73,6 +95,86 @@ remote_provider = "icloud_drive"  # "folder" syncs with a second NAS folder (tes
 exclude = ["*.tmp"]
 max_delete_ratio = 0.10
 max_delete_count = 50
+trash_days = 30                   # NAS trash retention, 0 = keep forever
 ```
+
+## Photos backup
+
+Photos only go iCloud → NAS (`core/photos.py`, adapter `providers/icloud_photos.py`).
+One `[[photos]]` job backs up one Apple ID into one NAS folder; several jobs give
+several Apple IDs, each with its own login session and state file
+(`<state_dir>/<account>.photos.sqlite3`).
+
+```
+<target>/2024/05/IMG_0001.HEIC                original, Year/Month by capture date (NAS time zone)
+<target>/2024/05/IMG_0001.MOV                 video part of a Live Photo
+<target>/2024/05/IMG_0001.JPG                 second file of a RAW+JPEG shot
+<target>/2024/05/IMG_0001 (bearbeitet).JPG    edit made in the Photos app, full size
+<target>/2024/05/IMG_0001.HEIC.xmp            caption, keywords, location, favorite
+<target>/Alben/Urlaub/IMG_0001.HEIC           hard link to the original (no extra space)
+<target>/Favoriten/IMG_0001.HEIC              hard link, too
+<target>/Geteilte Mediathek/2024/05/...       the iCloud Shared Library
+<target>/Geteilte Alben/Hochzeit/...          the older shared albums (no Year/Month)
+<target>/Ausgeblendet/2024/05/...             hidden photos (off by default)
+```
+
+- **Incremental**: the libraries' CloudKit sync tokens form a cursor. If it did not change
+  since the last complete run and every file is still there, nothing is listed at all.
+  Otherwise known photos are skipped by key, only new ones are downloaded.
+- **Never deletes**: a photo deleted in iCloud stays on the NAS (marked `gone` in the
+  state). A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
+  When a photo leaves an album only its album link is removed; an album file that is no
+  longer the same file as the original goes to the trash instead.
+- Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.
+- Downloads stream into a temp file, are checked against the size iCloud reports and are
+  hard-linked into place, so a crash leaves no partial photo.
+- Album folders come from the personal library's albums, which can also hold Shared
+  Library photos. The Shared Library's own albums are not readable through pyicloud 2.7.
+- Not possible with pyicloud 2.7: people/faces and memories.
+
+```toml
+[[photos]]
+name = "sebastian"
+account = "sebastian"                # session + state file name
+apple_id = "sebastian@example.com"
+target = "/volume1/photo/iCloud Sebastian"
+libraries = ["personal", "shared", "shared_albums"]   # default: all three
+folder_scheme = "{year}/{month}"     # {year}, {month}, {day}
+albums = true                        # album folders with hard links
+favorites = true                     # favorites folder with hard links
+videos = true
+live_videos = true                   # the video part of Live Photos
+raw_alternative = true               # both files of RAW+JPEG shots
+edited = true                        # "Name (bearbeitet).ext" next to the original
+xmp = true                           # sidecars, only for photos with such metadata
+hidden = false                       # hidden photos, below hidden_folder
+workers = 4                          # parallel downloads, 1 to 8
+shared_folder = "Geteilte Mediathek"
+albums_folder = "Alben"
+favorites_folder = "Favoriten"
+hidden_folder = "Ausgeblendet"
+shared_albums_folder = "Geteilte Alben"
+```
+
+Every switch is meant to become an option in the DSM UI (M6). Switching a feature off
+later keeps the files it already produced (their keys are marked `gone`).
+
+Login: `homeward login --account sebastian` asks for the password and the 2FA code once
+and keeps the trusted session in `<state_dir>/sessions/<account>/` (mode 0700).
+`homeward photos [--job NAME] [--dry-run]` runs the backup and never prompts; an expired
+session ends the job with a hint to log in again.
+
+## Package and daemon
+
+```toml
+[daemon]
+interval_minutes = 60             # each pair and photos job runs once per interval (minimum 5)
+```
+
+The `.spk` (built by `tools/build_spk.py`) installs into `/var/packages/homeward`:
+the venv in `target/env`, config, state, `status.json` and the log in `var/`. The
+daemon `homeward-daemon` runs as the unprivileged package user and starts one
+`homeward sync --pair` or `homeward photos --job` process per due job. Details in
+[ADR 0003](adr/0003-dsm-package.md).
 
 Architecture decisions are recorded in [`adr/`](adr/).

@@ -27,7 +27,10 @@ python3.12 -m venv .venv && . .venv/bin/activate
 make install
 make lint
 make test
+make spk ARCH=x64      # or ARCH=aarch64, writes dist/homeward-<version>-<arch>.spk
 ```
+
+Pushing a tag `vX.Y.Z` builds both packages and attaches them to a GitHub release.
 
 See [`CLAUDE.md`](CLAUDE.md) for principles and conventions and
 [`docs/architecture.md`](docs/architecture.md) for the design.
