@@ -1,11 +1,9 @@
 """iCloud Drive provider: one folder in iCloud Drive as a tree of files.
 
-There is no change feed for Drive (ADR 0001), so every run walks the folder tree.
-The walk goes level by level and asks iCloud for many folders per request. With
-``trust_folder_etags`` it also reuses the cached children of a folder whose etag is
-unchanged since the last run and skips its whole subtree; that is only correct if a
-change deep in the tree changes the etags of all its ancestor folders, which is
-still being verified on a real account (``spikes/m3_etag_probe.py``).
+There is no change feed for Drive (ADR 0001), so every run walks the folder tree,
+level by level, asking iCloud for many folders per request. ``trust_folder_etags``
+would reuse cached children of folders whose etag is unchanged, but it must stay off:
+on a real account renaming a file changes no folder etag at all (ADR 0002).
 """
 
 import hashlib

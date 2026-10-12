@@ -1,6 +1,6 @@
 # ADR 0002: iCloud Drive provider (M3)
 
-Date: 2026-10-12 · Status: accepted, two points pending the NAS probe
+Date: 2026-10-12 · Status: accepted
 
 ## Decisions
 
@@ -20,10 +20,23 @@ Date: 2026-10-12 · Status: accepted, two points pending the NAS probe
 - iCloud sign-in is not part of M3; the CLI gets a signed-in `DriveApi` through
   `cli.drive_api_factory`, which the auth work (M2) fills in.
 
-## Pending: `spikes/m3_etag_probe.py` on the NAS
+## Probe results (NAS, 2026-10-12)
 
-1. Does a change four levels deep change every ancestor folder's etag? If yes,
-   turn `trust_folder_etags` on.
-2. Is a file's etag stable after upload (else every uploaded file would look changed
-   on the next run)? Also checks rename with a new extension, moves, and a streamed
-   big-file upload's peak RAM on the NAS.
+| Check | Result |
+| --- | --- |
+| New, replaced or trashed file four levels deep | etag changes on every ancestor up to the Drive root |
+| File renamed in place | **no** folder etag changes, not even its own folder's |
+| File etag after upload, 30 s later | stable (`docwsid:etag` recorded = listed) |
+| File moved / renamed | same `docwsid`, new etag |
+| 1 GB streamed upload | 205 s, peak RSS 80 MB (pyicloud: 2.1 GB), SHA-256 match |
+
+Consequences:
+
+- `trust_folder_etags` stays off: a folder's etag misses renames inside it, so a
+  cached listing would keep the old name. Every run walks the whole tree (batched).
+- The version token `docwsid:etag` is stable after upload, so uploaded files are
+  not re-uploaded. `docwsid` survives moves and renames, which lets bidirectional
+  sync (M4) recognise renames in iCloud.
+- Streaming the upload body fixes the memory problem from ADR 0001.
+- Open: whether an in-place edit (iPhone/Mac) changes the file's etag; the probe's
+  `snapshot`/`compare` now records file versions to check this.

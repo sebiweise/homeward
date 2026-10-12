@@ -195,3 +195,15 @@ def test_broken_cache_file_is_ignored(api: FakeDriveApi, tmp_path: Path) -> None
     files = _provider(api, cache=FolderCache(cache_file), trust_folder_etags=True).list_files()
     assert len(files) == 4
     assert cache_file.read_text().startswith("{")
+
+
+def test_rename_is_invisible_to_folder_etags(api: FakeDriveApi, tmp_path: Path) -> None:
+    """A second reason ``trust_folder_etags`` stays off (seen on a real account)."""
+    _tree(api)
+    cache = FolderCache(tmp_path / "cache.json")
+    _provider(api, cache=cache, trust_folder_etags=True).list_files()
+    node = api.node("Docs/a/deep/d1.txt")
+    api.rename(node.drivewsid, f"{node.etag}::x", "d1-renamed.txt")
+    trusted = _provider(api, cache=cache, trust_folder_etags=True).list_files()
+    assert "a/deep/d1.txt" in trusted  # stale
+    assert "a/deep/d1-renamed.txt" in _provider(api, cache=cache).list_files()
