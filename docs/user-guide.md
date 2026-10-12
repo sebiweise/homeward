@@ -4,9 +4,8 @@ This guide covers installing Homeward on a Synology NAS, signing in to iCloud,
 configuring photos jobs and Drive pairs, and finding out what Homeward did. For how
 the sync works internally, see [architecture.md](architecture.md).
 
-> Homeward is in early development. Until the DSM app is complete, setup happens over
-> SSH. Enable SSH in **Control Panel › Terminal & SNMP** and log in as an
-> administrator.
+> Homeward is in early development. Keep an independent backup of anything you point
+> it at.
 
 ## Installation
 
@@ -39,38 +38,48 @@ Updating works the same way as the installation; configuration and state are kep
 Uninstalling copies configuration and state to `homeward/.homeward-backup/<timestamp>/`
 first. Synced files are never touched by an uninstall.
 
-## Running commands
+## Using the DSM app
 
-Run the CLI as the package user so that state and sessions keep the right owner:
+Open **Homeward** from the DSM main menu. Only members of the `administrators` group
+can use it.
+
+| Tab | What you do there |
+| --- | --- |
+| Status | See every pair and photos backup with its last result and next run; *Sync now*, *Test run* (changes nothing), *Approve deletions* after the delete brake stopped a run. Waits and errors of the last 24 hours are listed as notices. |
+| Sync pairs | Add, edit and delete iCloud Drive pairs. |
+| Photos | Add, edit and delete photos backups with every option listed below. |
+| Accounts | Add an Apple ID and sign in with password and 2FA code; sign in again when Apple ends the session. |
+| Log | Past runs, the event log (waits, retries, errors) and the raw service log. |
+
+Homeward keeps only the trusted session Apple hands out after the 2FA step (in
+`state/sessions/<account>/`, readable only by the package user), never the password.
+When Apple expires the session, the affected jobs fail and the Accounts tab asks you to
+sign in again. A failed sync also sends a DSM notification.
+
+Every change in the app is checked before it is saved; the previous configuration is
+kept in `var/config-backups/` (the last 20). Removing a pair, a photos backup or an
+account never touches any files.
+
+## Command line
+
+Everything the app does also works over SSH. Enable SSH in **Control Panel ›
+Terminal & SNMP**, log in as an administrator and run the CLI as the package user so
+that state and sessions keep the right owner:
 
 ```sh
 alias hw='sudo -u homeward env HOME=/var/packages/homeward/var homeward'
 hw --version
+hw login --account alice --apple-id alice@example.com   # password, then 2FA code
 ```
 
 The examples below use this `hw` alias.
 
-## Signing in
-
-Each Apple ID is an *account* in Homeward. Sign in once per account:
-
-```sh
-hw login --account alice --apple-id alice@example.com
-```
-
-Homeward asks for the password and the 2FA code from one of your Apple devices. It
-keeps only the trusted session (in `state/sessions/<account>/`, readable only by the
-package user), never the password. When Apple expires the session, the affected jobs
-fail with a hint to sign in again.
-
-If the account's photos job or pair already names the `apple_id`, `--apple-id` can be
-left out.
-
 ## Configuration
 
-The configuration is a TOML file at `/var/packages/homeward/var/config.toml`. Edit it
-with `sudo vi` (or any editor) and check it with a dry run. The daemon reads it again
-before every cycle, so no restart is needed.
+The DSM app writes the configuration for you. It is a TOML file at
+`/var/packages/homeward/var/config.toml`, which you can also edit by hand (check the
+result with a dry run). The daemon reads it again before every cycle, so no restart is
+needed. The options below are the same ones the app offers.
 
 ```toml
 state_dir = "/var/packages/homeward/var/state"
@@ -155,9 +164,10 @@ always excluded.
   `.homeward-papierkorb/<date>/` in the pair's folder; in iCloud, "Recently Deleted".
 - The first run of a pair never deletes or overwrites anything.
 - The delete brake stops a run that would delete too much. Check the plan with a dry
-  run and approve it once with `hw sync --pair NAME --allow-deletes`.
+  run and approve it once with *Approve deletions* on the Status tab or
+  `hw sync --pair NAME --allow-deletes`.
 
-## Commands
+## Command reference
 
 ```sh
 hw sync [--pair NAME] [--dry-run] [--allow-deletes]   # Drive pairs
@@ -176,6 +186,8 @@ sudo kill -USR1 "$(sudo cat /var/packages/homeward/var/homeward.pid)"
 
 ## Status and troubleshooting
 
+The Status and Log tabs show the same information as these files:
+
 ```sh
 sudo cat /var/packages/homeward/var/status.json      # last result and next run per job
 sudo tail -n 50 /var/packages/homeward/var/homeward.log
@@ -183,9 +195,9 @@ sudo tail -n 50 /var/packages/homeward/var/homeward.log
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `account '…' needs a login` | Apple ended the trusted session. Run `hw login` again. |
+| `account '…' needs a login` | Apple ended the trusted session. Sign in again on the Accounts tab or with `hw login`. |
 | `Permission denied` on a NAS folder | Grant the user `homeward` read/write access to the shared folder. |
-| Run stopped by the delete brake | Check with `--dry-run`, then approve with `--allow-deletes`. |
+| Run stopped by the delete brake | Check with a test run, then *Approve deletions* (or `--allow-deletes`). |
 | Package says it is incompatible | Your model has no SynoCommunity Python 3.12 build. |
 | Sign-in fails although the password is right | Advanced Data Protection is on, or Apple temporarily blocks web sign-in; try again later. |
 

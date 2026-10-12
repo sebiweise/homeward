@@ -32,7 +32,9 @@ no extra server.
   deletions to "Recently Deleted". The first run of a pair never deletes, and a
   *delete brake* stops any run that would delete more than 10 % or more than 50 files.
 - Dry runs that show the plan without changing anything.
-- Interval scheduler as a DSM service, status file and log for every run.
+- Interval scheduler as a DSM service; every wait, retry and error shows up in the log.
+- A DSM app (German and English) for accounts with 2FA sign-in, photos backups, sync
+  pairs, status and log, plus DSM notifications when a sync fails.
 - A plain command-line interface for everything.
 
 ## Requirements
@@ -59,38 +61,24 @@ See the [user guide](docs/user-guide.md) for setup, sign-in and configuration.
 
 ## Quick start
 
-Until the DSM app is finished, Homeward is set up over SSH:
+Open **Homeward** from the DSM main menu (administrators only):
 
-```sh
-# 1. Add a photos job and/or a Drive pair
-sudo vi /var/packages/homeward/var/config.toml
+1. **Accounts**: add your Apple ID, enter the password and the 2FA code from one of
+   your Apple devices. Homeward keeps only the trusted session, never the password.
+2. **Photos**: add a backup with a target folder, e.g. `/volume1/homeward/Photos`.
+3. **Sync pairs**: connect a NAS folder with an iCloud Drive folder and pick
+   `upload`, `download` or `bidirectional`.
+4. **Status**: start a test run to see what would happen, then *Sync now* or let the
+   schedule take over (every 60 minutes by default). **Log** shows every run, wait and
+   error.
 
-# 2. Sign in once with password and 2FA code
-sudo -u homeward env HOME=/var/packages/homeward/var homeward login --account alice
-
-# 3. Check the plan, then let the daemon take over (it runs every 60 minutes)
-sudo -u homeward env HOME=/var/packages/homeward/var homeward sync --dry-run
-```
-
-```toml
-[[photos]]
-name = "alice"
-account = "alice"
-apple_id = "alice@example.com"
-target = "/volume1/homeward/Photos"
-
-[[pair]]
-name = "documents"
-account = "alice"
-apple_id = "alice@example.com"
-local = "/volume1/homeward/Documents"
-remote = "Documents"
-mode = "download"
-```
+Everything can also be done from the command line over SSH; see the
+[user guide](docs/user-guide.md#command-line).
 
 ## Documentation
 
 - [User guide](docs/user-guide.md): installation, sign-in, configuration, CLI, troubleshooting
+- [DSM UI and API](docs/ui.md): the DSM app, its JSON API and security model
 - [Architecture](docs/architecture.md): sync core, decision tables, safety nets, providers
 - [Architecture decision records](docs/adr/)
 
