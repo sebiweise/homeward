@@ -78,6 +78,17 @@ script start-stop-status stop
 if script start-stop-status status; then fail "daemon still running"; fi
 
 step "upgrade"
+# A bidirectional pair saved before the beta flag existed must keep working.
+mkdir -p "${ROOT}/share/nas2" "${ROOT}/share/cloud2"
+cat >> "${SYNOPKG_PKGVAR}/config.toml" <<EOF
+
+[[pair]]
+name = "legacy"
+local = "${ROOT}/share/nas2"
+remote = "${ROOT}/share/cloud2"
+remote_provider = "folder"
+mode = "bidirectional"
+EOF
 export SYNOPKG_PKG_STATUS=UPGRADE
 script preupgrade
 script preuninst
@@ -87,6 +98,7 @@ script preinst
 script postinst
 script postupgrade
 grep -q 'name = "smoke"' "${SYNOPKG_PKGVAR}/config.toml" || fail "config lost on upgrade"
+grep -q 'beta = true' "${SYNOPKG_PKGVAR}/config.toml" || fail "legacy pair not migrated"
 [ ! -d "${ROOT}/share/.homeward-backup" ] || fail "upgrade must not write a backup"
 script start-stop-status start
 script start-stop-status status || fail "daemon not running after upgrade"
