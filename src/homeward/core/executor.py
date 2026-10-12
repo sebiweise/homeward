@@ -44,12 +44,18 @@ class Executor:
         if plan.blocked and not allow_deletes:
             return RunResult(blocked=plan.blocked)
         result = RunResult()
+        failed: set[str] = set()
         for action in plan.actions:
+            if action.renamed_to in failed:
+                # The new name did not arrive; keep the old file until a later run.
+                log.info("keeping %s: its renamed copy %s failed", action.path, action.renamed_to)
+                continue
             try:
                 self._apply(action)
             except Exception as exc:
                 log.warning("%s %s failed: %s", action.kind, action.path, exc)
                 result.failed.append(Failure(action, f"{type(exc).__name__}: {exc}"))
+                failed.add(action.path)
             else:
                 result.done.append(action)
         return result

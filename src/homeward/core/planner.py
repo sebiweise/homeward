@@ -139,6 +139,98 @@ def _first_run_guard(action: Action) -> Action:
     return action
 
 
+def _content_matches(meta: FileMeta, record: FileRecord, record_version: str) -> bool:
+    if meta.size != record.size:
+        return False
+    if meta.version == record_version:
+        return True
+    return meta.sha256 is not None and meta.sha256 == record.sha256
+
+
+def _match_renames(actions: list[Action], records: Mapping[str, FileRecord]) -> list[Action]:
+    """Mark deletes whose content shows up as a new file on the same side.
+
+    A rename or move on one side looks like a deleted file plus a new one. It is still
+    carried out as exactly that (the old file goes to the other side's trash, the new
+    one is transferred), but the delete is not a loss, so the delete brake skips it.
+    The NAS keeps size and mtime on a rename, so its version token matches the record;
+    otherwise a known checksum must match.
+    """
+    new_local = [a for a in actions if a.kind is ActionKind.UPLOAD and a.path not in records]
+    new_remote = [a for a in actions if a.kind is ActionKind.DOWNLOAD and a.path not in records]
+    used: set[str] = set()
+    result = []
+    for action in actions:
+        record = records.get(action.path)
+        if action.kind in DELETE_KINDS and record is not None:
+            local_side = action.kind is ActionKind.DELETE_REMOTE
+            for new in new_local if local_side else new_remote:
+                meta = new.local if local_side else new.remote
+                version = record.local_version if local_side else record.remote_version
+                if new.path not in used and meta and _content_matches(meta, record, version):
+                    used.add(new.path)
+                    action = replace(
+                        action,
+                        renamed_to=new.path,
+                        reason=f"{action.reason}, renamed to {new.path}",
+                    )
+                    break
+        result.append(action)
+    return result
+
+
+def _prefixes(path: str) -> list[str]:
+    parts = PurePosixPath(path).parts
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _guard_case(actions: list[Action], remote_files: Mapping[str, FileMeta]) -> list[Action]:
+    """Skip uploads whose path differs only in upper/lower case from one in iCloud.
+
+    iCloud Drive does not keep two names apart that only differ in case, so such an
+    upload could land on the other file. Files the plan deletes in iCloud do not count,
+    which lets a case-only rename (``a.txt`` to ``A.txt``) through.
+    """
+    deleted = {a.path for a in actions if a.kind is ActionKind.DELETE_REMOTE}
+    seen: dict[str, str] = {}
+    for path in remote_files:
+        if path not in deleted:
+            seen.update((prefix.casefold(), prefix) for prefix in _prefixes(path))
+    result = []
+    for action in actions:
+        if action.kind is ActionKind.UPLOAD and action.remote is None:
+            prefixes = _prefixes(action.path)
+            clash = next(
+                (seen[p.casefold()] for p in prefixes if seen.get(p.casefold(), p) != p), None
+            )
+            if clash is not None:
+                action = replace(
+                    action,
+                    kind=ActionKind.SKIP,
+                    reason=f"iCloud already has {clash}, which differs only in upper/lower case",
+                )
+            else:
+                seen.update((p.casefold(), p) for p in prefixes)
+        result.append(action)
+    return result
+
+
+def _order(actions: list[Action]) -> list[Action]:
+    """Run deletes after all transfers, so a rename trashes the old file only once the
+    new one has arrived. A delete whose path equals a transferred one apart from case
+    runs first, because on iCloud the two would collide."""
+    created = {
+        a.path.casefold() for a in actions if a.kind in (ActionKind.UPLOAD, ActionKind.DOWNLOAD)
+    }
+
+    def rank(action: Action) -> int:
+        if action.kind not in DELETE_KINDS:
+            return 1
+        return 0 if action.path.casefold() in created else 2
+
+    return sorted(actions, key=rank)
+
+
 def build_plan(
     pair: str,
     mode: SyncMode,
@@ -149,6 +241,7 @@ def build_plan(
     excludes: Iterable[str] = (),
     brake: DeleteBrake | None = None,
     today: date | None = None,
+    remote_case_insensitive: bool = False,
 ) -> Plan:
     """Compare both sides with the last common state and decide every path."""
     patterns = tuple(excludes)
@@ -170,5 +263,9 @@ def build_plan(
             continue
         plan.actions.append(_first_run_guard(action) if first_run else action)
 
+    if remote_case_insensitive:
+        plan.actions = _guard_case(plan.actions, remote)
+    plan.actions = _match_renames(plan.actions, known)
+    plan.actions = _order(plan.actions)
     plan.blocked = (brake or DeleteBrake()).check(plan.deletes, plan.tracked)
     return plan

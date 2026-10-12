@@ -38,6 +38,7 @@ def sync_pair(
         excludes=pair.exclude,
         brake=pair.delete_brake,
         today=today,
+        remote_case_insensitive=getattr(remote, "case_insensitive", False),
     )
     result = None
     if not dry_run:

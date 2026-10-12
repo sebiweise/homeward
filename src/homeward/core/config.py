@@ -28,6 +28,7 @@ class PairConfig:
     account: str = "default"
     remote_provider: str = "icloud_drive"
     exclude: tuple[str, ...] = ()
+    beta: bool = False
     delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
 
 
@@ -83,6 +84,13 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
     except ValueError:
         choices = ", ".join(m.value for m in SyncMode)
         raise ConfigError(f"{where}: mode must be one of {choices}") from None
+    beta = entry.get("beta", False)
+    if not isinstance(beta, bool):
+        raise ConfigError(f"{where}: 'beta' must be true or false")
+    if mode is SyncMode.BIDIRECTIONAL and not beta:
+        raise ConfigError(
+            f"{where}: bidirectional sync is in beta; set beta = true to enable it for this pair"
+        )
     provider = _get(entry, "remote_provider", str, "icloud_drive", where)
     if provider not in REMOTE_PROVIDERS:
         raise ConfigError(f"{where}: remote_provider must be one of {', '.join(REMOTE_PROVIDERS)}")
@@ -103,6 +111,7 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         account=_get(entry, "account", str, "default", where),
         remote_provider=provider,
         exclude=tuple(exclude),
+        beta=beta,
         delete_brake=DeleteBrake(max_ratio=float(ratio), max_count=count),
     )
 

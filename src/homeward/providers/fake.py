@@ -25,9 +25,12 @@ class FakeProvider:
     methods are what the executor calls.
     """
 
-    def __init__(self, name: str = "fake", *, known_hashes: bool = True) -> None:
+    def __init__(
+        self, name: str = "fake", *, known_hashes: bool = True, case_insensitive: bool = False
+    ) -> None:
         self.name = name
         self.known_hashes = known_hashes
+        self.case_insensitive = case_insensitive
         self.files: dict[str, _Entry] = {}
         self.trash: list[tuple[str, bytes]] = []
         self.fail_paths: set[str] = set()
@@ -59,8 +62,7 @@ class FakeProvider:
 
     def write(self, path: str, data: BinaryIO, mtime: float) -> FileMeta:
         self._check(path)
-        if path in self.files:
-            raise FileExistsError(path)
+        self._check_free(path)
         return self.put(path, data.read(), mtime)
 
     def delete(self, path: str) -> None:
@@ -69,8 +71,7 @@ class FakeProvider:
 
     def move(self, path: str, new_path: str) -> FileMeta:
         self._check(path)
-        if new_path in self.files:
-            raise FileExistsError(new_path)
+        self._check_free(new_path)
         self.files[new_path] = self.files.pop(path)
         return self._meta(new_path)
 
@@ -80,6 +81,13 @@ class FakeProvider:
     def _check(self, path: str) -> None:
         if path in self.fail_paths:
             raise OSError(f"simulated failure for {path}")
+
+    def _check_free(self, path: str) -> None:
+        if path in self.files or (
+            self.case_insensitive
+            and any(other.casefold() == path.casefold() for other in self.files)
+        ):
+            raise FileExistsError(path)
 
     def _meta(self, path: str) -> FileMeta:
         entry = self.files[path]

@@ -24,6 +24,7 @@ local = "{tmp_path / "nas"}"
 remote = "{tmp_path / "cloud"}"
 remote_provider = "{provider}"
 mode = "bidirectional"
+beta = true
 """
     )
     return config
@@ -63,6 +64,23 @@ def test_sync_delete_brake_exit_code(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main(["sync", "--config", str(config), "--allow-deletes"]) == EXIT_OK
     assert not (tmp_path / "cloud" / "0.txt").exists()
     assert (tmp_path / "cloud" / ".homeward-papierkorb").is_dir()
+
+
+def test_sync_shows_renames(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = _config(tmp_path)
+    for i in range(3):
+        (tmp_path / "nas" / f"{i}.txt").write_text(str(i))
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    (tmp_path / "nas" / "0.txt").rename(tmp_path / "nas" / "zero.txt")
+    capsys.readouterr()
+
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "(bidirectional, beta)" in out
+    assert "0.txt -> zero.txt" in out
+    assert "1 of the deletes are renames" in out
+    assert (tmp_path / "cloud" / "zero.txt").read_text() == "0"
+    assert not (tmp_path / "cloud" / "0.txt").exists()
 
 
 def test_sync_icloud_not_available_yet(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

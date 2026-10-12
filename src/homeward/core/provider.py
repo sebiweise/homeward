@@ -13,6 +13,8 @@ class Provider(Protocol):
     """A tree of files addressed by relative POSIX paths."""
 
     name: str
+    # Optional: a provider whose names ignore upper/lower case (iCloud Drive) sets
+    # ``case_insensitive = True``; the planner then avoids uploads that would collide.
 
     def list_files(self) -> dict[str, FileMeta]:
         """Return every file below the root, keyed by relative path."""
