@@ -34,7 +34,9 @@ from homeward.providers.icloud_photos import ICloudPhotosSource, PhotosNotReady
 from homeward.providers.nas import NasProvider, find_recycle_bin
 from homeward.runtime import EventLogHandler, Paths
 
-log = logging.getLogger(__name__)
+# Named explicitly: the daemon runs this module as __main__ (python -m homeward.cli),
+# and only loggers below "homeward" reach the event log.
+log = logging.getLogger("homeward.cli")
 
 EXIT_OK = 0
 EXIT_FAILED = 1

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -298,3 +299,23 @@ def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     events = read_events(Paths(var_dir=tmp_path, config=config))
     assert [(e.code, e.level) for e in events] == [("icloud_indexing", "warning"), ("log", "error")]
     assert events[1].message == "the run stopped: Photos service not available ('indexing')"
+
+
+def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
+    # The daemon starts runs with `python -m homeward.cli`, where __name__ is __main__.
+    import subprocess
+    import sys
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'state_dir = "state"\n[[photos]]\nname = "me"\naccount = "me"\n'
+        f'apple_id = "me@example.com"\ntarget = "{tmp_path / "photos"}"\n'
+    )
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+    run = subprocess.run(
+        [sys.executable, "-m", "homeward.cli", "photos", "--config", str(config)],
+        env=env, capture_output=True, text=True, check=False,
+    )  # fmt: skip
+    assert run.returncode == 1, run.stderr
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [e["code"] for e in events] == ["login_required"]
