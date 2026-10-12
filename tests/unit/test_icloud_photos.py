@@ -604,3 +604,14 @@ def test_unauthorized_download_falls_back_to_the_icloud_session() -> None:
     with source.open_read(item) as stream:
         assert stream.read() == b"https://cdn/a"
     assert [url for url, _ in service.session.requests] == ["https://cdn/a"]
+
+
+def test_shared_album_files_with_size_zero_have_no_expected_size() -> None:
+    stream = StreamAsset(
+        "x", "x.JPG", {"original": {"url": "https://cdn/x", "size": 0, "filename": "x.JPG"}}
+    )
+    service = Service(
+        {"root": Library_([], [])}, [SharedPhotoStreamAlbum("g", "Kroatien", [stream])]
+    )
+    [item] = ICloudPhotosSource(service, [Library.SHARED_ALBUMS]).list_items()
+    assert item.size is None

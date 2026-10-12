@@ -438,13 +438,13 @@ def _resources(asset: Any) -> dict[str, _Resource]:
     resources = getattr(asset, "resources", None)
     if resources is not None:
         for key, res in resources.items():
-            result[key] = _Resource(res.filename, res.url, res.size, res.checksum)
+            result[key] = _Resource(res.filename, res.url, _size(res.size), res.checksum)
         return result
     for key, version in (getattr(asset, "versions", None) or {}).items():
         result[key] = _Resource(
             version.get("filename") or asset.filename,
             version.get("url"),
-            version.get("size"),
+            _size(version.get("size")),
             version.get("checksum"),
         )
     return result
@@ -467,7 +467,7 @@ def _edited(asset: Any, record: Any) -> dict[str, _Resource]:
         default = ".MOV" if key == "edited_video" else ".JPG"
         ext = extensions.get(file_type, default) if isinstance(file_type, str) else default
         result[key] = _Resource(
-            f"{stem}{EDITED_SUFFIX}{ext}", url, size, _field(record, f"{prefix}Fingerprint")
+            f"{stem}{EDITED_SUFFIX}{ext}", url, _size(size), _field(record, f"{prefix}Fingerprint")
         )
     return result
 
@@ -488,6 +488,16 @@ def _status(exc: Exception) -> object:
     if isinstance(code, int):
         return code
     return getattr(getattr(exc, "response", None), "status_code", None)
+
+
+def _size(value: object) -> int | None:
+    """A file size Apple reported, or None when it is unknown. Older shared albums
+    report 0 for every file, which must not fail the download's size check."""
+    try:
+        size = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
 
 
 def _expired(exc: Exception) -> bool:
