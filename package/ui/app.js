@@ -293,6 +293,9 @@ async function renderStatus() {
     document.getElementById("daemon").textContent = daemon.running
         ? t("status:daemon_running", daemon.running)
         : Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
+    const service = [t("status:api_user", data.api_user || "?")];
+    if (daemon.interval_minutes) service.push(t("status:interval", daemon.interval_minutes));
+    document.getElementById("service").textContent = service.join(" · ");
     const notices = data.notices || [];
     document
         .getElementById("notices")

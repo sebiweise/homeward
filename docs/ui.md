@@ -1,7 +1,8 @@
 # DSM UI and API
 
 The DSM desktop app (`package/ui/desktop.js`) opens a window that hosts a plain
-HTML page (`package/ui/index.html`, `app.js`, `style.css`). The page talks to one
+HTML page (`package/ui/index.html`, `app.js`, `homeward.css`; never name a file
+`style.css` there, DSM loads that into the whole desktop). The page talks to one
 JSON endpoint, `api.cgi`, which runs `python -m homeward.api.cgi` as the package user.
 Strings live in `package/ui/texts/{enu,ger}/strings`; the page loads them itself.
 

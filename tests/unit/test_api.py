@@ -515,3 +515,12 @@ def test_pairs_get_the_apple_id_of_their_account(client: Client, tmp_path: Path)
     client.call("pairs.create", post=True, pair=_pair(tmp_path, remote_provider="icloud_drive"))
     (pair,) = tomllib.loads(client.paths.config.read_text())["pair"]
     assert pair["apple_id"] == "a@b.de"
+
+
+def test_version_comes_from_the_dsm_package(tmp_path: Path) -> None:
+    from homeward.api.handlers.common import package_version
+
+    info = tmp_path / "INFO"
+    info.write_text('package="homeward"\nversion="0.1.0-2"\n')
+    assert package_version(info) == "0.1.0-2"
+    assert package_version(tmp_path / "missing")  # falls back to the wheel's version

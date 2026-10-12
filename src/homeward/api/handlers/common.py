@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 from homeward.api.errors import ApiError
 from homeward.core.config import Config
@@ -20,7 +21,17 @@ def check_name(value: str, what: str) -> str:
     return value
 
 
-def package_version() -> str:
+DSM_INFO = Path("/var/packages/homeward/INFO")
+
+
+def package_version(info: Path = DSM_INFO) -> str:
+    """The version Package Center shows, else the installed Python package's."""
+    try:
+        for line in info.read_text(encoding="utf-8").splitlines():
+            if line.startswith("version="):
+                return line.partition("=")[2].strip().strip('"')
+    except OSError:
+        pass
     try:
         return version("homeward")
     except PackageNotFoundError:

@@ -62,3 +62,9 @@ def test_modes_states_and_notifications_have_texts() -> None:
     }
     expected |= {f"event:src_{kind}" for kind in ("photos", "pair", "account", "service")}
     assert expected - keys == set()
+
+
+def test_no_stylesheet_leaks_into_the_dsm_desktop() -> None:
+    # DSM injects a third-party app's ui/style.css into the whole desktop page.
+    assert not (UI / "style.css").exists()
+    assert 'href="homeward.css"' in (UI / "index.html").read_text(encoding="utf-8")
