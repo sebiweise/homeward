@@ -17,8 +17,12 @@ venv/bin/pip install homeward-*.whl     # Wheel bekommst du von mir
 venv/bin/homeward --version
 ```
 
-Anmeldung und 2FA laufen so wie in der M3-Anleitung beschrieben (der Befehl dafür
-kommt mit M3).
+Das Wheel muss M2 (Anmeldung), M3 (Drive-Provider) und M4 enthalten. Einmal
+anmelden, mit Passwort und 2FA-Code:
+
+```sh
+venv/bin/homeward login --account default
+```
 
 ## 2. Testordner und Konfiguration
 
