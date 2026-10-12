@@ -131,6 +131,12 @@ class PhotoActionKind(StrEnum):
     RETURNED = "returned"  # back in iCloud after it was gone (e.g. restored there)
 
 
+_FILE_KINDS = frozenset(
+    {PhotoActionKind.DOWNLOAD, PhotoActionKind.RESTORE, PhotoActionKind.REPLACE}
+)
+PROGRESS_EVERY = 50
+
+
 @dataclass(frozen=True, slots=True)
 class PhotoAction:
     kind: PhotoActionKind
@@ -303,6 +309,8 @@ class PhotoExecutor:
         result = PhotoRunResult()
         # Files first, so links of the same run find their target.
         order = {kind: i for i, kind in enumerate(PhotoActionKind)}
+        files = sum(1 for a in plan.actions if a.kind in _FILE_KINDS)
+        fetched = 0
         for action in sorted(plan.actions, key=lambda a: order[a.kind]):
             try:
                 self._apply(action)
@@ -311,6 +319,10 @@ class PhotoExecutor:
                 result.failed.append(PhotoFailure(action, f"{type(exc).__name__}: {exc}"))
             else:
                 result.done.append(action)
+            if action.kind in _FILE_KINDS:
+                fetched += 1
+                if fetched % PROGRESS_EVERY == 0 or fetched == files:
+                    log.info("%d of %d files downloaded", fetched, files)
         if result.ok and not plan.unchanged:
             self.state.set_cursor(self.job, plan.cursor)
         return result

@@ -2,6 +2,7 @@
 
 import argparse
 import getpass
+import logging
 import os
 import sys
 from importlib.metadata import PackageNotFoundError, version
@@ -25,6 +26,8 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.providers.icloud_photos import ICloudPhotosSource
 from homeward.providers.nas import NasProvider
+
+log = logging.getLogger(__name__)
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -100,6 +103,22 @@ def _apple_id(job: PhotosConfig) -> str:
     raise ConfigError(f"photos {job.name!r}: set apple_id")
 
 
+class _StderrHandler(logging.Handler):
+    """Writes progress to whatever ``sys.stderr`` is at the time (works with redirects)."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        print(self.format(record), file=sys.stderr, flush=True)
+
+
+def _setup_logging() -> None:
+    logger = logging.getLogger("homeward")
+    if not any(isinstance(h, _StderrHandler) for h in logger.handlers):
+        handler = _StderrHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 def _photo_source(config: Config, job: PhotosConfig) -> PhotoSource:
     service = open_service(job.account, _apple_id(job), config.state_dir)
     return ICloudPhotosSource(
@@ -135,6 +154,7 @@ def _cmd_photos(args: argparse.Namespace) -> int:
         raise ConfigError("no photos jobs configured")
     status = EXIT_OK
     for job in jobs:
+        log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
         try:
             source = _photo_source(config, job)
         except LoginRequired as exc:
@@ -205,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     login.add_argument("--apple-id", help="Apple ID (default: from the account's photos job)")
 
     args = parser.parse_args(argv)
+    _setup_logging()
     commands = {"sync": _cmd_sync, "photos": _cmd_photos, "login": _cmd_login}
     if args.command not in commands:
         parser.print_help()

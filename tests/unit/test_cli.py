@@ -171,3 +171,19 @@ def test_login_flow(
     )
     assert "rejected" in capsys.readouterr().err
     assert main(["login", "--config", str(config), "--account", "nobody"]) == EXIT_USAGE
+
+
+def test_photos_progress_on_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "reading iCloud" in err
+    assert "1 of 1 files downloaded" in err

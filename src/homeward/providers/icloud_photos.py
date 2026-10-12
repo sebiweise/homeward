@@ -19,6 +19,7 @@ PERSONAL_KEY = "root"
 SHARED_PREFIX = "shared:"
 USER_ALBUM_CLASS = "PhotoAlbum"  # smart albums and folders are subclasses with other names
 TIMEOUT = 60
+PROGRESS_EVERY = 500
 
 
 class ICloudPhotosSource:
@@ -68,9 +69,12 @@ class ICloudPhotosSource:
         for lib, key, library in self._libraries():
             # Shared Library albums are not readable through pyicloud 2.7.
             members = self._album_members(library) if lib is Library.PERSONAL else {}
-            for asset in library.all.photos:
+            count = 0
+            for count, asset in enumerate(library.all.photos, 1):
                 yield from self._items(asset, lib, tuple(sorted(members.get(asset.id, ()))))
-            log.info("listed library %s", key)
+                if count % PROGRESS_EVERY == 0:
+                    log.info("library %s: %d photos read", key, count)
+            log.info("library %s: %d photos read, done", key, count)
 
     def open_read(self, item: PhotoItem) -> BinaryIO:
         url = self._urls.get(item.key)
@@ -86,10 +90,10 @@ class ICloudPhotosSource:
         members: dict[str, set[str]] = defaultdict(set)
         if not self.albums:
             return members
-        for album in library.albums:
-            if type(album).__name__ != USER_ALBUM_CLASS:
-                continue
+        albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
+        for number, album in enumerate(albums, 1):
             name = album.fullname
+            log.info("reading album %d of %d: %s", number, len(albums), name)
             for asset in album.photos:
                 members[asset.id].add(name)
         return members
