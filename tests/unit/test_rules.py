@@ -8,7 +8,17 @@ from homeward.core.rules import is_excluded
 
 @pytest.mark.parametrize(
     "path",
-    ["@eaDir/thumb.jpg", "a/b/.DS_Store", "#recycle/x.txt", "docs/Thumbs.db"],
+    [
+        "@eaDir/thumb.jpg",
+        "a/b/.DS_Store",
+        "#recycle/x.txt",
+        "docs/Thumbs.db",
+        "docs/._report.pdf",
+        "Folder/Icon\r",
+        "docs/~$report.docx",
+        "docs/.~lock.calc.ods#",
+        ".Spotlight-V100/store.db",
+    ],
 )
 def test_default_excludes(path: str) -> None:
     assert is_excluded(path)

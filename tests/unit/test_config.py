@@ -16,6 +16,7 @@ mode = "bidirectional"
 beta = true
 exclude = ["*.tmp"]
 max_delete_count = 10
+trash_days = 7
 
 [[pair]]
 name = "photos-out"
@@ -37,6 +38,8 @@ def test_load_valid(tmp_path: Path) -> None:
     assert docs.exclude == ("*.tmp",)
     assert docs.delete_brake.max_count == 10
     assert docs.delete_brake.max_ratio == 0.10
+    assert docs.trash_days == 7
+    assert config.pair("photos-out").trash_days == 30
     assert config.pair("photos-out").remote_provider == "folder"
     assert config.state_path("anna") == tmp_path / "state" / "anna.sqlite3"
 
@@ -57,6 +60,10 @@ def test_load_valid(tmp_path: Path) -> None:
         (
             {"name": "x", "local": "/a", "remote": "r", "mode": "bidirectional", "beta": "yes"},
             "true or false",
+        ),
+        (
+            {"name": "x", "local": "/a", "remote": "r", "mode": "upload", "trash_days": -1},
+            "trash_days",
         ),
     ],
 )
