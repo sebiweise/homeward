@@ -28,6 +28,7 @@ Date: 2026-10-12 · Status: accepted
 | File renamed in place | **no** folder etag changes, not even its own folder's |
 | File etag after upload, 30 s later | stable (`docwsid:etag` recorded = listed) |
 | File moved / renamed | same `docwsid`, new etag |
+| File edited in place on iPhone (two folders deep) | same `docwsid`, new etag, new size and date; every ancestor etag changes |
 | 1 GB streamed upload | 205 s, peak RSS 80 MB (pyicloud: 2.1 GB), SHA-256 match |
 
 Consequences:
@@ -38,5 +39,4 @@ Consequences:
   not re-uploaded. `docwsid` survives moves and renames, which lets bidirectional
   sync (M4) recognise renames in iCloud.
 - Streaming the upload body fixes the memory problem from ADR 0001.
-- Open: whether an in-place edit (iPhone/Mac) changes the file's etag; the probe's
-  `snapshot`/`compare` now records file versions to check this.
+- Edits made on other devices change the file's version, so the planner sees them.
