@@ -232,3 +232,29 @@ def test_daemon_runs_requests(tmp_path: Path) -> None:
     assert scheduler.status["pair:a"].started_at == clock.now
     status = json.loads((tmp_path / "status.json").read_text())
     assert status["running"] is None
+
+
+def test_photos_jobs_are_scheduled_and_requestable(tmp_path: Path) -> None:
+    config = _config(tmp_path, pairs=("a",))
+    with config.open("a") as fh:
+        fh.write(
+            f"""
+[[photos]]
+name = "me"
+account = "me"
+apple_id = "me@example.com"
+target = "{tmp_path / "photos"}"
+"""
+        )
+    plan = load_plan(config)
+    assert [job.name for job in plan.jobs] == ["pair:a", "photos:me"]
+    assert plan.jobs[1].argv == ("photos", "--config", str(config), "--job", "me")
+
+    runner = ArgvRecorder()
+    daemon = Daemon(
+        config, Scheduler(tmp_path / "status.json", runner, Clock()), SubprocessRunner()
+    )
+    daemon.cycle()
+    _request(tmp_path, "p", '{"pair": "photos:me", "dry_run": true, "allow_deletes": true}')
+    daemon.cycle()
+    assert runner.argv[-1] == ("photos", "--config", str(config), "--job", "me", "--dry-run")

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from homeward.providers.nas import NasProvider
+from homeward.providers.nas import NasProvider, find_recycle_bin
 
 
 @pytest.fixture
@@ -66,3 +66,46 @@ def test_lists_skip_excluded_and_symlinks(nas: NasProvider, tmp_path: Path) -> N
 def test_rejects_paths_outside_root(nas: NasProvider, path: str) -> None:
     with pytest.raises(ValueError):
         nas.open_read(path)
+
+
+def test_delete_uses_the_share_recycle_bin(tmp_path: Path) -> None:
+    share = tmp_path / "volume1" / "docs"
+    root = share / "Work"
+    (share / "#recycle").mkdir(parents=True)
+    root.mkdir()
+    bin_ = find_recycle_bin(root)
+    assert bin_ == share / "#recycle"
+    nas = NasProvider(root, recycle_bin=bin_)
+    nas.write("a/b.txt", io.BytesIO(b"1"), mtime=1.0)
+    nas.delete("a/b.txt")
+    nas.write("a/b.txt", io.BytesIO(b"2"), mtime=1.0)
+    nas.delete("a/b.txt")
+    assert (share / "#recycle" / "Work" / "a" / "b.txt").read_bytes() == b"1"
+    assert (share / "#recycle" / "Work" / "a" / "b.txt (2)").read_bytes() == b"2"
+    assert not (root / ".homeward-papierkorb").exists()
+
+
+def test_no_recycle_bin_found(tmp_path: Path) -> None:
+    assert find_recycle_bin(tmp_path / "volume1" / "docs") is None
+
+
+def test_unwritable_recycle_bin_falls_back_to_own_trash(tmp_path: Path) -> None:
+    root = tmp_path / "docs"
+    root.mkdir()
+    blocked = tmp_path / "#recycle"
+    blocked.write_text("not a folder")  # any move into it fails
+    nas = NasProvider(root, recycle_bin=blocked, today=lambda: date(2026, 10, 11))
+    nas.write("a.txt", io.BytesIO(b"1"), mtime=1.0)
+    nas.delete("a.txt")
+    assert (root / ".homeward-papierkorb" / "2026-10-11" / "a.txt").read_bytes() == b"1"
+
+
+def test_purge_trash_removes_only_old_day_folders(tmp_path: Path) -> None:
+    trash = tmp_path / ".homeward-papierkorb"
+    for name in ("2026-09-01", "2026-09-11", "2026-09-12", "notes"):
+        (trash / name).mkdir(parents=True)
+        (trash / name / "f.txt").write_text("x")
+    nas = NasProvider(tmp_path, today=lambda: date(2026, 10, 12))
+    assert nas.purge_trash(0) == 0  # 0 keeps everything
+    assert nas.purge_trash(30) == 2
+    assert sorted(p.name for p in trash.iterdir()) == ["2026-09-12", "notes"]

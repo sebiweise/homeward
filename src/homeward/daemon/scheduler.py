@@ -1,17 +1,19 @@
 """Interval-based sync scheduler.
 
-The daemon runs every sync pair once per interval. Each run is its own
-``homeward sync --pair NAME`` process: a crash, or the memory a large transfer
-needs, ends with the run, and the long-running daemon itself stays small.
+The daemon runs every sync pair and photos job once per interval. Each run is its
+own ``homeward sync --pair NAME`` (or ``homeward photos --job NAME``) process: a
+crash, or the memory a large transfer needs, ends with the run, and the
+long-running daemon itself stays small.
 
 Signals: SIGTERM/SIGINT stop the daemon (a running sync is terminated; the
 executor records every finished step, so the next run picks up the rest),
 SIGUSR1 runs every job now. The config file is re-read before every cycle.
 
-"Sync now" requests from the DSM UI are files ``requests/<pair>.json`` next to the
-config (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``); the daemon
-removes each one and runs it. ``status.json`` holds ``running`` (the pair being
-synced, if any) and the last result and next run of every pair.
+"Sync now" requests from the DSM UI are files ``requests/<name>.json`` next to the
+config (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``, where ``pair`` is a
+pair name or ``photos:<job>``); the daemon removes each one and runs it.
+``status.json`` holds ``running`` (the pair, or ``photos:<job>``, being synced) and
+the last result and next run of every job.
 """
 
 import argparse
@@ -107,7 +109,7 @@ class Plan:
 
 
 def load_plan(config_path: Path) -> Plan:
-    """Read the ``[daemon]`` table and turn every sync pair into a job."""
+    """Read the ``[daemon]`` table and turn every sync pair and photos job into a job."""
     config = load_config(config_path)
     with config_path.open("rb") as fh:
         data = tomllib.load(fh)
@@ -115,6 +117,10 @@ def load_plan(config_path: Path) -> Plan:
     jobs = [
         Job(f"pair:{pair.name}", ("sync", "--config", str(config_path), "--pair", pair.name))
         for pair in config.pairs
+    ]
+    jobs += [
+        Job(f"photos:{photos.name}", ("photos", "--config", str(config_path), "--job", photos.name))
+        for photos in config.photos
     ]
     return Plan(settings, jobs)
 
@@ -339,11 +345,15 @@ class Daemon:
         for request in take_requests(self.requests_dir):
             if self.stop.is_set():
                 break
-            job = jobs.get(f"pair:{request.pair}")
+            # Requests name a pair, or a photos job as "photos:<name>".
+            name = request.pair if ":" in request.pair else f"pair:{request.pair}"
+            job = jobs.get(name)
             if job is None:
-                log.warning("run request for unknown pair %r ignored", request.pair)
+                log.warning("run request for unknown job %r ignored", request.pair)
                 continue
-            extra = ("--dry-run",) * request.dry_run + ("--allow-deletes",) * request.allow_deletes
+            extra = ("--dry-run",) * request.dry_run
+            if request.allow_deletes and name.startswith("pair:"):
+                extra += ("--allow-deletes",)
             log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
             self.scheduler.run(Job(job.name, job.argv + extra), record=not request.dry_run)
 

@@ -1,4 +1,4 @@
-# ADR 0002: DSM package build and runtime
+# ADR 0003: DSM package build and runtime
 
 Date: 2026-10-12 · Status: accepted
 
@@ -30,9 +30,9 @@ assumed spksrc for native wheels (`cryptography`, `pydantic-core`, `protobuf`, `
 - **Persistent files** live in `/var/packages/homeward/var` (kept on upgrade): `config.toml`,
   `state/`, `status.json`, `homeward.log`. A real uninstall first copies config and state
   to `homeward/.homeward-backup/<timestamp>/` in the share; synced files are never touched.
-- **Daemon:** `homeward-daemon` runs each pair every `[daemon] interval_minutes` (default
+- **Daemon:** `homeward-daemon` runs each pair and `[[photos]]` job every `[daemon] interval_minutes` (default
   60, minimum 5) as its own `homeward sync --pair` process, so memory used by large
-  transfers is freed after each run. It re-reads the config every cycle, keeps
+  transfers is freed after each run (`homeward photos --job` for photos jobs). It re-reads the config every cycle, keeps
   `status.json` for the UI (`running` plus last result and next run per pair), runs
   "sync now" requests from `var/requests/<pair>.json` (the M6 UI contract; dry runs do
   not move the schedule), runs everything at once on SIGUSR1, and on SIGTERM stops the

@@ -11,11 +11,25 @@ TRASH_DIR = ".homeward-papierkorb"
 TEMP_SUFFIX = ".homeward-tmp"
 
 DEFAULT_EXCLUDES: tuple[str, ...] = (
+    # Synology
     "@eaDir",
     "#recycle",
-    ".DS_Store",
-    "Thumbs.db",
+    "#snapshot",
     ".SynologyWorkingDirectory",
+    # macOS and Windows metadata
+    ".DS_Store",
+    "._*",
+    "Icon\r",
+    ".Trashes",
+    ".Spotlight-V100",
+    ".fseventsd",
+    ".TemporaryItems",
+    "Thumbs.db",
+    "desktop.ini",
+    # Lock files of open Office / LibreOffice documents
+    "~$*",
+    ".~lock.*#",
+    # Homeward's own trash and partial downloads
     TRASH_DIR,
     f"*{TEMP_SUFFIX}",
 )
