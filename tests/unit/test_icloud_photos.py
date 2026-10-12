@@ -51,6 +51,9 @@ class Album:
     fullname: str
     photos: list[Asset]
 
+    def get(self, asset_id: str) -> Asset | None:
+        return next((a for a in self.photos if a.id == asset_id), None)
+
 
 class SmartPhotoAlbum(Album):
     pass
@@ -74,6 +77,12 @@ class Library_:
         return self.token
 
 
+class Gone(Exception):
+    """How pyicloud reports Apple's 410 for an expired download URL."""
+
+    code = 410
+
+
 class Response:
     def __init__(self, data: bytes) -> None:
         self.raw = io.BytesIO(data)
@@ -85,9 +94,12 @@ class Response:
 class Session:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        self.expired: set[str] = set()
 
     def get(self, url: str, **kwargs: Any) -> Response:
         self.requests.append((url, kwargs))
+        if url in self.expired:
+            raise Gone("Apple no longer serves cvws.icloud-content.com/B/x/${f}")
         return Response(url.encode())
 
 
@@ -339,3 +351,52 @@ def test_pyicloud_xmp_skips_photos_without_metadata() -> None:
     assert pyicloud_xmp(SimpleNamespace(asset_record=record(assetDate=1700000000000))) is None
     data = pyicloud_xmp(SimpleNamespace(asset_record=record(isFavorite=1)))
     assert data is not None and b"<xmp:Rating>5</xmp:Rating>" in data
+
+
+def test_expired_url_is_fetched_again() -> None:
+    service = make_service()
+    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    item = next(i for i in source.list_items() if i.key == "personal/a/original")
+    service.session.expired.add("https://cdn/a")
+    service.photos.libraries["root"].all.photos[0].resources["original"].url = "https://cdn/a2"
+
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/a2"
+    assert [url for url, _ in service.session.requests] == ["https://cdn/a", "https://cdn/a2"]
+
+
+def test_expired_edited_url_is_fetched_again() -> None:
+    service = rich_service()
+    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    item = next(i for i in source.list_items() if i.key == "personal/r/edited")
+    service.session.expired.add("https://cdn/r-edit")
+    asset = service.photos.libraries["root"].all.photos[0]
+    assert asset.asset_record is not None
+    asset.asset_record["fields"]["resJPEGFullRes"]["value"]["downloadURL"] = "https://cdn/r-new"
+
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/r-new"
+
+
+def test_other_download_errors_are_not_retried() -> None:
+    service = make_service()
+    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    item = next(i for i in source.list_items() if i.key == "personal/a/original")
+
+    def broken(url: str, **kwargs: Any) -> Response:
+        raise ConnectionError("reset")
+
+    service.session.get = broken  # type: ignore[method-assign]
+    with pytest.raises(ConnectionError):
+        source.open_read(item)
+
+
+def test_expired_url_of_a_deleted_photo_fails() -> None:
+    service = make_service()
+    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    item = next(i for i in source.list_items() if i.key == "personal/a/original")
+    service.session.expired.add("https://cdn/a")
+    del service.photos.libraries["root"].all.photos[0]
+
+    with pytest.raises(Gone):
+        source.open_read(item)

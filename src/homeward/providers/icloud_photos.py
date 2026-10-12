@@ -28,6 +28,8 @@ SMART_ALBUM_CLASS = "SmartPhotoAlbum"
 HIDDEN_ALBUM = "Hidden"
 EDITED_SUFFIX = " (bearbeitet)"
 TIMEOUT = 60
+# CloudKit download URLs are signed and expire after some hours; Apple then answers 410.
+EXPIRED_STATUS = 410
 PROGRESS_EVERY = 500
 
 # Edited renders live on the asset record (the master record holds the originals).
@@ -78,6 +80,8 @@ class ICloudPhotosSource:
         self._xmp_builder = xmp_builder or pyicloud_xmp
         self._urls: dict[str, str] = {}
         self._blobs: dict[str, bytes] = {}
+        # Where to look an asset up again when its URL has expired: (container, id, resource).
+        self._origins: dict[str, tuple[Any, str, str]] = {}
 
     # PhotoSource interface
 
@@ -109,6 +113,7 @@ class ICloudPhotosSource:
     def list_items(self) -> Iterator[PhotoItem]:
         self._urls.clear()
         self._blobs.clear()
+        self._origins.clear()
         personal = self.service.photos.libraries[PERSONAL_KEY]
         # Albums live in the personal library but may hold Shared Library photos too.
         # (pyicloud 2.7 cannot read the Shared Library's own albums.)
@@ -118,7 +123,7 @@ class ICloudPhotosSource:
             count = 0
             for count, asset in enumerate(library.all.photos, 1):
                 unmatched.discard(asset.id)
-                yield from self._items(asset, lib, members.get(asset.id, ()))
+                yield from self._items(asset, lib, members.get(asset.id, ()), origin=library.all)
                 if count % PROGRESS_EVERY == 0:
                     log.info("library %s: %d photos read", key, count)
             log.info("library %s: %d photos read, done", key, count)
@@ -136,11 +141,43 @@ class ICloudPhotosSource:
         url = self._urls.get(item.key)
         if url is None:
             raise KeyError(f"{item.key} was not listed in this run")
-        response = self.service.session.get(url, stream=True, timeout=TIMEOUT)
-        response.raise_for_status()
+        try:
+            response = self._get(url)
+        except Exception as exc:
+            fresh = self._fresh_url(item.key) if _expired(exc) else None
+            if fresh is None:
+                raise
+            log.debug("download URL of %s expired, fetched a new one", item.key)
+            self._urls[item.key] = fresh
+            response = self._get(fresh)
         raw = response.raw
         raw.decode_content = True
         return cast(BinaryIO, raw)
+
+    def _get(self, url: str) -> Any:
+        response = self.service.session.get(url, stream=True, timeout=TIMEOUT)
+        response.raise_for_status()
+        return response
+
+    def _fresh_url(self, key: str) -> str | None:
+        """Look the asset up again for a new signed URL of the same resource."""
+        origin = self._origins.get(key)
+        if origin is None:
+            return None
+        container, asset_id, resource = origin
+        try:
+            asset = container.get(asset_id)
+        except Exception as exc:
+            log.warning("could not refresh %s: %s", key, exc)
+            return None
+        if asset is None:
+            return None
+        resources = _resources(asset)
+        record = getattr(asset, "asset_record", None)
+        if record is not None:
+            resources.update(_edited(asset, record))
+        found = resources.get(resource)
+        return found.url if found is not None and found.url else None
 
     # Listing
 
@@ -183,8 +220,9 @@ class ICloudPhotosSource:
                 count = 0
                 for count, asset in enumerate(album.photos, 1):  # noqa: B007
                     yield from self._items(
-                        asset, Library.PERSONAL, members.get(asset.id, ()), hidden=True
-                    )
+                        asset, Library.PERSONAL, members.get(asset.id, ()), hidden=True,
+                        origin=album,
+                    )  # fmt: skip
                 log.info("hidden photos: %d read", count)
                 return
 
@@ -206,6 +244,7 @@ class ICloudPhotosSource:
         hidden: bool = False,
         collection: str | None = None,
         id_prefix: str | None = None,
+        origin: Any = None,
     ) -> Iterator[PhotoItem]:
         is_movie = asset.item_type == "movie"
         if is_movie and not self.videos:
@@ -253,6 +292,8 @@ class ICloudPhotosSource:
             if key == "original":
                 original_name = item.filename
             self._urls[item.key] = resource.url
+            if origin is not None:
+                self._origins[item.key] = (origin, asset.id, key)
             yield item
 
         if self.xmp and record is not None and original_name is not None:
@@ -313,6 +354,17 @@ def _edited(asset: Any, record: Any) -> dict[str, _Resource]:
             f"{stem}{EDITED_SUFFIX}{ext}", url, size, _field(record, f"{prefix}Fingerprint")
         )
     return result
+
+
+def _expired(exc: Exception) -> bool:
+    """An expired download URL: pyicloud reports Apple's 410 as a withdrawn endpoint."""
+    for value in (
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if value == EXPIRED_STATUS:
+            return True
+    return type(exc).__name__ == "PyiCloudEndpointGoneException"
 
 
 def _field(record: Any, name: str) -> Any:
