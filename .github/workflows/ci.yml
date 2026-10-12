@@ -12,10 +12,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -32,10 +32,10 @@ jobs:
       matrix:
         arch: [x64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         id: python
         with:
           python-version: "3.12"
@@ -43,7 +43,7 @@ jobs:
       # The runner is x86_64, so only the x64 package can be installed here.
       - if: matrix.arch == 'x64'
         run: sh tools/test_spk_lifecycle.sh dist/homeward-*-x64.spk "${{ steps.python.outputs.python-path }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: homeward-spk-${{ matrix.arch }}
           path: dist/*.spk
