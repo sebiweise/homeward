@@ -20,7 +20,7 @@ def find_recycle_bin(root: Path) -> Path | None:
     """Return the Synology recycle bin (``#recycle``) that covers ``root``, if enabled.
 
     DSM keeps it at the top of a shared folder (``/volume1/docs/#recycle``) and, for
-    the homes share, in each home folder (``/volume1/homes/sebastian/#recycle``). It
+    the homes share, in each home folder (``/volume1/homes/alice/#recycle``). It
     only exists while the recycle bin is enabled for that share.
     """
     for folder in (root, *root.parents):

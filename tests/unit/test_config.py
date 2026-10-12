@@ -88,7 +88,7 @@ state_dir = "/state"
 name = "seb"
 account = "seb"
 apple_id = "seb@example.com"
-target = "/volume1/photo/Sebastian"
+target = "/volume1/photo/Alice"
 
 [[photos]]
 name = "anna"

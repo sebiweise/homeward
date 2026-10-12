@@ -10,12 +10,30 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Sebastian Goscinski" }]
+keywords = ["synology", "dsm", "icloud", "icloud-photos", "icloud-drive", "backup", "sync", "nas"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Archiving :: Backup",
+    "Topic :: System :: Archiving :: Mirroring",
+    "Typing :: Typed",
+]
 dynamic = ["version"]
 dependencies = []
 
 [project.optional-dependencies]
 icloud = ["pyicloud>=2.7,<2.8", "rich"]  # pyicloud 2.7 imports rich without declaring it
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+Homepage = "https://github.com/sebiweise/homeward"
+Documentation = "https://github.com/sebiweise/homeward/blob/master/docs/user-guide.md"
+Issues = "https://github.com/sebiweise/homeward/issues"
+Changelog = "https://github.com/sebiweise/homeward/releases"
 
 [project.scripts]
 homeward = "homeward.cli:main"
