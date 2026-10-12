@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import fcntl
+import functools
 import getpass
 import logging
 import os
@@ -29,10 +30,13 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
-from homeward.providers.icloud_photos import ICloudPhotosSource
+from homeward.providers.icloud_photos import ICloudPhotosSource, PhotosNotReady
 from homeward.providers.nas import NasProvider, find_recycle_bin
+from homeward.runtime import EventLogHandler, Paths
 
-log = logging.getLogger(__name__)
+# Named explicitly: the daemon runs this module as __main__ (python -m homeward.cli),
+# and only loggers below "homeward" reach the event log.
+log = logging.getLogger("homeward.cli")
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -52,6 +56,7 @@ def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
     try:
         service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
     except LoginRequired as exc:
+        log.error("%s", exc, extra={"event": "login_required", "account": pair.account})
         raise ConfigError(f"pair {pair.name!r}: {exc}") from exc
     return PyiCloudDriveApi(service.drive)
 
@@ -105,6 +110,44 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
             print(f"  FAILED {failure.action.kind} {failure.action.path}: {failure.error}")
 
 
+@contextlib.contextmanager
+def _events(config_path: Path, source: str) -> Iterator[None]:
+    """Record this run's waits, retries and errors in the event log next to the config."""
+    handler = EventLogHandler(source, Paths(var_dir=config_path.parent, config=config_path))
+    logger = logging.getLogger("homeward")
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+
+
+def _reported(run: Callable[[], int]) -> int:
+    """Run one pair or job; an error that ends it becomes a readable event, not only
+    a traceback in the log."""
+    try:
+        return run()
+    except ConfigError:
+        raise
+    except PhotosNotReady as exc:
+        print(f"homeward: {exc}", file=sys.stderr)
+        log.warning("%s", exc, extra={"event": "icloud_indexing"})
+        return EXIT_FAILED
+    except Exception as exc:
+        log.exception("the run stopped: %s", _describe(exc))
+        return EXIT_FAILED
+
+
+def _describe(exc: BaseException) -> str:
+    """The error and what caused it, e.g. "Photos service not available (iCloud Photo
+    Library not finished indexing)"."""
+    text = str(exc) or type(exc).__name__
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and str(cause) and str(cause) not in text:
+        text += f" ({cause})"
+    return text
+
+
 def _cmd_sync(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     pairs = [config.pair(args.pair)] if args.pair else list(config.pairs)
@@ -112,28 +155,35 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         raise ConfigError("no sync pairs configured")
     status = EXIT_OK
     for pair in pairs:
-        remote = _remote_provider(pair, config)
-        local = NasProvider(pair.local, name="nas", recycle_bin=find_recycle_bin(pair.local))
-        try:
-            with StateDB(config.state_path(pair.account)) as state:
-                outcome = sync_pair(
-                    pair, local, remote, state, dry_run=args.dry_run,
-                    allow_deletes=args.allow_deletes,
-                )  # fmt: skip
-        except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
-            print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
-            status = max(status, EXIT_FAILED)
-            continue
-        _print_outcome(outcome, args.dry_run)
-        if not args.dry_run:
-            purged = local.purge_trash(pair.trash_days)
-            if purged:
-                print(f"  Emptied {purged} day folder(s) older than {pair.trash_days} days "
-                      "from the NAS trash.")  # fmt: skip
-        if outcome.plan.blocked and (outcome.result is None or outcome.result.blocked):
-            status = max(status, EXIT_BLOCKED)
-        elif outcome.result and outcome.result.failed:
-            status = max(status, EXIT_FAILED)
+        with _events(args.config, f"pair:{pair.name}"):
+            status = max(status, _reported(functools.partial(_sync_one, args, config, pair)))
+    return status
+
+
+def _sync_one(args: argparse.Namespace, config: Config, pair: PairConfig) -> int:
+    status = EXIT_OK
+    remote = _remote_provider(pair, config)
+    local = NasProvider(pair.local, name="nas", recycle_bin=find_recycle_bin(pair.local))
+    try:
+        with StateDB(config.state_path(pair.account)) as state:
+            outcome = sync_pair(
+                pair, local, remote, state, dry_run=args.dry_run,
+                allow_deletes=args.allow_deletes,
+            )  # fmt: skip
+    except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
+        print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
+        log.error("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
+        return EXIT_FAILED
+    _print_outcome(outcome, args.dry_run)
+    if not args.dry_run:
+        purged = local.purge_trash(pair.trash_days)
+        if purged:
+            print(f"  Emptied {purged} day folder(s) older than {pair.trash_days} days "
+                  "from the NAS trash.")  # fmt: skip
+    if outcome.plan.blocked and (outcome.result is None or outcome.result.blocked):
+        status = max(status, EXIT_BLOCKED)
+    elif outcome.result and outcome.result.failed:
+        status = max(status, EXIT_FAILED)
     return status
 
 
@@ -205,31 +255,35 @@ def _cmd_photos(args: argparse.Namespace) -> int:
         raise ConfigError("no photos jobs configured")
     status = EXIT_OK
     for job in jobs:
-        state_path = config.photo_state_path(job.account)
-        with _run_lock(state_path.with_suffix(".lock")) as locked:
-            if not locked:
-                print(
-                    f"homeward: another photos run for account {job.account} is still running",
-                    file=sys.stderr,
-                )
-                status = max(status, EXIT_FAILED)
-                continue
-            log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
-            try:
-                source = _photo_source(config, job)
-            except LoginRequired as exc:
-                print(f"homeward: {exc}", file=sys.stderr)
-                status = max(status, EXIT_FAILED)
-                continue
-            with PhotoStateDB(state_path) as state:
-                outcome = backup_photos(
-                    job.name, source, job.target, state, job.layout,
-                    albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
-                )  # fmt: skip
-        _print_photos(job, outcome, args.dry_run)
-        if outcome.result and outcome.result.failed:
-            status = max(status, EXIT_FAILED)
+        with _events(args.config, f"photos:{job.name}"):
+            status = max(status, _reported(functools.partial(_photos_one, args, config, job)))
     return status
+
+
+def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> int:
+    state_path = config.photo_state_path(job.account)
+    with _run_lock(state_path.with_suffix(".lock")) as locked:
+        if not locked:
+            message = f"another photos run for account {job.account} is still running"
+            print(f"homeward: {message}", file=sys.stderr)
+            log.warning("%s", message, extra={"event": "already_running"})
+            return EXIT_FAILED
+        log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
+        try:
+            source = _photo_source(config, job)
+        except LoginRequired as exc:
+            print(f"homeward: {exc}", file=sys.stderr)
+            log.error("%s", exc, extra={"event": "login_required", "account": job.account})
+            return EXIT_FAILED
+        with PhotoStateDB(state_path) as state:
+            outcome = backup_photos(
+                job.name, source, job.target, state, job.layout,
+                albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
+            )  # fmt: skip
+    _print_photos(job, outcome, args.dry_run)
+    if outcome.result and outcome.result.failed:
+        return EXIT_FAILED
+    return EXIT_OK
 
 
 @contextlib.contextmanager
