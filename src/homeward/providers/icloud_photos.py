@@ -29,10 +29,11 @@ SMART_ALBUM_CLASS = "SmartPhotoAlbum"
 HIDDEN_ALBUM = "Hidden"
 EDITED_SUFFIX = " (bearbeitet)"
 TIMEOUT = 60
-# CloudKit download URLs are signed and expire (seen after about an hour); Apple then
-# answers 410. URLs older than RENEW_AFTER are renewed in batches before downloading.
+# CloudKit download URLs are signed and expire soon after listing (well within the hour
+# a first backup's listing alone can take); Apple then answers 410. So every batch of
+# downloads gets fresh URLs first, unless they were renewed a moment ago.
 EXPIRED_STATUS = 410
-RENEW_AFTER = 30 * 60
+RENEW_AFTER = 5 * 60
 LOOKUP_BATCH = 100  # photos per lookup request (two records each)
 TRANSIENT_STATUS = (500, 502, 503, 504)
 RETRY_DELAY = 10.0
@@ -61,8 +62,7 @@ class _Resource:
 class _Origin:
     """Where to look an asset up again for a new download URL."""
 
-    library: Any  # the CloudKit zone, for batch lookups
-    container: Any  # the album it was listed from, for single lookups
+    library: Any  # the CloudKit zone the asset lives in
     asset_id: str
     master_id: str
     resource: str
@@ -149,9 +149,7 @@ class ICloudPhotosSource:
             count = 0
             for count, asset in enumerate(library.all.photos, 1):
                 unmatched.discard(asset.id)
-                yield from self._items(
-                    asset, lib, members.get(asset.id, ()), origin=(library, library.all)
-                )
+                yield from self._items(asset, lib, members.get(asset.id, ()), origin=library)
                 if count % PROGRESS_EVERY == 0:
                     log.info("library %s: %d photos read", key, count)
             log.info("library %s: %d photos read, done", key, count)
@@ -237,16 +235,19 @@ class ICloudPhotosSource:
         return renewed
 
     def _fresh_url(self, key: str) -> str | None:
-        """Look the asset up again for a new signed URL of the same resource."""
+        """Look the asset up again by name for a new signed URL of the same resource.
+
+        (pyicloud's ``album.get`` scans the whole library when its query misses.)
+        """
         origin = self._origins.get(key)
         if origin is None:
             return None
         try:
-            asset = origin.container.get(origin.asset_id)
+            found = list(self._lookup(origin.library, [origin.asset_id], [origin.master_id]))
         except Exception as exc:
             log.warning("could not refresh %s: %s", key, exc)
             return None
-        return _url(asset, origin.resource) if asset is not None else None
+        return _url(found[0], origin.resource) if found else None
 
     # Listing
 
@@ -290,7 +291,7 @@ class ICloudPhotosSource:
                 for count, asset in enumerate(album.photos, 1):  # noqa: B007
                     yield from self._items(
                         asset, Library.PERSONAL, members.get(asset.id, ()), hidden=True,
-                        origin=(library, album),
+                        origin=library,
                     )  # fmt: skip
                 log.info("hidden photos: %d read", count)
                 return
@@ -313,7 +314,7 @@ class ICloudPhotosSource:
         hidden: bool = False,
         collection: str | None = None,
         id_prefix: str | None = None,
-        origin: tuple[Any, Any] | None = None,
+        origin: Any = None,
     ) -> Iterator[PhotoItem]:
         is_movie = asset.item_type == "movie"
         if is_movie and not self.videos:
@@ -364,7 +365,7 @@ class ICloudPhotosSource:
             self._fetched_at[item.key] = self._clock()
             if origin is not None:
                 master_id = getattr(asset, "master_id", asset.id)
-                self._origins[item.key] = _Origin(*origin, asset.id, master_id, key)
+                self._origins[item.key] = _Origin(origin, asset.id, master_id, key)
             yield item
 
         if self.xmp and record is not None and original_name is not None:

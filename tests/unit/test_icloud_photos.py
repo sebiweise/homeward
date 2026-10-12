@@ -353,9 +353,14 @@ def test_pyicloud_xmp_skips_photos_without_metadata() -> None:
     assert data is not None and b"<xmp:Rating>5</xmp:Rating>" in data
 
 
+def by_name(library: Library_, asset_ids: list[str], master_ids: list[str]) -> list[Asset]:
+    """Stands in for a CloudKit records/lookup: the library's current assets by id."""
+    return [asset for asset in library.all.photos if asset.id in asset_ids]
+
+
 def test_expired_url_is_fetched_again() -> None:
     service = make_service()
-    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    source = ICloudPhotosSource(service, [Library.PERSONAL], lookup=by_name)
     item = next(i for i in source.list_items() if i.key == "personal/a/original")
     service.session.expired.add("https://cdn/a")
     service.photos.libraries["root"].all.photos[0].resources["original"].url = "https://cdn/a2"
@@ -367,7 +372,7 @@ def test_expired_url_is_fetched_again() -> None:
 
 def test_expired_edited_url_is_fetched_again() -> None:
     service = rich_service()
-    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    source = ICloudPhotosSource(service, [Library.PERSONAL], lookup=by_name)
     item = next(i for i in source.list_items() if i.key == "personal/r/edited")
     service.session.expired.add("https://cdn/r-edit")
     asset = service.photos.libraries["root"].all.photos[0]
@@ -393,7 +398,7 @@ def test_other_download_errors_are_not_retried() -> None:
 
 def test_expired_url_of_a_deleted_photo_fails() -> None:
     service = make_service()
-    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    source = ICloudPhotosSource(service, [Library.PERSONAL], lookup=by_name)
     item = next(i for i in source.list_items() if i.key == "personal/a/original")
     service.session.expired.add("https://cdn/a")
     del service.photos.libraries["root"].all.photos[0]
