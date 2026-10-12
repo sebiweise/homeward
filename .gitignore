@@ -9,3 +9,6 @@ dist/
 .mypy_cache/
 .ruff_cache/
 *.spk
+.coverage
+coverage.xml
+.scannerwork/

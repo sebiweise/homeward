@@ -1,0 +1,39 @@
+name: SonarCloud
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      # Skipped until the SONAR_TOKEN secret exists (and on pull requests from forks,
+      # which do not get secrets).
+      - if: env.SONAR_TOKEN == ''
+        run: echo "::notice::SONAR_TOKEN is not set, skipping the SonarCloud analysis."
+      - if: env.SONAR_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: env.SONAR_TOKEN != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: env.SONAR_TOKEN != ''
+        run: pip install -e ".[dev]"
+      - if: env.SONAR_TOKEN != ''
+        run: pytest --cov=homeward --cov-report=xml
+      - if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

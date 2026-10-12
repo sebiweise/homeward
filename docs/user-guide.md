@@ -1,0 +1,193 @@
+# User guide
+
+This guide covers installing Homeward on a Synology NAS, signing in to iCloud,
+configuring photos jobs and Drive pairs, and finding out what Homeward did. For how
+the sync works internally, see [architecture.md](architecture.md).
+
+> Homeward is in early development. Until the DSM app is complete, setup happens over
+> SSH. Enable SSH in **Control Panel › Terminal & SNMP** and log in as an
+> administrator.
+
+## Installation
+
+1. In **Package Center › Settings › Package Sources**, add SynoCommunity
+   (`https://packages.synocommunity.com/`) and install **Python 3.12**.
+2. Download the package for your NAS from the
+   [releases](https://github.com/sebiweise/homeward/releases):
+   `homeward-<version>-x64.spk` for Intel/AMD models, `homeward-<version>-aarch64.spk`
+   for ARM64 models. `uname -m` over SSH prints `x86_64` or `aarch64`.
+3. **Package Center › Manual Install**, choose the `.spk` and confirm the warning about
+   the unknown publisher.
+
+After the installation:
+
+| Path | Content |
+| --- | --- |
+| `/var/packages/homeward/target/env` | Python environment (rebuilt on every upgrade) |
+| `/var/packages/homeward/var/config.toml` | configuration |
+| `/var/packages/homeward/var/state/` | sync state and the iCloud sessions |
+| `/var/packages/homeward/var/status.json` | last result and next run of every job |
+| `/var/packages/homeward/var/homeward.log` | log |
+| `/usr/local/bin/homeward` | command-line interface |
+
+The package also creates the shared folder `homeward`. Everything runs as the package
+user `homeward`, which can only write where it has been granted access. To use another
+shared folder, give the user `homeward` read/write permission in **Control Panel ›
+Shared Folder › Edit › Permissions** (switch the list to *System internal user*).
+
+Updating works the same way as the installation; configuration and state are kept.
+Uninstalling copies configuration and state to `homeward/.homeward-backup/<timestamp>/`
+first. Synced files are never touched by an uninstall.
+
+## Running commands
+
+Run the CLI as the package user so that state and sessions keep the right owner:
+
+```sh
+alias hw='sudo -u homeward env HOME=/var/packages/homeward/var homeward'
+hw --version
+```
+
+The examples below use this `hw` alias.
+
+## Signing in
+
+Each Apple ID is an *account* in Homeward. Sign in once per account:
+
+```sh
+hw login --account alice --apple-id alice@example.com
+```
+
+Homeward asks for the password and the 2FA code from one of your Apple devices. It
+keeps only the trusted session (in `state/sessions/<account>/`, readable only by the
+package user), never the password. When Apple expires the session, the affected jobs
+fail with a hint to sign in again.
+
+If the account's photos job or pair already names the `apple_id`, `--apple-id` can be
+left out.
+
+## Configuration
+
+The configuration is a TOML file at `/var/packages/homeward/var/config.toml`. Edit it
+with `sudo vi` (or any editor) and check it with a dry run. The daemon reads it again
+before every cycle, so no restart is needed.
+
+```toml
+state_dir = "/var/packages/homeward/var/state"
+
+[daemon]
+interval_minutes = 60     # every job runs once per interval (minimum 5)
+```
+
+### Photos backup
+
+One `[[photos]]` job backs up one Apple ID into one NAS folder. Photos only flow from
+iCloud to the NAS; a photo deleted in iCloud stays on the NAS.
+
+```toml
+[[photos]]
+name = "alice"
+account = "alice"
+apple_id = "alice@example.com"
+target = "/volume1/homeward/Photos"
+```
+
+Optional settings with their defaults:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `libraries` | `["personal", "shared", "shared_albums"]` | which libraries to back up |
+| `folder_scheme` | `"{year}/{month}"` | folders by capture date; `{year}`, `{month}`, `{day}` |
+| `albums` | `true` | album folders with hard links to the originals |
+| `favorites` | `true` | favorites folder with hard links |
+| `videos` | `true` | videos |
+| `live_videos` | `true` | the video part of Live Photos |
+| `raw_alternative` | `true` | both files of RAW+JPEG shots |
+| `edited` | `true` | edits as `Name (bearbeitet).ext` next to the original |
+| `xmp` | `true` | XMP sidecars for photos with caption, keywords, location or favorite |
+| `hidden` | `false` | hidden photos |
+| `workers` | `4` | parallel downloads, 1 to 8 |
+| `shared_folder` | `"Geteilte Mediathek"` | folder for the Shared Library |
+| `albums_folder` | `"Alben"` | folder for albums |
+| `favorites_folder` | `"Favoriten"` | folder for favorites |
+| `hidden_folder` | `"Ausgeblendet"` | folder for hidden photos |
+| `shared_albums_folder` | `"Geteilte Alben"` | folder for shared albums |
+
+Switching an option off later keeps the files it already produced.
+
+### iCloud Drive pairs
+
+One `[[pair]]` connects one NAS folder with one iCloud Drive folder.
+
+```toml
+[[pair]]
+name = "documents"
+account = "alice"
+apple_id = "alice@example.com"
+local = "/volume1/homeward/Documents"
+remote = "Documents"              # path below the iCloud Drive root
+mode = "download"                 # upload | download | bidirectional
+exclude = ["*.tmp", "Archive"]
+```
+
+| Mode | Behaviour |
+| --- | --- |
+| `upload` | NAS → iCloud. The NAS wins; files that only exist in iCloud are left alone. |
+| `download` | iCloud → NAS. iCloud wins; files that only exist on the NAS are left alone. |
+| `bidirectional` | Changes flow both ways; a file changed on both sides keeps both versions as a conflict copy. Beta. |
+
+Optional settings:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `exclude` | `[]` | glob patterns, matched against every file and folder name in a path |
+| `max_delete_ratio` | `0.10` | delete brake: stop if a run would delete more than this share of files |
+| `max_delete_count` | `50` | delete brake: stop if a run would delete more files than this |
+| `trash_days` | `30` | days to keep files in Homeward's NAS trash, `0` keeps them forever |
+
+Synology system folders (`@eaDir`, `#recycle`, …), `.DS_Store` and temporary files are
+always excluded.
+
+## Safety nets
+
+- Every overwrite or delete first moves the old version somewhere recoverable: the
+  share's recycle bin `#recycle` if it is enabled, otherwise
+  `.homeward-papierkorb/<date>/` in the pair's folder; in iCloud, "Recently Deleted".
+- The first run of a pair never deletes or overwrites anything.
+- The delete brake stops a run that would delete too much. Check the plan with a dry
+  run and approve it once with `hw sync --pair NAME --allow-deletes`.
+
+## Commands
+
+```sh
+hw sync [--pair NAME] [--dry-run] [--allow-deletes]   # Drive pairs
+hw photos [--job NAME] [--dry-run]                    # Photos jobs
+hw login --account NAME [--apple-id ID]               # sign in with 2FA
+```
+
+`--dry-run` prints what would happen and changes nothing. All commands accept
+`--config PATH` (default: `$HOMEWARD_CONFIG` or the package's `config.toml`).
+
+The daemon runs every job once per interval. To run all jobs now:
+
+```sh
+sudo kill -USR1 "$(sudo cat /var/packages/homeward/var/homeward.pid)"
+```
+
+## Status and troubleshooting
+
+```sh
+sudo cat /var/packages/homeward/var/status.json      # last result and next run per job
+sudo tail -n 50 /var/packages/homeward/var/homeward.log
+```
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `account '…' needs a login` | Apple ended the trusted session. Run `hw login` again. |
+| `Permission denied` on a NAS folder | Grant the user `homeward` read/write access to the shared folder. |
+| Run stopped by the delete brake | Check with `--dry-run`, then approve with `--allow-deletes`. |
+| Package says it is incompatible | Your model has no SynoCommunity Python 3.12 build. |
+| Sign-in fails although the password is right | Advanced Data Protection is on, or Apple temporarily blocks web sign-in; try again later. |
+
+When you open an issue, attach the relevant part of `homeward.log` and remove Apple IDs,
+names and paths you do not want to share.
