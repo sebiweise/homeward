@@ -14,11 +14,13 @@ dynamic = ["version"]
 dependencies = []
 
 [project.optional-dependencies]
-icloud = ["pyicloud>=2.7,<2.8"]
+# rich: pyicloud 2.7 imports it without declaring it (ADR 0001).
+icloud = ["pyicloud>=2.7,<2.8", "rich"]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 homeward = "homeward.cli:main"
+homeward-daemon = "homeward.daemon.scheduler:main"
 
 [tool.hatch.version]
 source = "vcs"

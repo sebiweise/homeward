@@ -75,4 +75,17 @@ max_delete_ratio = 0.10
 max_delete_count = 50
 ```
 
+```toml
+[daemon]
+interval_minutes = 60             # each pair runs once per interval (minimum 5)
+```
+
+## Package
+
+The `.spk` (built by `tools/build_spk.py`) installs into `/var/packages/homeward`:
+the venv in `target/env`, config, state, `status.json` and the log in `var/`. The
+daemon `homeward-daemon` runs as the unprivileged package user and starts one
+`homeward sync --pair` process per due pair. Details in
+[ADR 0002](adr/0002-dsm-package.md).
+
 Architecture decisions are recorded in [`adr/`](adr/).
