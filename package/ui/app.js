@@ -394,6 +394,79 @@ function pairDialog(pair) {
     });
 }
 
+// --- photos tab ------------------------------------------------------------------------
+
+const LIBRARIES = ["personal", "shared", "shared_albums"];
+const PHOTO_SWITCHES = ["albums", "favorites", "videos", "live_videos", "raw_alternative", "edited", "xmp", "hidden"];
+const PHOTO_FOLDERS = ["folder_scheme", "shared_folder", "albums_folder", "favorites_folder", "hidden_folder", "shared_albums_folder"];
+let photoDefaults = null;
+
+async function renderPhotos() {
+    const [jobs, accounts] = await Promise.all([api("photos.list"), api("accounts.list")]);
+    accountsCache = accounts.accounts;
+    if (photoDefaults === null) photoDefaults = await api("photos.defaults");
+    const rows = jobs.photos.map((job) =>
+        el(
+            "tr",
+            {},
+            el("td", { text: job.name }),
+            el("td", { text: job.account }),
+            el("td", { text: job.target }),
+            el("td", { text: job.libraries.map((lib) => t("photos:lib_" + lib)).join(", ") }),
+            el(
+                "td",
+                { class: "actions" },
+                el("button", { text: t("common:edit"), onclick: () => photosDialog(job) }),
+                el("button", {
+                    class: "danger",
+                    text: t("common:delete"),
+                    onclick: () =>
+                        confirmDialog(t("photos:delete_confirm", job.name), t("common:delete"), async () => {
+                            await api("photos.delete", { name: job.name }, true);
+                            await renderPhotos();
+                        }),
+                })
+            )
+        )
+    );
+    document
+        .getElementById("photos-table")
+        .replaceChildren(
+            table([t("photos:name"), t("photos:account"), t("photos:target"), t("photos:libraries"), ""], rows)
+        );
+}
+
+function checkbox(name, label, checked) {
+    return el("label", { class: "check" }, el("input", { type: "checkbox", name: name, checked: checked }), label);
+}
+
+function photosDialog(job) {
+    const editing = Boolean(job);
+    const j = job || Object.assign({ name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "" }, photoDefaults);
+    const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
+    const fields = [
+        field(t("photos:name"), el("input", { name: "name", value: j.name, required: true, readonly: editing })),
+        field(t("photos:account"), select("account", accountOptions, j.account)),
+        field(t("photos:target"), el("input", { name: "target", value: j.target, required: true }), t("photos:target_hint")),
+        el("fieldset", {}, el("legend", { text: t("photos:libraries") }),
+            LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
+        el("fieldset", {}, el("legend", { text: t("photos:options") }),
+            PHOTO_SWITCHES.map((key) => checkbox(key, t("photos:" + key), j[key]))),
+        el("fieldset", {}, el("legend", { text: t("photos:folders") }),
+            PHOTO_FOLDERS.map((key) =>
+                field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
+                    key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
+    ];
+    openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
+        const data = { name: v.name, account: v.account, target: v.target };
+        data.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
+        for (const key of PHOTO_SWITCHES) data[key] = v[key] === "on";
+        for (const key of PHOTO_FOLDERS) data[key] = v[key];
+        await api(editing ? "photos.update" : "photos.create", { photos: JSON.stringify(data) }, true);
+        await renderPhotos();
+    });
+}
+
 // --- accounts tab ----------------------------------------------------------------------
 
 const STATE_BADGE = { signed_in: "ok", needs_2fa: "warn", signed_out: "bad", unavailable: "idle" };
@@ -408,7 +481,7 @@ async function renderAccounts() {
             el("td", { text: account.name }),
             el("td", { text: account.apple_id }),
             el("td", {}, el("span", { class: "badge " + STATE_BADGE[account.state], text: t("state:" + account.state) })),
-            el("td", { text: account.pairs.join(", ") }),
+            el("td", { text: account.pairs.concat(account.photos || []).join(", ") }),
             el(
                 "td",
                 { class: "actions" },
@@ -521,7 +594,13 @@ async function renderLog() {
 
 // --- tabs ------------------------------------------------------------------------------
 
-const RENDER = { status: renderStatus, pairs: renderPairs, accounts: renderAccounts, log: renderLog };
+const RENDER = {
+    status: renderStatus,
+    pairs: renderPairs,
+    photos: renderPhotos,
+    accounts: renderAccounts,
+    log: renderLog,
+};
 
 function selectTab(name) {
     activeTab = name;
@@ -547,6 +626,7 @@ async function start() {
         button.addEventListener("click", () => selectTab(button.dataset.tab));
     }
     document.getElementById("pair-add").addEventListener("click", () => pairDialog(null));
+    document.getElementById("photos-add").addEventListener("click", () => photosDialog(null));
     document.getElementById("account-add").addEventListener("click", accountDialog);
     document.getElementById("log-refresh").addEventListener("click", () => guarded(renderLog));
     selectTab(activeTab);

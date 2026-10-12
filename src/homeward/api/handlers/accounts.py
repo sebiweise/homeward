@@ -28,6 +28,11 @@ def list_accounts(ctx: Context, request: Request) -> dict[str, Any]:
                 "apple_id": account.get("apple_id", ""),
                 "state": ctx.accounts.state(name).value,
                 "pairs": [pair.name for pair in config.pairs if pair.account == name],
+                "photos": [
+                    job["name"]
+                    for job in raw.get("photos", [])
+                    if isinstance(job, dict) and job.get("account") == name
+                ],
             }
         )
     return {"accounts": result}
@@ -77,7 +82,8 @@ def remove(ctx: Context, request: Request) -> dict[str, Any]:
     name = _find(ctx, request.get("name"))["name"]
 
     def change(raw: RawConfig) -> None:
-        users = [p.get("name") for p in raw.get("pair", []) if p.get("account") == name]
+        tables = [*raw.get("pair", []), *raw.get("photos", [])]
+        users = [t.get("name") for t in tables if isinstance(t, dict) and t.get("account") == name]
         if users:
             raise ApiError("account_in_use", ", ".join(map(str, users)))
         raw["account"] = [a for a in _raw_accounts(raw) if a["name"] != name]

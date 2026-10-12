@@ -4,11 +4,14 @@ import json
 import re
 from pathlib import Path
 
+from homeward.api.handlers import photos
 from homeward.dsm.notify import Event
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "package" / "ui"
 SRC = ROOT / "src" / "homeward"
+# "section:key" literals; a key ending in "_" is a prefix completed at runtime
+_KEY = re.compile(r'"([a-z]+:[a-z0-9]+(?:_[a-z0-9]+)*)"')
 
 
 def _strings(lang: str) -> dict[str, str]:
@@ -30,7 +33,7 @@ def test_languages_have_the_same_keys() -> None:
 def test_every_key_used_by_the_ui_exists() -> None:
     used = set()
     for name in ("app.js", "index.html"):
-        used |= set(re.findall(r'"([a-z]+:[a-z_0-9]+)"', (UI / name).read_text(encoding="utf-8")))
+        used |= set(re.findall(_KEY, (UI / name).read_text(encoding="utf-8")))
     config = json.loads((UI / "config").read_text(encoding="utf-8"))
     for entry in config["desktop.js"].values():
         used |= {entry["title"], *entry.get("preloadTexts", [])}
@@ -50,4 +53,6 @@ def test_modes_states_and_notifications_have_texts() -> None:
     expected = {f"mode:{m}" for m in ("upload", "download", "bidirectional")}
     expected |= {f"state:{s}" for s in ("signed_in", "needs_2fa", "signed_out", "unavailable")}
     expected |= {f"notify:{event}" for event in Event}
+    expected |= {f"photos:{key}" for key in [*photos.SWITCHES, *photos.FOLDERS]}
+    expected |= {f"photos:lib_{lib}" for lib in photos.LIBRARIES}
     assert expected - keys == set()

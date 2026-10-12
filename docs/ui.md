@@ -22,6 +22,9 @@ backend once and never written anywhere.
 | `pairs.create`, `pairs.update` | yes | `pair` (JSON object) |
 | `pairs.delete` | yes | `name` |
 | `pairs.run` | yes | `name`, `dry_run`, `allow_deletes` |
+| `photos.defaults`, `photos.list` | | |
+| `photos.create`, `photos.update` | yes | `photos` (JSON object with every `[[photos]]` option) |
+| `photos.delete` | yes | `name` |
 | `accounts.list` | | |
 | `accounts.add` | yes | `name`, `apple_id`, `password` |
 | `accounts.login` | yes | `name`, `password` |
@@ -38,7 +41,7 @@ text in the `[error]` section of the strings.
 
 - Config changes are checked by the core parser before they are written, the old
   file is copied to `var/config-backups/` (last 20 kept) and replaced atomically.
-- Removing a pair or an account never touches files.
+- Removing a pair, a photos backup or an account never touches files.
 - Changing a pair's folders or account resets its sync state, so the next run is a
   first run (no deletes, no overwrites).
 - The delete brake is approved per run from the status page ("Approve deletions").

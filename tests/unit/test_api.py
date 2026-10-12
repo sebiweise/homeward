@@ -242,7 +242,7 @@ def test_account_with_two_factor(client: Client, tmp_path: Path) -> None:
     client.call("pairs.create", post=True, pair=_pair(tmp_path, remote_provider="icloud_drive"))
     (account,) = client.call("accounts.list")["accounts"]
     assert account == {"name": "me", "apple_id": "a@b.de", "state": "signed_in",
-                       "pairs": ["docs"]}  # fmt: skip
+                       "pairs": ["docs"], "photos": []}  # fmt: skip
 
     with pytest.raises(ApiError) as excinfo:
         client.call("accounts.remove", post=True, name="me")
@@ -377,3 +377,69 @@ def test_dsm_authenticator_missing_cgi(tmp_path: Path) -> None:
         auth.authenticate({"HTTP_X_SYNO_TOKEN": "tok"})
     assert _error(excinfo) == "not_authenticated"
     assert not auth.is_admin("nobody-at-all")
+
+
+# --- photos --------------------------------------------------------------------------
+
+
+def _photos(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
+    target = tmp_path / "photo"
+    target.mkdir(exist_ok=True)
+    return {"name": "fotos", "account": "me", "target": str(target)} | overrides
+
+
+def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    defaults = client.call("photos.defaults")
+    assert defaults["hidden"] is False and defaults["xmp"] is True
+
+    created = client.call("photos.create", post=True, photos=_photos(tmp_path))
+    assert created["libraries"] == ["personal", "shared", "shared_albums"]
+    assert created["folder_scheme"] == "{year}/{month}"
+
+    changed = _photos(
+        tmp_path,
+        hidden=True,
+        videos=False,
+        libraries=["shared", "personal"],
+        folder_scheme="{year}/{month}/{day}",
+        albums_folder="Meine Alben",
+    )
+    updated = client.call("photos.update", post=True, photos=changed)
+    assert updated["hidden"] is True and updated["videos"] is False
+    assert updated["libraries"] == ["personal", "shared"]
+
+    raw = tomllib.loads(client.paths.config.read_text())
+    (job,) = raw["photos"]
+    assert job["apple_id"] == "a@b.de" and job["albums_folder"] == "Meine Alben"
+    assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]
+
+    with pytest.raises(ApiError) as excinfo:
+        client.call("accounts.remove", post=True, name="me")
+    assert _error(excinfo) == "account_in_use"
+
+    client.call("photos.delete", post=True, name="fotos")
+    assert client.call("photos.list") == {"photos": []}
+    assert (tmp_path / "photo").is_dir()
+
+
+def test_photos_validation(client: Client, tmp_path: Path) -> None:
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.create", post=True, photos=_photos(tmp_path))
+    assert _error(excinfo) == "account_not_found"
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    cases = {
+        "invalid_scheme": _photos(tmp_path, folder_scheme="{album}"),
+        "invalid_param": _photos(tmp_path, libraries=[]),
+        "local_missing": _photos(tmp_path, target=str(tmp_path / "missing")),
+    }
+    for code, job in cases.items():
+        with pytest.raises(ApiError) as excinfo:
+            client.call("photos.create", post=True, photos=job)
+        assert _error(excinfo) == code, job
+    for bad in ({"hidden": "yes"}, {"albums_folder": "a/b"}, {"folder_scheme": "../{year}"}):
+        with pytest.raises(ApiError):
+            client.call("photos.create", post=True, photos=_photos(tmp_path, **bad))
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.update", post=True, photos=_photos(tmp_path))
+    assert _error(excinfo) == "photos_not_found"
