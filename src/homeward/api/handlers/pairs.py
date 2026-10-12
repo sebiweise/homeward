@@ -30,6 +30,7 @@ def to_dict(pair: PairConfig) -> dict[str, Any]:
         "local": str(pair.local),
         "remote": pair.remote,
         "mode": pair.mode.value,
+        "beta": pair.beta,
         "remote_provider": pair.remote_provider,
         "exclude": list(pair.exclude),
         "max_delete_ratio": pair.delete_brake.max_ratio,
@@ -162,6 +163,8 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "local": str(local),
         "remote": text("remote"),
         "mode": mode,
+        # Choosing "Both directions (beta)" in the UI is the opt-in the config asks for.
+        **({"beta": True} if mode == SyncMode.BIDIRECTIONAL else {}),
         "remote_provider": provider,
         "exclude": [p.strip() for p in exclude if p.strip()],
         "max_delete_ratio": float(ratio),
