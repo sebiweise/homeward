@@ -178,3 +178,14 @@ def test_asset_without_download_url_is_skipped() -> None:
     broken = Asset("x", resources={"original": Resource("x.HEIC", None)})
     service = Service({"root": Library_([broken], [])})
     assert list(ICloudPhotosSource(service).list_items()) == []
+
+
+def test_shared_photo_in_personal_album(caplog: pytest.LogCaptureFixture) -> None:
+    shared_photo, ghost = image("s"), image("ghost")
+    root = Library_([image("a")], [PhotoAlbum("Family", [shared_photo, ghost])])
+    service = Service({"root": root, "shared:SharedSync-1": Library_([shared_photo], [])})
+
+    with caplog.at_level("INFO", logger="homeward"):
+        items = {item.key: item for item in ICloudPhotosSource(service).list_items()}
+    assert items["shared/s/original"].albums == ("Family",)
+    assert "1 album photos were not found" in caplog.text

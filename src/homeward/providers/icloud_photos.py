@@ -66,15 +66,20 @@ class ICloudPhotosSource:
 
     def list_items(self) -> Iterator[PhotoItem]:
         self._urls.clear()
+        # Albums live in the personal library but may hold Shared Library photos too.
+        # (pyicloud 2.7 cannot read the Shared Library's own albums.)
+        members = self._album_members(self.service.photos.libraries[PERSONAL_KEY])
+        unmatched = set(members)
         for lib, key, library in self._libraries():
-            # Shared Library albums are not readable through pyicloud 2.7.
-            members = self._album_members(library) if lib is Library.PERSONAL else {}
             count = 0
             for count, asset in enumerate(library.all.photos, 1):
+                unmatched.discard(asset.id)
                 yield from self._items(asset, lib, tuple(sorted(members.get(asset.id, ()))))
                 if count % PROGRESS_EVERY == 0:
                     log.info("library %s: %d photos read", key, count)
             log.info("library %s: %d photos read, done", key, count)
+        if unmatched:
+            log.info("%d album photos were not found in the selected libraries", len(unmatched))
 
     def open_read(self, item: PhotoItem) -> BinaryIO:
         url = self._urls.get(item.key)

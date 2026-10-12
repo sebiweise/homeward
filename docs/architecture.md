@@ -99,8 +99,8 @@ several Apple IDs, each with its own login session and state file
 - Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.
 - Downloads stream into a temp file, are checked against the size iCloud reports and are
   hard-linked into place, so a crash leaves no partial photo.
-- Shared Library albums are not readable through pyicloud 2.7, so only the personal
-  library's albums get album folders.
+- Album folders come from the personal library's albums, which can also hold Shared
+  Library photos. The Shared Library's own albums are not readable through pyicloud 2.7.
 
 ```toml
 [[photos]]
