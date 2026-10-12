@@ -11,4 +11,3 @@ dist/
 *.spk
 .coverage
 coverage.xml
-.scannerwork/
