@@ -293,3 +293,16 @@ def test_config_errors_become_events(tmp_path: Path) -> None:
     assert not daemon.reload()  # the same error is recorded once
     events = read_events(Paths(var_dir=tmp_path, config=config))
     assert [(e.source, e.code) for e in events] == [("service", "config_error")]
+
+
+def test_a_stopped_run_is_a_warning_not_an_error(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    sent: list[str] = []
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=-15), Clock(), notifier=lambda e, *a: sent.append(e)
+    )
+    scheduler.run(Job("photos:me", ("photos",)))
+    (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    assert (event.level, event.code) == ("warning", "sync_stopped")
+    assert sent == []

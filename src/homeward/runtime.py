@@ -135,6 +135,7 @@ EVENT_CODES = (
     "sync_started",
     "sync_finished",
     "sync_failed",
+    "sync_stopped",  # the service stopped (e.g. package update); the run is repeated
     "delete_brake",
     "conflict",
     "file_failed",

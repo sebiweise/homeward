@@ -52,6 +52,7 @@ _EVENTS = {
     "ok": (Level.INFO, "sync_finished"),
     "blocked": (Level.WARNING, "delete_brake"),
     "config_error": (Level.ERROR, "config_error"),
+    "killed": (Level.WARNING, "sync_stopped"),
 }
 # results that send a DSM notification when they first occur
 _NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
@@ -212,7 +213,10 @@ class Scheduler:
         status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
-        record_event(level, job.name, event, f"exit code {code}", paths=self.events,
+        message = (
+            "stopped, runs again shortly" if status.result == "killed" else f"exit code {code}"
+        )
+        record_event(level, job.name, event, message, paths=self.events,
                      dry_run=dry_run, exit_code=code)  # fmt: skip
         if status.result in _NOTIFY and status.result != previous and not dry_run:
             self._notify(_NOTIFY[status.result], job.name.split(":", 1)[-1])
