@@ -164,7 +164,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "remote": text("remote"),
         "mode": mode,
         # Choosing "Both directions (beta)" in the UI is the opt-in the config asks for.
-        **({"beta": True} if mode == SyncMode.BIDIRECTIONAL else {}),
+        "beta": mode == SyncMode.BIDIRECTIONAL,
         "remote_provider": provider,
         "exclude": [p.strip() for p in exclude if p.strip()],
         "max_delete_ratio": float(ratio),
