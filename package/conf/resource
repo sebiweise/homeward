@@ -1,1 +1,15 @@
-{}
+{
+    "data-share": {
+        "shares": [
+            {
+                "name": "homeward",
+                "permission": {
+                    "rw": ["homeward"]
+                }
+            }
+        ]
+    },
+    "usr-local-linker": {
+        "bin": ["env/bin/homeward"]
+    }
+}

@@ -15,5 +15,7 @@ format:
 	ruff check --fix .
 	ruff format .
 
+ARCH ?= x64
+
 spk:
-	@echo "spk build not implemented yet (milestone M5), ARCH=$(ARCH)" && exit 1
+	python tools/build_spk.py --arch $(ARCH)
