@@ -175,12 +175,16 @@ class ICloudPhotosSource:
             response = self._get(url)
         except Exception as exc:
             if _status(exc) in TRANSIENT_STATUS:  # Apple's CDN hiccups now and then
+                log.info(
+                    "iCloud answered %s for %s, retrying in %d s",
+                    _status(exc), item.filename, RETRY_DELAY,
+                )  # fmt: skip
                 self._sleep(RETRY_DELAY)
                 return self._stream(self._get(url))
             fresh = self._fresh_url(item.key) if _expired(exc) else None
             if fresh is None:
                 raise
-            log.debug("download URL of %s expired, fetched a new one", item.key)
+            log.info("download link of %s had expired, fetched a new one", item.filename)
             self._urls[item.key] = fresh
             self._fetched_at[item.key] = self._clock()
             response = self._get(fresh)
@@ -276,7 +280,10 @@ class ICloudPhotosSource:
             except Exception as exc:
                 if type(exc).__name__ != INDEXING_ERROR or wait is None:
                     raise
-                log.info("iCloud is still indexing the photo library, waiting %d s", wait)
+                log.info(
+                    "iCloud is still indexing the photo library, waiting %d s and trying again",
+                    wait,
+                )
                 self._sleep(wait)
         raise AssertionError("unreachable")
 
