@@ -261,6 +261,8 @@ const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad
 function jobBadge(item) {
     if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
     const job = item.job;
+    if (job && job.started_at && !job.finished_at)
+        return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
     if (!job || !job.result) return el("span", { class: "muted", text: t("common:never") });
     return el("span", { class: "badge " + (JOB_BADGE[job.result] || "bad"), text: t("status:job_" + job.result) });
 }
@@ -291,7 +293,8 @@ async function renderStatus() {
     document.getElementById("version").textContent = t("common:version", data.version);
     const daemon = data.daemon || {};
     document.getElementById("daemon").textContent = daemon.running
-        ? t("status:daemon_running", daemon.running)
+        ? t("status:daemon_running", daemon.running.startsWith("photos:")
+            ? t("event:src_photos", daemon.running.slice(7)) : daemon.running)
         : Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
     const service = [t("status:api_user", data.api_user || "?")];
     if (daemon.interval_minutes) service.push(t("status:interval", daemon.interval_minutes));
