@@ -176,6 +176,13 @@ def walk_etags(api: PyiCloudDriveApi, path: str) -> dict[str, str]:
         ]
         for sub_path, item in subfolders:
             etags[sub_path] = item["etag"]
+        for prefix, f in level:  # files too: does an edit change the file's etag?
+            for i in f["items"]:
+                if i.get("type") == "FILE":
+                    etags[f"{prefix}/{item_name(i)}"] = (
+                        f"{i['docwsid']}:{i['etag']} size={i.get('size')} "
+                        f"modified={i.get('dateModified')}"
+                    )
         fetched = []
         for start in range(0, len(subfolders), 50):
             batch = subfolders[start : start + 50]
@@ -188,12 +195,14 @@ def cmd_snapshot(service: PyiCloudService, args: argparse.Namespace) -> None:
     start = time.monotonic()
     etags = walk_etags(PyiCloudDriveApi(service.drive), args.path)
     Path(args.out).write_text(json.dumps(etags, indent=1))
-    log(step="snapshot", folders=len(etags), seconds=round(time.monotonic() - start, 1))
+    log(step="snapshot", entries=len(etags), seconds=round(time.monotonic() - start, 1))
 
 
 def cmd_compare(service: PyiCloudService, args: argparse.Namespace) -> None:
     before = json.loads(Path(args.file).read_text())
     after = walk_etags(PyiCloudDriveApi(service.drive), args.path)
+    for path in changed(before, after):
+        log(step="changed", path=path, before=before[path], after=after.get(path))
     log(step="compare", changed=changed(before, after),
         new=sorted(set(after) - set(before)), removed=sorted(set(before) - set(after)))  # fmt: skip
 

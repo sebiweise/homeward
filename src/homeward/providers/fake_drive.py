@@ -145,8 +145,7 @@ class FakeDriveApi:
         self.calls["rename"] += 1
         node = self._checked(drivewsid, etag)
         node.name = name
-        node.etag += 1
-        self._touch(self.nodes[node.parent or ROOT_ID])
+        node.etag += 1  # like iCloud: no folder etag changes on a rename (ADR 0002)
 
     def move(self, drivewsid: str, etag: str, destination_drivewsid: str) -> None:
         self.calls["move"] += 1

@@ -74,8 +74,8 @@ Safety nets:
 - **Listing** walks the tree level by level and fetches up to 50 folders per request.
   A folder whose etag is unchanged since the last run can be served from a cache
   (`<state_dir>/<account>.drive-folders.json`) including its whole subtree; this is
-  off (`trust_folder_etags=False`) until the probe in ADR 0002 confirms that deep
-  changes change every ancestor's etag.
+  off (`trust_folder_etags=False`): on a real account a rename changes no folder
+  etag (ADR 0002), so a cached listing would miss it.
 - A file's version is `docwsid:etag`. Only plain files and folders sync; app
   libraries (Shortcuts, Scriptable) and other node types such as packages are skipped.
 
