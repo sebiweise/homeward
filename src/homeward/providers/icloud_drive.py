@@ -130,6 +130,9 @@ class ICloudDriveProvider:
     and other node types are skipped.
     """
 
+    # iCloud Drive treats "A.txt" and "a.txt" as the same name.
+    case_insensitive = True
+
     def __init__(
         self,
         api: DriveApi,

@@ -1,6 +1,7 @@
 """Command line interface."""
 
 import argparse
+import importlib
 import os
 import sys
 from collections.abc import Callable
@@ -12,7 +13,7 @@ from homeward.core.models import ActionKind
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
-from homeward.providers.drive_api import DriveApi
+from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
 from homeward.providers.nas import NasProvider, find_recycle_bin
 
@@ -29,16 +30,27 @@ def _version() -> str:
         return "0.0.0"
 
 
-def _no_icloud_login(pair: PairConfig, config: Config) -> DriveApi:
-    raise ConfigError(
-        f"pair {pair.name!r}: iCloud sign-in is not available yet; "
-        'use remote_provider = "folder" to try the sync core'
-    )
+def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
+    """Sign in with the account's stored trusted session (see ``homeward login``)."""
+    session = importlib.import_module("homeward.auth.session")
+    open_service = getattr(session, "open_service", None)
+    if open_service is None:
+        raise ConfigError(
+            f"pair {pair.name!r}: iCloud sign-in is not available yet; "
+            'use remote_provider = "folder" to try the sync core'
+        )
+    apple_id = pair.apple_id or (pair.account if "@" in pair.account else None)
+    if apple_id is None:
+        raise ConfigError(f"pair {pair.name!r}: set apple_id (or use the Apple ID as account)")
+    try:
+        service = open_service(pair.account, apple_id, config.state_dir)
+    except Exception as exc:  # LoginRequired tells the user to run `homeward login`
+        raise ConfigError(f"pair {pair.name!r}: {exc}") from exc
+    return PyiCloudDriveApi(service.drive)
 
 
-# Returns a signed-in Drive API for the pair's account. Replaced once iCloud sign-in
-# (homeward.auth) exists; tests replace it with a FakeDriveApi.
-drive_api_factory: Callable[[PairConfig, Config], DriveApi] = _no_icloud_login
+# Returns a signed-in Drive API for the pair's account; tests replace it.
+drive_api_factory: Callable[[PairConfig, Config], DriveApi] = _icloud_drive_api
 
 
 def _remote_provider(pair: PairConfig, config: Config) -> Provider:

@@ -87,6 +87,7 @@ state_dir = "/var/packages/homeward/var/state"
 [[pair]]
 name = "docs"
 account = "sebastian"
+apple_id = "sebastian@example.com"  # optional if account is the Apple ID
 local = "/volume1/homes/sebastian/Documents"
 remote = "Documents"
 mode = "bidirectional"            # upload | download | bidirectional

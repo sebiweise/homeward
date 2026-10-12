@@ -27,6 +27,7 @@ class PairConfig:
     remote: str
     mode: SyncMode
     account: str = "default"
+    apple_id: str | None = None
     remote_provider: str = "icloud_drive"
     exclude: tuple[str, ...] = ()
     delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
@@ -106,6 +107,7 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         remote=_get(entry, "remote", str, None, where),
         mode=mode,
         account=_get(entry, "account", str, "default", where),
+        apple_id=_get(entry, "apple_id", str, "", where) or None,
         remote_provider=provider,
         exclude=tuple(exclude),
         delete_brake=DeleteBrake(max_ratio=float(ratio), max_count=count),

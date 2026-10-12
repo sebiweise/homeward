@@ -118,9 +118,15 @@ def cmd_probe(service: PyiCloudService, args: argparse.Namespace) -> None:
         listed_30s_later=later[f"{deep}/stable.txt"].version,
         stable=later[f"{deep}/stable.txt"].version == meta.version,
         size_ok=later[f"{deep}/stable.txt"].size == 6)  # fmt: skip
+    # For bidirectional rename detection (M4): does a file keep docwsid/etag when moved?
     moved = provider.move(f"{deep}/stable.txt", "L1/moved.txt")
     log(step="move across folders", ok="L1/moved.txt" in provider.list_files(),
-        name=moved.path)  # fmt: skip
+        before=meta.version, after=moved.version,
+        same_docwsid=moved.version.split(":")[0] == meta.version.split(":")[0],
+        same_version=moved.version == meta.version)  # fmt: skip
+    renamed = provider.move("L1/moved.txt", "L1/renamed.txt")
+    log(step="rename in place", before=moved.version, after=renamed.version,
+        same_version=renamed.version == moved.version)  # fmt: skip
 
     if args.bigfile:
         big = Path(args.bigfile)

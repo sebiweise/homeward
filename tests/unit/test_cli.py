@@ -1,3 +1,5 @@
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -72,6 +74,30 @@ def test_sync_icloud_not_available_yet(tmp_path: Path, capsys: pytest.CaptureFix
     config = _config(tmp_path, provider="icloud_drive")
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_USAGE
     assert "not available yet" in capsys.readouterr().err
+
+
+def test_icloud_sign_in_uses_auth_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, str, Path]] = []
+
+    class LoginRequired(Exception):
+        pass
+
+    def open_service(account: str, apple_id: str, state_dir: Path) -> object:
+        calls.append((account, apple_id, state_dir))
+        raise LoginRequired("run `homeward login --account default`")
+
+    monkeypatch.setitem(
+        sys.modules, "homeward.auth.session", types.SimpleNamespace(open_service=open_service)
+    )
+    config = _config(tmp_path, provider="icloud_drive")
+    assert main(["sync", "--config", str(config)]) == EXIT_USAGE
+    assert "set apple_id" in capsys.readouterr().err
+    config.write_text(config.read_text() + 'apple_id = "seb@example.com"\n')
+    assert main(["sync", "--config", str(config)]) == EXIT_USAGE
+    assert "homeward login" in capsys.readouterr().err
+    assert calls == [("default", "seb@example.com", tmp_path / "state")]
 
 
 def test_sync_with_icloud_drive(
