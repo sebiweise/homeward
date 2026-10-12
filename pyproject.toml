@@ -14,7 +14,7 @@ dynamic = ["version"]
 dependencies = []
 
 [project.optional-dependencies]
-icloud = ["pyicloud>=2.7,<2.8", "rich"]
+icloud = ["pyicloud>=2.7,<2.8", "rich"]  # pyicloud 2.7 imports rich without declaring it
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
