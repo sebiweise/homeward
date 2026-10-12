@@ -1,0 +1,76 @@
+name: Bug report
+description: Something does not work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please remove Apple IDs, names and paths you do not want to
+        share from everything you paste. Never post passwords, 2FA codes or session files.
+        Security problems go to [a private report](https://github.com/sebiweise/homeward/security/advisories/new) instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - iCloud Photos backup
+        - iCloud Drive sync
+        - Sign-in / 2FA
+        - DSM package (install, update, service)
+        - DSM app / UI
+        - CLI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure a pair with mode = "download"
+        2. Rename a folder in iCloud Drive
+        3. Wait for the next run
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: The affected `[[pair]]` or `[[photos]]` section of `config.toml`, anonymised.
+      render: toml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: The relevant lines of `/var/packages/homeward/var/homeward.log`.
+      render: text
+  - type: input
+    id: homeward-version
+    attributes:
+      label: Homeward version
+      description: Shown in Package Center or by `homeward --version`.
+    validations:
+      required: true
+  - type: input
+    id: dsm-version
+    attributes:
+      label: DSM version and NAS model
+      placeholder: DSM 7.2.2, DS920+ (x86_64)
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: I removed personal data from logs and configuration.
+          required: true
