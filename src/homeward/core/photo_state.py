@@ -1,0 +1,112 @@
+"""Per-account SQLite state of the photos backup (WAL), separate from the Drive state."""
+
+import sqlite3
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import Self
+
+SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS photos (
+    job TEXT NOT NULL,
+    key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    size INTEGER,
+    checksum TEXT,
+    synced_at REAL NOT NULL,
+    gone_at REAL,
+    PRIMARY KEY (job, key)
+);
+CREATE TABLE IF NOT EXISTS album_links (
+    job TEXT NOT NULL,
+    path TEXT NOT NULL,
+    key TEXT NOT NULL,
+    album TEXT NOT NULL,
+    PRIMARY KEY (job, path)
+);
+CREATE TABLE IF NOT EXISTS cursors (
+    job TEXT PRIMARY KEY,
+    cursor TEXT
+);
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class PhotoRecord:
+    """A photo file that is on the NAS. ``gone_at`` is set once iCloud no longer has it."""
+
+    key: str
+    path: str
+    size: int | None
+    checksum: str | None
+    synced_at: float
+    gone_at: float | None
+
+
+class PhotoStateDB:
+    def __init__(self, path: Path | str) -> None:
+        if str(path) != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(path, isolation_level=None)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(f"photo state database {path} is newer than this Homeward version")
+        self._conn.executescript(_SCHEMA)
+        self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def records(self, job: str) -> dict[str, PhotoRecord]:
+        rows = self._conn.execute(
+            "SELECT key, path, size, checksum, synced_at, gone_at FROM photos WHERE job = ?",
+            (job,),
+        )
+        return {row[0]: PhotoRecord(*row) for row in rows}
+
+    def record(self, job: str, key: str, path: str, size: int, checksum: str | None) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO photos VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (job, key, path, size, checksum, time.time()),
+        )
+
+    def mark_gone(self, job: str, key: str) -> None:
+        self._conn.execute(
+            "UPDATE photos SET gone_at = ? WHERE job = ? AND key = ?", (time.time(), job, key)
+        )
+
+    def links(self, job: str) -> dict[str, tuple[str, str]]:
+        """Album links of a job: link path -> (photo key, album name)."""
+        rows = self._conn.execute("SELECT path, key, album FROM album_links WHERE job = ?", (job,))
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def add_link(self, job: str, path: str, key: str, album: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO album_links VALUES (?, ?, ?, ?)", (job, path, key, album)
+        )
+
+    def remove_link(self, job: str, path: str) -> None:
+        self._conn.execute("DELETE FROM album_links WHERE job = ? AND path = ?", (job, path))
+
+    def cursor(self, job: str) -> str | None:
+        row = self._conn.execute("SELECT cursor FROM cursors WHERE job = ?", (job,)).fetchone()
+        return None if row is None else row[0]
+
+    def set_cursor(self, job: str, cursor: str | None) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO cursors VALUES (?, ?)", (job, cursor))

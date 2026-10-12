@@ -75,4 +75,70 @@ max_delete_ratio = 0.10
 max_delete_count = 50
 ```
 
+## Photos backup
+
+Photos only go iCloud → NAS (`core/photos.py`, adapter `providers/icloud_photos.py`).
+One `[[photos]]` job backs up one Apple ID into one NAS folder; several jobs give
+several Apple IDs, each with its own login session and state file
+(`<state_dir>/<account>.photos.sqlite3`).
+
+```
+<target>/2024/05/IMG_0001.HEIC                original, Year/Month by capture date (NAS time zone)
+<target>/2024/05/IMG_0001.MOV                 video part of a Live Photo
+<target>/2024/05/IMG_0001.JPG                 second file of a RAW+JPEG shot
+<target>/2024/05/IMG_0001 (bearbeitet).JPG    edit made in the Photos app, full size
+<target>/2024/05/IMG_0001.HEIC.xmp            caption, keywords, location, favorite
+<target>/Alben/Urlaub/IMG_0001.HEIC           hard link to the original (no extra space)
+<target>/Favoriten/IMG_0001.HEIC              hard link, too
+<target>/Geteilte Mediathek/2024/05/...       the iCloud Shared Library
+<target>/Geteilte Alben/Hochzeit/...          the older shared albums (no Year/Month)
+<target>/Ausgeblendet/2024/05/...             hidden photos (off by default)
+```
+
+- **Incremental**: the libraries' CloudKit sync tokens form a cursor. If it did not change
+  since the last complete run and every file is still there, nothing is listed at all.
+  Otherwise known photos are skipped by key, only new ones are downloaded.
+- **Never deletes**: a photo deleted in iCloud stays on the NAS (marked `gone` in the
+  state). A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
+  When a photo leaves an album only its album link is removed; an album file that is no
+  longer the same file as the original goes to the trash instead.
+- Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.
+- Downloads stream into a temp file, are checked against the size iCloud reports and are
+  hard-linked into place, so a crash leaves no partial photo.
+- Album folders come from the personal library's albums, which can also hold Shared
+  Library photos. The Shared Library's own albums are not readable through pyicloud 2.7.
+- Not possible with pyicloud 2.7: people/faces and memories.
+
+```toml
+[[photos]]
+name = "sebastian"
+account = "sebastian"                # session + state file name
+apple_id = "sebastian@example.com"
+target = "/volume1/photo/iCloud Sebastian"
+libraries = ["personal", "shared", "shared_albums"]   # default: all three
+folder_scheme = "{year}/{month}"     # {year}, {month}, {day}
+albums = true                        # album folders with hard links
+favorites = true                     # favorites folder with hard links
+videos = true
+live_videos = true                   # the video part of Live Photos
+raw_alternative = true               # both files of RAW+JPEG shots
+edited = true                        # "Name (bearbeitet).ext" next to the original
+xmp = true                           # sidecars, only for photos with such metadata
+hidden = false                       # hidden photos, below hidden_folder
+workers = 4                          # parallel downloads, 1 to 8
+shared_folder = "Geteilte Mediathek"
+albums_folder = "Alben"
+favorites_folder = "Favoriten"
+hidden_folder = "Ausgeblendet"
+shared_albums_folder = "Geteilte Alben"
+```
+
+Every switch is meant to become an option in the DSM UI (M6). Switching a feature off
+later keeps the files it already produced (their keys are marked `gone`).
+
+Login: `homeward login --account sebastian` asks for the password and the 2FA code once
+and keeps the trusted session in `<state_dir>/sessions/<account>/` (mode 0700).
+`homeward photos [--job NAME] [--dry-run]` runs the backup and never prompts; an expired
+session ends the job with a hint to log in again.
+
 Architecture decisions are recorded in [`adr/`](adr/).

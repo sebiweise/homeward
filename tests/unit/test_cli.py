@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from homeward.cli import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, main
+from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
 
 
 def test_main_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -74,3 +74,140 @@ def test_sync_icloud_not_available_yet(tmp_path: Path, capsys: pytest.CaptureFix
 def test_sync_bad_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sync", "--config", str(tmp_path / "missing.toml")]) == EXIT_USAGE
     assert "not found" in capsys.readouterr().err
+
+
+def _photos_config(tmp_path: Path) -> Path:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"""
+state_dir = "state"
+
+[[photos]]
+name = "seb"
+account = "seb@example.com"
+target = "{tmp_path / "photos"}"
+"""
+    )
+    return config
+
+
+def test_photos_dry_run_then_real(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add(
+        "a1", "a.jpg", b"img", created=datetime(2024, 5, 3, 12, tzinfo=UTC), albums=("Urlaub",)
+    )
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    config = _photos_config(tmp_path)
+
+    assert main(["photos", "--config", str(config), "--dry-run"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "download  2024/05/a.jpg" in out and "Dry run" in out
+    assert not (tmp_path / "photos").exists()
+
+    assert main(["photos", "--config", str(config), "--job", "seb"]) == EXIT_OK
+    assert (tmp_path / "photos" / "2024" / "05" / "a.jpg").read_bytes() == b"img"
+    assert (tmp_path / "photos" / "Alben" / "Urlaub" / "a.jpg").exists()
+    assert (tmp_path / "state" / "seb@example.com.photos.sqlite3").exists()
+
+    capsys.readouterr()
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    assert "nothing changed in iCloud, 1 photos up to date" in capsys.readouterr().out
+
+
+def test_photos_failed_download_exit_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.fail_keys.add(source.add("a1", "a.jpg").key)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_FAILED
+    assert "FAILED download" in capsys.readouterr().out
+
+
+def test_photos_without_session_asks_for_login(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_FAILED
+    assert "homeward login --account seb@example.com" in capsys.readouterr().err
+
+
+def test_photos_none_configured(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('state_dir = "state"\n')
+    assert main(["photos", "--config", str(config)]) == EXIT_USAGE
+    assert "no photos jobs" in capsys.readouterr().err
+
+
+def test_login_flow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.auth.twofa
+    from tests.unit.test_auth import FakeService
+
+    monkeypatch.setattr(homeward.auth.twofa, "pyicloud_service", lambda: FakeService)
+    monkeypatch.setenv("HOMEWARD_PASSWORD", "secret")
+    monkeypatch.setattr("builtins.input", lambda prompt: "123456")
+    config = _photos_config(tmp_path)
+
+    assert main(["login", "--config", str(config), "--account", "seb@example.com"]) == EXIT_OK
+    assert "is logged in" in capsys.readouterr().out
+    assert (tmp_path / "state" / "sessions" / "seb@example.com" / "trusted").exists()
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "000000")
+    assert (
+        main(["login", "--config", str(config), "--account", "x", "--apple-id", "x@y"])
+        == EXIT_FAILED
+    )
+    assert "rejected" in capsys.readouterr().err
+    assert main(["login", "--config", str(config), "--account", "nobody"]) == EXIT_USAGE
+
+
+def test_photos_progress_on_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "reading iCloud" in err
+    assert "1 of 1 files downloaded" in err
+
+
+def test_photos_refuses_a_second_run_for_the_same_account(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    config = _photos_config(tmp_path)
+    lock = tmp_path / "state" / "seb@example.com.photos.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock.open("a") as other_run:
+        fcntl.flock(other_run, fcntl.LOCK_EX)
+        assert main(["photos", "--config", str(config)]) == EXIT_FAILED
+    assert "still running" in capsys.readouterr().err
+    assert source.listed == 0
+
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
