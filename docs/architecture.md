@@ -83,10 +83,16 @@ several Apple IDs, each with its own login session and state file
 (`<state_dir>/<account>.photos.sqlite3`).
 
 ```
-<target>/2024/05/IMG_0001.HEIC            original, Year/Month by capture date (NAS time zone)
-<target>/2024/05/IMG_0001.MOV             video part of a Live Photo
-<target>/Alben/Urlaub/IMG_0001.HEIC       hard link to the file above (no extra space)
-<target>/Geteilte Mediathek/2024/05/...   the iCloud Shared Library
+<target>/2024/05/IMG_0001.HEIC                original, Year/Month by capture date (NAS time zone)
+<target>/2024/05/IMG_0001.MOV                 video part of a Live Photo
+<target>/2024/05/IMG_0001.JPG                 second file of a RAW+JPEG shot
+<target>/2024/05/IMG_0001 (bearbeitet).JPG    edit made in the Photos app, full size
+<target>/2024/05/IMG_0001.HEIC.xmp            caption, keywords, location, favorite
+<target>/Alben/Urlaub/IMG_0001.HEIC           hard link to the original (no extra space)
+<target>/Favoriten/IMG_0001.HEIC              hard link, too
+<target>/Geteilte Mediathek/2024/05/...       the iCloud Shared Library
+<target>/Geteilte Alben/Hochzeit/...          the older shared albums (no Year/Month)
+<target>/Ausgeblendet/2024/05/...             hidden photos (off by default)
 ```
 
 - **Incremental**: the libraries' CloudKit sync tokens form a cursor. If it did not change
@@ -101,6 +107,7 @@ several Apple IDs, each with its own login session and state file
   hard-linked into place, so a crash leaves no partial photo.
 - Album folders come from the personal library's albums, which can also hold Shared
   Library photos. The Shared Library's own albums are not readable through pyicloud 2.7.
+- Not possible with pyicloud 2.7: people/faces and memories.
 
 ```toml
 [[photos]]
@@ -108,14 +115,25 @@ name = "sebastian"
 account = "sebastian"                # session + state file name
 apple_id = "sebastian@example.com"
 target = "/volume1/photo/iCloud Sebastian"
-libraries = ["personal", "shared"]   # default: both
+libraries = ["personal", "shared", "shared_albums"]   # default: all three
 folder_scheme = "{year}/{month}"     # {year}, {month}, {day}
 albums = true                        # album folders with hard links
+favorites = true                     # favorites folder with hard links
 videos = true
 live_videos = true                   # the video part of Live Photos
+raw_alternative = true               # both files of RAW+JPEG shots
+edited = true                        # "Name (bearbeitet).ext" next to the original
+xmp = true                           # sidecars, only for photos with such metadata
+hidden = false                       # hidden photos, below hidden_folder
 shared_folder = "Geteilte Mediathek"
 albums_folder = "Alben"
+favorites_folder = "Favoriten"
+hidden_folder = "Ausgeblendet"
+shared_albums_folder = "Geteilte Alben"
 ```
+
+Every switch is meant to become an option in the DSM UI (M6). Switching a feature off
+later keeps the files it already produced (their keys are marked `gone`).
 
 Login: `homeward login --account sebastian` asks for the password and the 2FA code once
 and keeps the trusted session in `<state_dir>/sessions/<account>/` (mode 0700).

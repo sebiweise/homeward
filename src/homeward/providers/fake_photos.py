@@ -34,11 +34,14 @@ class FakePhotoSource:
         library: Library = Library.PERSONAL,
         albums: tuple[str, ...] = (),
         resource: str = "original",
+        hidden: bool = False,
+        collection: str | None = None,
+        sidecar_for: str | None = None,
     ) -> PhotoItem:
         payload = data or f"{asset_id}/{resource}".encode()
         item = PhotoItem(
             asset_id, resource, library, filename, created, len(payload),
-            f"ck-{hash(payload) & 0xFFFFFFFF:x}", albums,
+            f"ck-{hash(payload) & 0xFFFFFFFF:x}", albums, hidden, collection, sidecar_for,
         )  # fmt: skip
         self.items[item.key] = item
         self.data[item.key] = payload

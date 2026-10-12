@@ -3,11 +3,11 @@
 import io
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
-from homeward.core.photos import Library
+from homeward.core.photos import FAVORITES_ALBUM, Library
 from homeward.providers.icloud_photos import ICloudPhotosSource
 
 
@@ -27,6 +27,23 @@ class Asset:
     is_live_photo: bool = False
     asset_date: datetime = datetime(2024, 5, 17, 10, 0)
     resources: dict[str, Resource] = field(default_factory=dict)
+    asset_record: dict[str, Any] | None = None
+    FILE_TYPE_EXTENSIONS: ClassVar[dict[str, str]] = {
+        "public.jpeg": ".JPG",
+        "com.apple.quicktime-movie": ".MOV",
+    }
+
+
+@dataclass
+class StreamAsset:
+    """A legacy shared-album asset: ``versions`` dicts instead of ``resources``."""
+
+    id: str
+    filename: str
+    versions: dict[str, dict[str, Any]]
+    item_type: str = "image"
+    is_live_photo: bool = False
+    asset_date: datetime = datetime(2019, 7, 1, 8, 0, tzinfo=UTC)
 
 
 @dataclass
@@ -74,14 +91,33 @@ class Session:
         return Response(url.encode())
 
 
+@dataclass
+class SharedPhotoStreamAlbum:
+    id: str
+    fullname: str
+    photos: list[StreamAsset]
+    _album_ctag: str | None = "ctag1"
+
+
 class Photos:
-    def __init__(self, libraries: dict[str, Library_]) -> None:
+    def __init__(
+        self, libraries: dict[str, Library_], streams: list[SharedPhotoStreamAlbum] | None = None
+    ) -> None:
         self.libraries = libraries
+        self.streams = streams
+
+    @property
+    def shared_streams(self) -> list[SharedPhotoStreamAlbum]:
+        if self.streams is None:
+            raise RuntimeError("Shared photo streams are not available for this account")
+        return self.streams
 
 
 class Service:
-    def __init__(self, libraries: dict[str, Library_]) -> None:
-        self.photos = Photos(libraries)
+    def __init__(
+        self, libraries: dict[str, Library_], streams: list[SharedPhotoStreamAlbum] | None = None
+    ) -> None:
+        self.photos = Photos(libraries, streams)
         self.session = Session()
 
 
@@ -111,7 +147,7 @@ def make_service() -> Service:
 
 
 def test_lists_personal_and_shared_with_albums_and_live_photos() -> None:
-    source = ICloudPhotosSource(make_service())
+    source = ICloudPhotosSource(make_service(), [Library.PERSONAL, Library.SHARED])
     items = {item.key: item for item in source.list_items()}
 
     assert set(items) == {
@@ -189,3 +225,115 @@ def test_shared_photo_in_personal_album(caplog: pytest.LogCaptureFixture) -> Non
         items = {item.key: item for item in ICloudPhotosSource(service).list_items()}
     assert items["shared/s/original"].albums == ("Family",)
     assert "1 album photos were not found" in caplog.text
+
+
+def record(**fields: Any) -> dict[str, Any]:
+    return {"fields": {name: {"value": value} for name, value in fields.items()}}
+
+
+def rich_service() -> Service:
+    """A favorite RAW+JPEG shot with an edit, a hidden photo and a shared album."""
+    raw = Asset(
+        "r",
+        "r.DNG",
+        resources={
+            "original": Resource("r.DNG", "https://cdn/r", checksum="ck-r"),
+            "alternative": Resource("r.JPG", "https://cdn/r-alt", checksum="ck-alt"),
+        },
+        asset_record=record(
+            isFavorite=1,
+            adjustmentType="com.apple.photo",
+            resJPEGFullRes={"downloadURL": "https://cdn/r-edit", "size": 7},
+            resJPEGFullFileType="public.jpeg",
+            resJPEGFullFingerprint="ck-edit",
+        ),
+    )
+    plain = Asset(
+        "p", "p.HEIC", resources={"original": Resource("p.HEIC", "https://cdn/p")}, asset_record={}
+    )
+    secret = Asset(
+        "h", "h.HEIC", resources={"original": Resource("h.HEIC", "https://cdn/h")}, asset_record={}
+    )
+    root = Library_([raw, plain], [SmartPhotoAlbum("Hidden", [secret]), PhotoAlbum("Hidden", [])])
+    stream = StreamAsset(
+        "x", "x.JPG", {"original": {"url": "https://cdn/x", "size": 9, "filename": "x.JPG"}}
+    )
+    album = SharedPhotoStreamAlbum("guid1", "Hochzeit", [stream])
+    return Service({"root": root}, [album])
+
+
+def fake_xmp(asset: Any) -> bytes | None:
+    return f"<xmp id='{asset.id}'/>".encode() if asset.id != "p" else None
+
+
+def test_all_features() -> None:
+    source = ICloudPhotosSource(rich_service(), hidden=True, xmp_builder=fake_xmp)
+    items = {item.key: item for item in source.list_items()}
+
+    assert set(items) == {
+        "personal/r/original",
+        "personal/r/alternative",
+        "personal/r/edited",
+        "personal/r/xmp",
+        "personal/p/original",
+        "personal/h/original",
+        "personal/h/xmp",
+        "shared_albums/guid1:x/original",
+    }
+    assert items["personal/r/alternative"].filename == "r.JPG"
+    edited = items["personal/r/edited"]
+    assert (edited.filename, edited.size, edited.checksum) == ("r (bearbeitet).JPG", 7, "ck-edit")
+    assert FAVORITES_ALBUM in items["personal/r/original"].albums
+    assert items["personal/h/original"].hidden
+    sidecar = items["personal/r/xmp"]
+    assert sidecar.filename == "r.DNG.xmp" and sidecar.sidecar_for == "original"
+    assert sidecar.albums == ()
+    shared = items["shared_albums/guid1:x/original"]
+    assert shared.collection == "Hochzeit" and shared.size == 9
+
+    with source.open_read(sidecar) as stream:
+        assert stream.read() == b"<xmp id='r'/>"
+    with source.open_read(items["personal/r/edited"]) as stream:
+        assert stream.read() == b"https://cdn/r-edit"
+    assert source.cursor() == "root=t1|shared_albums=ctag1"
+
+
+def test_features_can_be_switched_off() -> None:
+    source = ICloudPhotosSource(
+        rich_service(),
+        [Library.PERSONAL],
+        raw_alternative=False,
+        edited=False,
+        favorites=False,
+        hidden=False,
+        xmp=False,
+    )
+    items = {item.key: item for item in source.list_items()}
+    assert set(items) == {"personal/r/original", "personal/p/original"}
+    assert items["personal/r/original"].albums == ()
+
+
+def test_shared_albums_without_ctag_force_a_listing() -> None:
+    service = rich_service()
+    service.photos.streams[0]._album_ctag = None  # type: ignore[index]
+    assert ICloudPhotosSource(service).cursor() is None
+
+
+def test_xmp_failure_skips_only_the_sidecar() -> None:
+    def broken(asset: Any) -> bytes | None:
+        raise ValueError("bad plist")
+
+    source = ICloudPhotosSource(rich_service(), [Library.PERSONAL], xmp_builder=broken)
+    keys = {item.key for item in source.list_items()}
+    assert "personal/r/original" in keys and "personal/r/xmp" not in keys
+
+
+def test_pyicloud_xmp_skips_photos_without_metadata() -> None:
+    pytest.importorskip("pyicloud")
+    from types import SimpleNamespace
+
+    from homeward.providers.icloud_photos import pyicloud_xmp
+
+    assert pyicloud_xmp(SimpleNamespace(asset_record=record(assetDate=1700000000000))) is None
+    data = pyicloud_xmp(SimpleNamespace(asset_record=record(isFavorite=1)))
+    assert data is not None and b"<xmp:Rating>5</xmp:Rating>" in data

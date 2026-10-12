@@ -15,7 +15,7 @@ import re
 import secrets
 import shutil
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -33,7 +33,12 @@ SCHEME_FIELDS = ("year", "month", "day")
 
 class Library(StrEnum):
     PERSONAL = "personal"
-    SHARED = "shared"
+    SHARED = "shared"  # the iCloud Shared Library
+    SHARED_ALBUMS = "shared_albums"  # the older shared albums (photo streams)
+
+
+# Pseudo album name for favorites; the NUL byte keeps it apart from real album names.
+FAVORITES_ALBUM = "\x00favorites"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +57,9 @@ class PhotoItem:
     size: int | None = None
     checksum: str | None = None
     albums: tuple[str, ...] = ()
+    hidden: bool = False
+    collection: str | None = None  # the shared album of a ``SHARED_ALBUMS`` item
+    sidecar_for: str | None = None  # resource whose NAS file this sidecar sits next to
 
     @property
     def key(self) -> str:
@@ -81,8 +89,14 @@ class PhotoLayout:
     scheme: str = "{year}/{month}"
     shared_folder: str = "Geteilte Mediathek"
     albums_folder: str = "Alben"
+    favorites_folder: str = "Favoriten"
+    hidden_folder: str = "Ausgeblendet"
+    shared_albums_folder: str = "Geteilte Alben"
 
     def folder(self, item: PhotoItem) -> PurePosixPath:
+        if item.library is Library.SHARED_ALBUMS:
+            album = safe_component(item.collection or "", "_")
+            return PurePosixPath(safe_component(self.shared_albums_folder)) / album
         when = item.created.astimezone()
         parts = self.scheme.format(
             year=f"{when.year:04d}", month=f"{when.month:02d}", day=f"{when.day:02d}"
@@ -90,9 +104,13 @@ class PhotoLayout:
         folder = safe_relative(parts)
         if item.library is Library.SHARED:
             folder = PurePosixPath(safe_component(self.shared_folder)) / folder
+        if item.hidden:
+            folder = PurePosixPath(safe_component(self.hidden_folder)) / folder
         return folder
 
     def album_folder(self, album: str) -> PurePosixPath:
+        if album == FAVORITES_ALBUM:
+            return PurePosixPath(safe_component(self.favorites_folder))
         return PurePosixPath(safe_component(self.albums_folder)) / safe_relative(album)
 
 
@@ -226,6 +244,7 @@ def build_photo_plan(
 
     paths = _Paths(root, [r.path for r in records.values()] + list(links))
     wanted_links: dict[tuple[str, str], str] = {}  # (key, album) -> primary path
+    assigned: dict[str, str] = {}  # key -> NAS path, for placing sidecars
     seen: set[str] = set()
     for item in sorted(source.list_items(), key=lambda i: (i.created, i.key)):
         if item.key in seen:
@@ -234,6 +253,9 @@ def build_photo_plan(
         record = records.get(item.key)
         if record is None:
             wanted = layout.folder(item) / safe_component(item.filename, "photo")
+            beside = _sidecar_owner(item, assigned)
+            if beside is not None:
+                wanted = beside.with_name(f"{beside.name}{PurePosixPath(item.filename).suffix}")
             path = paths.claim(wanted)
             plan.actions.append(PhotoAction(PhotoActionKind.DOWNLOAD, path, item, item.key))
         else:
@@ -246,6 +268,7 @@ def build_photo_plan(
                 plan.actions.append(PhotoAction(PhotoActionKind.RETURNED, path, item, item.key))
             else:
                 plan.up_to_date += 1
+        assigned[item.key] = path
         if albums:
             for album in item.albums:
                 wanted_links[(item.key, album)] = path
@@ -278,6 +301,15 @@ def build_photo_plan(
                 )
             )
     return plan
+
+
+def _sidecar_owner(item: PhotoItem, assigned: dict[str, str]) -> PurePosixPath | None:
+    """The NAS path of the file a sidecar belongs to, so ``IMG (2).HEIC`` gets
+    ``IMG (2).HEIC.xmp``."""
+    if item.sidecar_for is None:
+        return None
+    owner = replace(item, resource=item.sidecar_for).key
+    return PurePosixPath(assigned[owner]) if owner in assigned else None
 
 
 def _changed(record: PhotoRecord, item: PhotoItem) -> bool:

@@ -122,7 +122,16 @@ def _setup_logging() -> None:
 def _photo_source(config: Config, job: PhotosConfig) -> PhotoSource:
     service = open_service(job.account, _apple_id(job), config.state_dir)
     return ICloudPhotosSource(
-        service, job.libraries, albums=job.albums, videos=job.videos, live_videos=job.live_videos
+        service,
+        job.libraries,
+        albums=job.albums,
+        videos=job.videos,
+        live_videos=job.live_videos,
+        raw_alternative=job.raw_alternative,
+        edited=job.edited,
+        favorites=job.favorites,
+        hidden=job.hidden,
+        xmp=job.xmp,
     )
 
 
@@ -164,7 +173,7 @@ def _cmd_photos(args: argparse.Namespace) -> int:
         with PhotoStateDB(config.photo_state_path(job.account)) as state:
             outcome = backup_photos(
                 job.name, source, job.target, state, job.layout,
-                albums=job.albums, dry_run=args.dry_run,
+                albums=job.albums or job.favorites, dry_run=args.dry_run,
             )  # fmt: skip
         _print_photos(job, outcome, args.dry_run)
         if outcome.result and outcome.result.failed:

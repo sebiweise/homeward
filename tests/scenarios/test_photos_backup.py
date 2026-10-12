@@ -8,6 +8,7 @@ import pytest
 
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import (
+    FAVORITES_ALBUM,
     Library,
     PhotoActionKind,
     PhotoLayout,
@@ -322,3 +323,61 @@ def test_unsafe_names_stay_inside_target(
     run(source, tmp_path / "t", pstate)
     files = [p for p in tmp_path.rglob("*") if p.is_file()]
     assert files and all(p.is_relative_to(tmp_path / "t") for p in files)
+
+
+def test_favorites_folder_holds_hard_links(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "a.jpg", created=at(2024, 5), albums=("Urlaub", FAVORITES_ALBUM))
+    assert run(source, tmp_path, pstate) == {PhotoActionKind.DOWNLOAD: 1, PhotoActionKind.LINK: 2}
+    assert os.path.samefile(tmp_path / "Favoriten" / "a.jpg", tmp_path / "2024" / "05" / "a.jpg")
+
+
+def test_hidden_photos_get_their_own_tree(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "a.jpg", b"secret", created=at(2024, 5), hidden=True)
+    run(source, tmp_path, pstate)
+    assert (tmp_path / "Ausgeblendet" / "2024" / "05" / "a.jpg").read_bytes() == b"secret"
+    assert not (tmp_path / "2024").exists()
+
+
+def test_shared_albums_are_stored_per_album(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("g:x", "x.jpg", b"w", library=Library.SHARED_ALBUMS, collection="Hochzeit")
+    run(source, tmp_path, pstate)
+    assert (tmp_path / "Geteilte Alben" / "Hochzeit" / "x.jpg").read_bytes() == b"w"
+
+
+def test_raw_jpeg_and_edited_versions_sit_side_by_side(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_1.DNG", b"raw", created=at(2024, 5))
+    source.add("a1", "IMG_1.JPG", b"jpeg", created=at(2024, 5), resource="alternative")
+    source.add("a1", "IMG_1 (bearbeitet).JPG", b"edit", created=at(2024, 5), resource="edited")
+    run(source, tmp_path, pstate)
+    month = tmp_path / "2024" / "05"
+    assert sorted(p.name for p in month.iterdir()) == [
+        "IMG_1 (bearbeitet).JPG", "IMG_1.DNG", "IMG_1.JPG",
+    ]  # fmt: skip
+
+
+def test_xmp_sidecar_follows_a_numbered_original(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a0", "IMG_1.HEIC", b"other", created=at(2024, 5, 1))
+    source.add("a1", "IMG_1.HEIC", b"img", created=at(2024, 5, 2))
+    sidecar = source.add(
+        "a1", "IMG_1.HEIC.xmp", b"<v1/>", created=at(2024, 5, 2), resource="xmp",
+        sidecar_for="original",
+    )  # fmt: skip
+    run(source, tmp_path, pstate)
+    month = tmp_path / "2024" / "05"
+    assert (month / "IMG_1 (2).HEIC.xmp").read_bytes() == b"<v1/>"
+    assert not (month / "IMG_1.HEIC.xmp").exists()
+
+    # Metadata changed in iCloud (e.g. now a favorite): the old sidecar goes to the trash.
+    source.edit(sidecar.key, b"<v2/>")
+    assert run(source, tmp_path, pstate) == {PhotoActionKind.REPLACE: 1}
+    assert (month / "IMG_1 (2).HEIC.xmp").read_bytes() == b"<v2/>"

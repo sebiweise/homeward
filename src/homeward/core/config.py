@@ -32,6 +32,15 @@ class PairConfig:
     delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
 
 
+FOLDER_OPTIONS = (
+    "shared_folder",
+    "albums_folder",
+    "favorites_folder",
+    "hidden_folder",
+    "shared_albums_folder",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PhotosConfig:
     """One Apple ID's iCloud Photos backed up into one NAS folder."""
@@ -40,10 +49,15 @@ class PhotosConfig:
     target: Path
     account: str = "default"
     apple_id: str | None = None
-    libraries: tuple[Library, ...] = (Library.PERSONAL, Library.SHARED)
+    libraries: tuple[Library, ...] = tuple(Library)
     albums: bool = True
     videos: bool = True
     live_videos: bool = True
+    raw_alternative: bool = True  # the second file of RAW+JPEG shots
+    edited: bool = True  # edited versions next to the original: "Name (bearbeitet).ext"
+    favorites: bool = True  # hard links in the favorites folder
+    hidden: bool = False  # hidden photos, kept in their own folder
+    xmp: bool = True  # XMP sidecars with caption, keywords, location and rating
     layout: PhotoLayout = field(default_factory=PhotoLayout)
 
 
@@ -137,10 +151,17 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         albums=_get_bool(entry, "albums", True, where),
         videos=_get_bool(entry, "videos", True, where),
         live_videos=_get_bool(entry, "live_videos", True, where),
+        raw_alternative=_get_bool(entry, "raw_alternative", True, where),
+        edited=_get_bool(entry, "edited", True, where),
+        favorites=_get_bool(entry, "favorites", True, where),
+        hidden=_get_bool(entry, "hidden", False, where),
+        xmp=_get_bool(entry, "xmp", True, where),
         layout=PhotoLayout(
             scheme=scheme,
-            shared_folder=_get(entry, "shared_folder", str, defaults.shared_folder, where),
-            albums_folder=_get(entry, "albums_folder", str, defaults.albums_folder, where),
+            **{
+                name: _get(entry, name, str, getattr(defaults, name), where)
+                for name in FOLDER_OPTIONS
+            },
         ),
     )
 
