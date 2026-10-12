@@ -164,4 +164,17 @@ and keeps the trusted session in `<state_dir>/sessions/<account>/` (mode 0700).
 `homeward photos [--job NAME] [--dry-run]` runs the backup and never prompts; an expired
 session ends the job with a hint to log in again.
 
+## Package and daemon
+
+```toml
+[daemon]
+interval_minutes = 60             # each pair and photos job runs once per interval (minimum 5)
+```
+
+The `.spk` (built by `tools/build_spk.py`) installs into `/var/packages/homeward`:
+the venv in `target/env`, config, state, `status.json` and the log in `var/`. The
+daemon `homeward-daemon` runs as the unprivileged package user and starts one
+`homeward sync --pair` or `homeward photos --job` process per due job. Details in
+[ADR 0003](adr/0003-dsm-package.md).
+
 Architecture decisions are recorded in [`adr/`](adr/).
