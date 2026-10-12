@@ -185,7 +185,7 @@ def _cmd_photos(args: argparse.Namespace) -> int:
             with PhotoStateDB(state_path) as state:
                 outcome = backup_photos(
                     job.name, source, job.target, state, job.layout,
-                    albums=job.albums or job.favorites, dry_run=args.dry_run,
+                    albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
                 )  # fmt: skip
         _print_photos(job, outcome, args.dry_run)
         if outcome.result and outcome.result.failed:

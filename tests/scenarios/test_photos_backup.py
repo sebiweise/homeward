@@ -406,3 +406,29 @@ def test_a_failing_prepare_does_not_stop_the_backup(
     source.prepare = broken  # type: ignore[method-assign]
     assert run(source, tmp_path, pstate) == {PhotoActionKind.DOWNLOAD: 1}
     assert (tmp_path / "2023/01/IMG_0001.HEIC").read_bytes() == b"one"
+
+
+def test_parallel_downloads(source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path) -> None:
+    for n in range(120):
+        source.add(f"a{n:03}", f"IMG_{n:04}.HEIC", created=at(2021, 1 + n % 12), albums=("Alle",))
+    source.fail_keys.add("personal/a007/original")
+
+    outcome = backup_photos("photos", source, tmp_path, pstate, workers=4, today=lambda: TODAY)
+
+    assert outcome.result is not None
+    assert [f.action.path for f in outcome.result.failed] == [
+        "2021/08/IMG_0007.HEIC",
+        "Alben/Alle/IMG_0007.HEIC",  # its link waits for the file
+    ]
+    assert len(pstate.records("photos")) == 119
+    assert sorted(source.downloads) == sorted(
+        k for k in source.items if k != "personal/a007/original"
+    )
+    linked = tmp_path / "Alben" / "Alle" / "IMG_0000.HEIC"
+    assert linked.stat().st_ino == (tmp_path / "2021/01/IMG_0000.HEIC").stat().st_ino
+
+    source.fail_keys.clear()
+    assert run(source, tmp_path, pstate) == {
+        PhotoActionKind.DOWNLOAD: 1,
+        PhotoActionKind.LINK: 1,
+    }

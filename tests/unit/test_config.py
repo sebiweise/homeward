@@ -94,6 +94,7 @@ shared_folder = "Familie"
 hidden = true
 xmp = false
 hidden_folder = "Privat"
+workers = 1
 """
 
 
@@ -108,7 +109,7 @@ def test_photos_jobs() -> None:
     assert seb.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
     assert seb.albums and seb.videos and seb.live_videos
     assert seb.raw_alternative and seb.edited and seb.favorites and seb.xmp
-    assert not seb.hidden
+    assert not seb.hidden and seb.workers == 4
     assert seb.layout.favorites_folder == "Favoriten"
     assert seb.layout.scheme == "{year}/{month}"
     anna = config.photos_job("anna")
@@ -116,6 +117,7 @@ def test_photos_jobs() -> None:
     assert anna.libraries == (Library.PERSONAL,)
     assert anna.layout.scheme == "{year}" and anna.layout.shared_folder == "Familie"
     assert anna.hidden and not anna.xmp and anna.layout.hidden_folder == "Privat"
+    assert anna.workers == 1
     assert config.photo_state_path("anna") == Path("/state/anna.photos.sqlite3")
     with pytest.raises(ConfigError, match="no photos job"):
         config.photos_job("nope")
@@ -128,6 +130,9 @@ def test_photos_jobs() -> None:
         ("libraries = []", "must not be empty"),
         ('folder_scheme = "{album}"', "folder_scheme"),
         ('albums = "yes"', "true or false"),
+        ("workers = 0", "from 1 to 8"),
+        ("workers = 9", "from 1 to 8"),
+        ('workers = "4"', "from 1 to 8"),
     ],
 )
 def test_photos_invalid(extra: str, message: str) -> None:

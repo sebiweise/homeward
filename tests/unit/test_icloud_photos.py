@@ -570,3 +570,37 @@ def test_waits_while_icloud_is_indexing(caplog: pytest.LogCaptureFixture) -> Non
     refusals[0] = 10
     with pytest.raises(PyiCloudServiceNotActivatedException):
         source.cursor()
+
+
+def test_download_threads_get_their_own_session_with_icloud_cookies() -> None:
+    requests = pytest.importorskip("requests")
+    from homeward.providers.icloud_photos import download_session
+
+    icloud = requests.Session()
+    icloud.headers["Origin"] = "https://www.icloud.com"
+    icloud.cookies.set("X-APPLE-WEBAUTH-TOKEN", "t", domain=".icloud.com")
+    own = download_session(icloud)
+    assert own is not icloud
+    assert own.headers["Origin"] == "https://www.icloud.com"
+    assert own.cookies.get("X-APPLE-WEBAUTH-TOKEN") == "t"
+
+    fake = Session()
+    assert download_session(fake) is fake
+
+
+def test_unauthorized_download_falls_back_to_the_icloud_session() -> None:
+    service = make_service()
+    source = ICloudPhotosSource(service, [Library.PERSONAL])
+    item = next(i for i in source.list_items() if i.key == "personal/a/original")
+
+    class Plain:
+        def get(self, url: str, **kwargs: Any) -> Any:
+            refused = Response(b"")
+            refused.status_code = 403  # type: ignore[attr-defined]
+            refused.close = lambda: None  # type: ignore[attr-defined]
+            return refused
+
+    source._local.session = Plain()
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/a"
+    assert [url for url, _ in service.session.requests] == ["https://cdn/a"]

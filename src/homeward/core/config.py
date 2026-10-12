@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from homeward.core.models import SyncMode
-from homeward.core.photos import Library, PhotoLayout, check_scheme
+from homeward.core.photos import (
+    DEFAULT_WORKERS,
+    MAX_WORKERS,
+    Library,
+    PhotoLayout,
+    check_scheme,
+)
 from homeward.core.planner import DeleteBrake
 
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
@@ -58,6 +64,7 @@ class PhotosConfig:
     favorites: bool = True  # hard links in the favorites folder
     hidden: bool = False  # hidden photos, kept in their own folder
     xmp: bool = True  # XMP sidecars with caption, keywords, location and rating
+    workers: int = DEFAULT_WORKERS  # parallel downloads
     layout: PhotoLayout = field(default_factory=PhotoLayout)
 
 
@@ -142,6 +149,9 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
     except ValueError as exc:
         raise ConfigError(f"{where}: {exc}") from None
     apple_id = _get(entry, "apple_id", str, "", where) or None
+    workers = entry.get("workers", DEFAULT_WORKERS)
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
+        raise ConfigError(f"{where}: 'workers' must be a whole number from 1 to {MAX_WORKERS}")
     return PhotosConfig(
         name=name,
         target=target,
@@ -156,6 +166,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         favorites=_get_bool(entry, "favorites", True, where),
         hidden=_get_bool(entry, "hidden", False, where),
         xmp=_get_bool(entry, "xmp", True, where),
+        workers=workers,
         layout=PhotoLayout(
             scheme=scheme,
             **{

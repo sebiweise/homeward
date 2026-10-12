@@ -10,6 +10,7 @@ import hashlib
 import importlib
 import io
 import logging
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -107,6 +108,11 @@ class ICloudPhotosSource:
         self._lookup = lookup or pyicloud_lookup
         self._clock = clock
         self._sleep = sleep
+        # Downloads run on several threads. pyicloud's session rewrites its session files on
+        # every request, so threads download with their own plain sessions and every call
+        # that goes through pyicloud holds this lock.
+        self._api_lock = threading.Lock()
+        self._local = threading.local()
         self._urls: dict[str, str] = {}
         self._blobs: dict[str, bytes] = {}
         self._origins: dict[str, _Origin] = {}
@@ -197,9 +203,20 @@ class ICloudPhotosSource:
         return cast(BinaryIO, raw)
 
     def _get(self, url: str) -> Any:
-        response = self.service.session.get(url, stream=True, timeout=TIMEOUT)
+        response = self._download_session().get(url, stream=True, timeout=TIMEOUT)
+        if getattr(response, "status_code", 200) in (401, 403):  # wants iCloud's own session
+            response.close()
+            with self._api_lock:
+                response = self.service.session.get(url, stream=True, timeout=TIMEOUT)
         response.raise_for_status()
         return response
+
+    def _download_session(self) -> Any:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            with self._api_lock:
+                session = self._local.session = download_session(self.service.session)
+        return session
 
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Renew URLs that may have expired since listing, a batch lookup per library."""
@@ -224,9 +241,12 @@ class ICloudPhotosSource:
     def _renew(self, groups: list[list[tuple[str, _Origin]]], now: float) -> int:
         origins = [group[0][1] for group in groups]
         try:
-            found = self._lookup(
-                origins[0].library, [o.asset_id for o in origins], [o.master_id for o in origins]
-            )
+            with self._api_lock:
+                found = self._lookup(
+                    origins[0].library,
+                    [o.asset_id for o in origins],
+                    [o.master_id for o in origins],
+                )
             fresh = {asset.id: asset for asset in found}
         except Exception as exc:  # each download falls back to a single lookup on 410
             log.warning("could not renew download links: %s", exc)
@@ -251,7 +271,8 @@ class ICloudPhotosSource:
         if origin is None:
             return None
         try:
-            found = list(self._lookup(origin.library, [origin.asset_id], [origin.master_id]))
+            with self._api_lock:
+                found = list(self._lookup(origin.library, [origin.asset_id], [origin.master_id]))
         except Exception as exc:
             log.warning("could not refresh %s: %s", key, exc)
             return None
@@ -525,3 +546,17 @@ def pyicloud_lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -
         for master in masters
         if master.recordName in assets_by_master
     ]
+
+
+def download_session(icloud_session: Any) -> Any:
+    """A plain requests session with the iCloud cookies and headers, for one download
+    thread. Falls back to the given session when it is not a requests session."""
+    cookies = getattr(icloud_session, "cookies", None)
+    headers = getattr(icloud_session, "headers", None)
+    if cookies is None or headers is None:
+        return icloud_session
+    requests = importlib.import_module("requests")
+    session = requests.Session()
+    session.headers.update(headers)
+    session.cookies.update(cookies)
+    return session

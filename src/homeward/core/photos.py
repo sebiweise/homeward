@@ -16,9 +16,11 @@ import secrets
 import shutil
 import time
 from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol
 
@@ -160,6 +162,8 @@ _FILE_KINDS = frozenset(
 )
 PROGRESS_EVERY = 50
 PREPARE_BATCH = 100
+DEFAULT_WORKERS = 4
+MAX_WORKERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,45 +341,67 @@ class PhotoExecutor:
         job: str,
         *,
         today: Callable[[], date] = date.today,
+        workers: int = 1,
     ) -> None:
         self.source = source
         self.root = root
         self.state = state
         self.job = job
+        self.workers = max(1, min(workers, MAX_WORKERS))
         self._today = today
         self._bytes = 0
+        self._fetched = 0
+        self._files = 0
+        self._started = 0.0
 
     def run(self, plan: PhotoPlan) -> PhotoRunResult:
         result = PhotoRunResult()
         # Files first, so links of the same run find their target.
         order = {kind: i for i, kind in enumerate(PhotoActionKind)}
         actions = sorted(plan.actions, key=lambda a: order[a.kind])
-        downloads = [_need(a.item) for a in actions if a.kind in _FILE_KINDS]
-        files = len(downloads)
-        fetched = 0
-        self._bytes = 0
-        started = time.monotonic()
+        files = [a for a in actions if a.kind in _FILE_KINDS]
+        self._bytes, self._fetched, self._files = 0, 0, len(files)
+        self._started = time.monotonic()
+        # Downloads run in parallel (each request waits mostly on Apple, not on bandwidth);
+        # the state database and everything else stay on this thread.
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            for start in range(0, len(files), PREPARE_BATCH):
+                batch = files[start : start + PREPARE_BATCH]
+                self._prepare([_need(a.item) for a in batch])
+                fetches = {
+                    pool.submit(self._fetch, action): action
+                    for action in batch
+                    if action.kind is not PhotoActionKind.REPLACE
+                }
+                for future in as_completed(fetches):
+                    action = fetches[future]
+                    self._step(result, action, partial(self._collect, action, future))
+                for action in batch:
+                    if action.kind is PhotoActionKind.REPLACE:
+                        self._step(result, action, partial(self._apply, action))
         for action in actions:
-            if action.kind in _FILE_KINDS and fetched % PREPARE_BATCH == 0:
-                self._prepare(downloads[fetched : fetched + PREPARE_BATCH])
-            try:
-                self._apply(action)
-            except Exception as exc:
-                log.warning("%s %s failed: %s", action.kind, action.path, exc)
-                result.failed.append(PhotoFailure(action, f"{type(exc).__name__}: {exc}"))
-            else:
-                result.done.append(action)
-            if action.kind in _FILE_KINDS:
-                fetched += 1
-                if fetched % PROGRESS_EVERY == 0 or fetched == files:
-                    elapsed = max(time.monotonic() - started, 1e-6)
-                    log.info(
-                        "%d of %d files downloaded (%.2f GB, %.1f MB/s)",
-                        fetched, files, self._bytes / 1e9, self._bytes / 1e6 / elapsed,
-                    )  # fmt: skip
+            if action.kind not in _FILE_KINDS:
+                self._step(result, action, partial(self._apply, action))
         if result.ok and not plan.unchanged:
             self.state.set_cursor(self.job, plan.cursor)
         return result
+
+    def _step(self, result: PhotoRunResult, action: PhotoAction, apply: Callable[[], None]) -> None:
+        try:
+            apply()
+        except Exception as exc:
+            log.warning("%s %s failed: %s", action.kind, action.path, exc)
+            result.failed.append(PhotoFailure(action, f"{type(exc).__name__}: {exc}"))
+        else:
+            result.done.append(action)
+        if action.kind in _FILE_KINDS:
+            self._fetched += 1
+            if self._fetched % PROGRESS_EVERY == 0 or self._fetched == self._files:
+                elapsed = max(time.monotonic() - self._started, 1e-6)
+                log.info(
+                    "%d of %d files downloaded (%.2f GB, %.1f MB/s)",
+                    self._fetched, self._files, self._bytes / 1e9, self._bytes / 1e6 / elapsed,
+                )  # fmt: skip
 
     def _prepare(self, items: list[PhotoItem]) -> None:
         try:
@@ -407,6 +433,10 @@ class PhotoExecutor:
                 self.state.record(self.job, item.key, action.path, size, item.checksum)
 
     def _download(self, action: PhotoAction) -> None:
+        self._record(action, self._fetch(action))
+
+    def _fetch(self, action: PhotoAction) -> int:
+        """Download into place; safe to run on a worker thread (no state access)."""
         item = _need(action.item)
         target = self.root / action.path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -424,6 +454,13 @@ class PhotoExecutor:
             os.link(tmp, target)  # never replaces an existing file
         finally:
             tmp.unlink(missing_ok=True)
+        return size
+
+    def _collect(self, action: PhotoAction, future: "Future[int]") -> None:
+        self._record(action, future.result())
+
+    def _record(self, action: PhotoAction, size: int) -> None:
+        item = _need(action.item)
         self._bytes += size
         self.state.record(self.job, item.key, action.path, size, item.checksum)
 
@@ -500,10 +537,11 @@ def backup_photos(
     *,
     albums: bool = True,
     dry_run: bool = False,
+    workers: int = 1,
     today: Callable[[], date] = date.today,
 ) -> PhotoOutcome:
     plan = build_photo_plan(job, source, root, state, layout, albums=albums)
     if dry_run:
         return PhotoOutcome(plan, None)
-    result = PhotoExecutor(source, root, state, job, today=today).run(plan)
+    result = PhotoExecutor(source, root, state, job, today=today, workers=workers).run(plan)
     return PhotoOutcome(plan, result)

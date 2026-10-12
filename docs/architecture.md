@@ -125,6 +125,7 @@ raw_alternative = true               # both files of RAW+JPEG shots
 edited = true                        # "Name (bearbeitet).ext" next to the original
 xmp = true                           # sidecars, only for photos with such metadata
 hidden = false                       # hidden photos, below hidden_folder
+workers = 4                          # parallel downloads, 1 to 8
 shared_folder = "Geteilte Mediathek"
 albums_folder = "Alben"
 favorites_folder = "Favoriten"
