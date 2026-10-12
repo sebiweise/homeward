@@ -3,9 +3,9 @@
 Abnahmekriterium für M4: ein Testordner läuft eine Woche lang bidirektional mit
 iCloud Drive, ohne Fehler, ohne verlorene Dateien und ohne unerwartete Löschbremse.
 
-> Voraussetzung: der Etag-Test aus M3 (`spikes/m3_etag_probe.py`) ist gelaufen, denn
-> er zeigt, ob iCloud die Datei-ID beim Umbenennen behält. Davon hängt ab, ob
-> Umbenennungen in iCloud an der Löschbremse vorbeikommen.
+> Der Etag-Test aus M3 hat gezeigt, dass iCloud die Datei-ID beim Umbenennen und
+> Verschieben behält. Umbenennungen auf beiden Seiten zählen deshalb nicht für die
+> Löschbremse.
 
 ## 1. Installation auf dem NAS (per SSH, ohne Paket)
 

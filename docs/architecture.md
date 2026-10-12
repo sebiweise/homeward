@@ -72,7 +72,7 @@ on real folders.
   the other side's trash, the new one is transferred. The planner pairs a delete with
   a new file on the same side when the content matches: the same NAS version token
   (it survives a rename), the same iCloud docwsid (via the provider's `file_identity`;
-  iCloud changes the etag on a move) with the same size, or the same known checksum. Such deletes are marked as renames
+  iCloud changes the etag on a rename or move, confirmed on a real account) with the same size, or the same known checksum. Such deletes are marked as renames
   and do not count for the delete brake, so renaming a folder does not stop the run.
   If the new file fails to transfer, the old one is kept until a later run.
 - **Upper/lower case**: iCloud Drive does not keep `a.txt` and `A.txt` apart. A
