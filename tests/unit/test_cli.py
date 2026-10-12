@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from homeward.cli import EXIT_BLOCKED, EXIT_OK, EXIT_USAGE, main
+from homeward import cli
+from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
+from homeward.providers.drive_api import DriveApiError
+from homeward.providers.fake_drive import FakeDriveApi
 
 
 def test_main_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -69,6 +72,47 @@ def test_sync_icloud_not_available_yet(tmp_path: Path, capsys: pytest.CaptureFix
     config = _config(tmp_path, provider="icloud_drive")
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_USAGE
     assert "not available yet" in capsys.readouterr().err
+
+
+def test_sync_with_icloud_drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeDriveApi()
+    monkeypatch.setattr(cli, "drive_api_factory", lambda pair, config: api)
+    config = _config(tmp_path, provider="icloud_drive")
+    (tmp_path / "nas" / "a.txt").write_text("a")
+    api.put(f"{tmp_path / 'cloud'}/b.txt", "b")
+
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert api.content(f"{tmp_path / 'cloud'}/a.txt") == b"a"
+    assert (tmp_path / "nas" / "b.txt").read_text() == "b"
+    assert (tmp_path / "state" / "default.drive-folders.json").is_file()
+
+
+def test_sync_reports_unreachable_icloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeDriveApi()
+
+    def offline(drivewsids: object) -> object:
+        raise DriveApiError("HTTP 503")
+
+    monkeypatch.setattr(api, "folders", offline)
+    monkeypatch.setattr(cli, "drive_api_factory", lambda pair, config: api)
+    config = _config(tmp_path, provider="icloud_drive")
+    assert main(["sync", "--config", str(config)]) == EXIT_FAILED
+    assert "FAILED: DriveApiError: HTTP 503" in capsys.readouterr().out
+
+
+def test_sync_purges_old_nas_trash(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = _config(tmp_path)
+    old = tmp_path / "nas" / ".homeward-papierkorb" / "2020-01-01"
+    old.mkdir(parents=True)
+    assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_OK
+    assert old.exists()  # a dry run changes nothing
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert not old.exists()
+    assert "Emptied 1 day folder" in capsys.readouterr().out
 
 
 def test_sync_bad_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

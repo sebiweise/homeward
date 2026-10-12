@@ -3,15 +3,18 @@
 import argparse
 import os
 import sys
+from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from homeward.core.config import DEFAULT_CONFIG_PATH, ConfigError, PairConfig, load_config
+from homeward.core.config import DEFAULT_CONFIG_PATH, Config, ConfigError, PairConfig, load_config
 from homeward.core.models import ActionKind
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
-from homeward.providers.nas import NasProvider
+from homeward.providers.drive_api import DriveApi
+from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
+from homeward.providers.nas import NasProvider, find_recycle_bin
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -26,12 +29,24 @@ def _version() -> str:
         return "0.0.0"
 
 
-def _remote_provider(pair: PairConfig) -> Provider:
+def _no_icloud_login(pair: PairConfig, config: Config) -> DriveApi:
+    raise ConfigError(
+        f"pair {pair.name!r}: iCloud sign-in is not available yet; "
+        'use remote_provider = "folder" to try the sync core'
+    )
+
+
+# Returns a signed-in Drive API for the pair's account. Replaced once iCloud sign-in
+# (homeward.auth) exists; tests replace it with a FakeDriveApi.
+drive_api_factory: Callable[[PairConfig, Config], DriveApi] = _no_icloud_login
+
+
+def _remote_provider(pair: PairConfig, config: Config) -> Provider:
     if pair.remote_provider == "folder":
         return NasProvider(Path(pair.remote), name="remote")
-    raise ConfigError(
-        f"pair {pair.name!r}: the iCloud Drive provider is not available yet; "
-        'use remote_provider = "folder" to try the sync core'
+    cache = FolderCache(config.state_dir / f"{pair.account}.drive-folders.json")
+    return ICloudDriveProvider(
+        drive_api_factory(pair, config), pair.remote, excludes=pair.exclude, cache=cache
     )
 
 
@@ -65,13 +80,24 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         raise ConfigError("no sync pairs configured")
     status = EXIT_OK
     for pair in pairs:
-        remote = _remote_provider(pair)
-        local = NasProvider(pair.local, name="nas")
-        with StateDB(config.state_path(pair.account)) as state:
-            outcome = sync_pair(
-                pair, local, remote, state, dry_run=args.dry_run, allow_deletes=args.allow_deletes
-            )
+        remote = _remote_provider(pair, config)
+        local = NasProvider(pair.local, name="nas", recycle_bin=find_recycle_bin(pair.local))
+        try:
+            with StateDB(config.state_path(pair.account)) as state:
+                outcome = sync_pair(
+                    pair, local, remote, state, dry_run=args.dry_run,
+                    allow_deletes=args.allow_deletes,
+                )  # fmt: skip
+        except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
+            print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
+            status = max(status, EXIT_FAILED)
+            continue
         _print_outcome(outcome, args.dry_run)
+        if not args.dry_run:
+            purged = local.purge_trash(pair.trash_days)
+            if purged:
+                print(f"  Emptied {purged} day folder(s) older than {pair.trash_days} days "
+                      "from the NAS trash.")  # fmt: skip
         if outcome.plan.blocked and (outcome.result is None or outcome.result.blocked):
             status = max(status, EXIT_BLOCKED)
         elif outcome.result and outcome.result.failed:

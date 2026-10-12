@@ -11,6 +11,7 @@ from homeward.core.planner import DeleteBrake
 
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
 REMOTE_PROVIDERS = ("icloud_drive", "folder")
+DEFAULT_TRASH_DAYS = 30
 
 
 class ConfigError(ValueError):
@@ -29,6 +30,7 @@ class PairConfig:
     remote_provider: str = "icloud_drive"
     exclude: tuple[str, ...] = ()
     delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
+    trash_days: int = DEFAULT_TRASH_DAYS
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,9 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
     defaults = DeleteBrake()
     ratio = _get(entry, "max_delete_ratio", (int, float), defaults.max_ratio, where)
     count = _get(entry, "max_delete_count", int, defaults.max_count, where)
+    trash_days = _get(entry, "trash_days", int, DEFAULT_TRASH_DAYS, where)
+    if trash_days < 0:
+        raise ConfigError(f"{where}: trash_days must be 0 (keep forever) or more")
     return PairConfig(
         name=name,
         local=local,
@@ -104,6 +109,7 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         remote_provider=provider,
         exclude=tuple(exclude),
         delete_brake=DeleteBrake(max_ratio=float(ratio), max_count=count),
+        trash_days=trash_days,
     )
 
 
