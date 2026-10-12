@@ -4,17 +4,23 @@
 - ``requests/<pair>.json``: "run now" requests from the UI, consumed by the daemon
 - ``status.json``: what the daemon is doing right now, written by the daemon
 - ``homeward.log``: the daemon's log, shown in the UI
+- ``events.jsonl``: the event log (waits, retries, errors) shown in the UI
 """
 
 import json
+import logging
 import os
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 DEFAULT_VAR_DIR = Path("/var/packages/homeward/var")
+MAX_EVENTS_BYTES = 2 * 1024 * 1024  # then events.jsonl moves to events.jsonl.1
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +46,10 @@ class Paths:
     @property
     def log_file(self) -> Path:
         return self.var_dir / "homeward.log"
+
+    @property
+    def events_file(self) -> Path:
+        return self.var_dir / "events.jsonl"
 
     @property
     def backup_dir(self) -> Path:
@@ -112,3 +122,103 @@ def read_status(paths: Paths) -> dict[str, Any]:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+# Codes the UI has texts for; producers may use others, the UI then shows ``message``.
+EVENT_CODES = (
+    "icloud_indexing",  # Apple still prepares the photo library; set ``until``
+    "rate_limited",  # Apple throttles requests; set ``until``
+    "apple_unavailable",  # 5xx from Apple, retried later; set ``until`` if known
+    "link_expired",  # a download URL expired and is fetched again
+    "retry",  # a transfer failed and will be retried
+    "login_required",  # the Apple ID session expired
+    "sync_started",
+    "sync_finished",
+    "sync_failed",
+    "delete_brake",
+    "conflict",
+    "file_failed",
+)
+
+
+class Level(StrEnum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """Something the user should be able to see happen in the background.
+
+    ``source`` names what it is about (``photos:<name>``, ``pair:<name>``,
+    ``account:<name>`` or ``service``). ``code`` is a stable key the UI translates
+    (``[event]`` section of the strings), ``message`` is English detail for the log.
+    ``until`` is set while Homeward deliberately waits, e.g. for Apple to finish
+    indexing or to lift a rate limit.
+    """
+
+    time: float
+    level: Level
+    source: str
+    code: str
+    message: str = ""
+    until: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+def record_event(
+    level: Level,
+    source: str,
+    code: str,
+    message: str = "",
+    *,
+    until: float | None = None,
+    paths: Paths | None = None,
+    **details: Any,
+) -> None:
+    """Append one event to the event log. Never raises: events must not break a sync."""
+    paths = paths or Paths.from_env()
+    event = Event(time.time(), Level(level), source, code, message, until, details)
+    line = json.dumps(asdict(event), ensure_ascii=False, default=str) + "\n"
+    try:
+        paths.events_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if paths.events_file.stat().st_size > MAX_EVENTS_BYTES:
+                os.replace(paths.events_file, paths.events_file.with_suffix(".jsonl.1"))
+        except FileNotFoundError:
+            pass
+        fd = os.open(paths.events_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError as exc:
+        log.warning("could not record event %s %s: %s", source, code, exc)
+
+
+def read_events(paths: Paths, limit: int = 200) -> list[Event]:
+    """The newest events first, from the current and the rotated event log."""
+    events: list[Event] = []
+    for file in (paths.events_file, paths.events_file.with_suffix(".jsonl.1")):
+        try:
+            lines = file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            try:
+                data = json.loads(line)
+                events.append(
+                    Event(
+                        time=float(data["time"]),
+                        level=Level(data["level"]),
+                        source=str(data["source"]),
+                        code=str(data["code"]),
+                        message=str(data.get("message", "")),
+                        until=None if data.get("until") is None else float(data["until"]),
+                        details=dict(data.get("details") or {}),
+                    )
+                )
+            except (ValueError, KeyError, TypeError):
+                continue
+            if len(events) >= limit:
+                return events
+    return events

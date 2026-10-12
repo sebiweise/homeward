@@ -7,6 +7,7 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import existing_state
 from homeward.api.server import Context, Request
+from homeward.runtime import Level, read_events
 
 MAX_LINES = 2000
 _CHUNK = 8192
@@ -30,6 +31,18 @@ def runs(ctx: Context, request: Request) -> dict[str, Any]:
                 result.extend(asdict(run) for run in state.runs(limit=limit))
     result.sort(key=lambda run: run["started_at"], reverse=True)
     return {"runs": result[:limit]}
+
+
+def events(ctx: Context, request: Request) -> dict[str, Any]:
+    """The event log, newest first; ``level`` hides less important events."""
+    limit = _int(request.get("limit", "200"), 1, 2000)
+    order = list(Level)
+    try:
+        minimum = order.index(Level(request.get("level", Level.INFO)))
+    except ValueError:
+        raise ApiError("invalid_param", "level") from None
+    found = [e for e in read_events(ctx.paths, limit=10_000) if order.index(e.level) >= minimum]
+    return {"events": [asdict(event) for event in found[:limit]]}
 
 
 def _int(value: str, low: int, high: int) -> int:

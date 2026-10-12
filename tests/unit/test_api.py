@@ -1,6 +1,7 @@
 import io
 import json
 import stat
+import time
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -17,7 +18,14 @@ from homeward.api.errors import ApiError
 from homeward.api.store import KEEP_BACKUPS, ConfigStore
 from homeward.core.models import FileMeta
 from homeward.core.state import StateDB
-from homeward.runtime import Paths, pending_requests, take_requests
+from homeward.runtime import (
+    Level,
+    Paths,
+    pending_requests,
+    read_events,
+    record_event,
+    take_requests,
+)
 
 
 class FakeAuth:
@@ -443,3 +451,45 @@ def test_photos_validation(client: Client, tmp_path: Path) -> None:
     with pytest.raises(ApiError) as excinfo:
         client.call("photos.update", post=True, photos=_photos(tmp_path))
     assert _error(excinfo) == "photos_not_found"
+
+
+# --- events --------------------------------------------------------------------------
+
+
+def test_events_and_notices(client: Client) -> None:
+    paths = client.paths
+    now = time.time()
+    record_event(Level.INFO, "service", "sync_started", paths=paths)
+    record_event(Level.WARNING, "photos:fotos", "icloud_indexing", "PyiCloud...", until=now + 300,
+                 paths=paths, attempt=1)  # fmt: skip
+    record_event(Level.ERROR, "pair:docs", "file_failed", "a.txt: 503", paths=paths)
+    record_event(Level.ERROR, "pair:docs", "file_failed", "b.txt: 503", paths=paths)
+    paths.events_file.open("a").write("not json\n")
+
+    events = client.call("log.events")["events"]
+    assert [e["code"] for e in events] == ["file_failed", "file_failed", "icloud_indexing",
+                                           "sync_started"]  # fmt: skip
+    assert events[2]["details"] == {"attempt": 1}
+    errors = client.call("log.events", level="error")["events"]
+    assert {e["level"] for e in errors} == {"error"}
+    with pytest.raises(ApiError):
+        client.call("log.events", level="debug")
+
+    notices = client.call("status.get")["notices"]
+    assert [(n["code"], n["waiting"]) for n in notices] == [("file_failed", False),
+                                                            ("icloud_indexing", True)]  # fmt: skip
+    assert notices[0]["message"] == "b.txt: 503"
+
+
+def test_event_log_rotates_and_never_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("homeward.runtime.MAX_EVENTS_BYTES", 200)
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    for i in range(10):
+        record_event(Level.INFO, "service", "retry", f"attempt {i}", paths=paths)
+    assert paths.events_file.with_suffix(".jsonl.1").exists()
+    assert [e.message for e in read_events(paths, limit=3)] == ["attempt 9", "attempt 8",
+                                                                "attempt 7"]  # fmt: skip
+    blocked = Paths(var_dir=paths.events_file, config=tmp_path / "x")  # a file, not a folder
+    record_event(Level.ERROR, "service", "retry", paths=blocked)

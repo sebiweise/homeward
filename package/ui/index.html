@@ -22,6 +22,7 @@
 <main>
   <section id="tab-status" class="tab" hidden>
     <p id="daemon" class="muted"></p>
+    <div id="notices"></div>
     <div id="status-table"></div>
   </section>
   <section id="tab-pairs" class="tab" hidden>
@@ -39,6 +40,17 @@
   </section>
   <section id="tab-log" class="tab" hidden>
     <div class="toolbar"><button id="log-refresh" data-t="common:refresh"></button></div>
+    <h3 data-t="log:events"></h3>
+    <div class="toolbar">
+      <label class="inline"><span data-t="log:level"></span>
+        <select id="event-level">
+          <option value="info" data-t="log:level_info"></option>
+          <option value="warning" data-t="log:level_warning"></option>
+          <option value="error" data-t="log:level_error"></option>
+        </select>
+      </label>
+    </div>
+    <div id="events-table"></div>
     <h3 data-t="log:runs"></h3>
     <div id="runs-table"></div>
     <h3 data-t="log:lines"></h3>

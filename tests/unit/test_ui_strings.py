@@ -6,6 +6,7 @@ from pathlib import Path
 
 from homeward.api.handlers import photos
 from homeward.dsm.notify import Event
+from homeward.runtime import EVENT_CODES, Level
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "package" / "ui"
@@ -55,4 +56,9 @@ def test_modes_states_and_notifications_have_texts() -> None:
     expected |= {f"notify:{event}" for event in Event}
     expected |= {f"photos:{key}" for key in [*photos.SWITCHES, *photos.FOLDERS]}
     expected |= {f"photos:lib_{lib}" for lib in photos.LIBRARIES}
+    expected |= {f"event:{code}" for code in EVENT_CODES}
+    expected |= {f"event:level_{level}" for level in Level} | {
+        f"log:level_{level}" for level in Level
+    }
+    expected |= {f"event:src_{kind}" for kind in ("photos", "pair", "account", "service")}
     assert expected - keys == set()

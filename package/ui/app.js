@@ -211,6 +211,39 @@ function select(name, options, value) {
     );
 }
 
+// --- events ----------------------------------------------------------------------------
+
+const LEVEL_BADGE = { info: "idle", warning: "warn", error: "bad" };
+
+function eventSource(source) {
+    const [kind, ...rest] = source.split(":");
+    const key = "event:src_" + kind;
+    return strings[key] ? t(key, rest.join(":")) : source;
+}
+
+function eventText(event) {
+    const key = "event:" + event.code;
+    let text = strings[key] ? t(key) : event.message || event.code;
+    if (event.until && event.until * 1000 > Date.now()) text += " (" + t("status:waiting_until", formatTime(event.until)) + ")";
+    return text;
+}
+
+function eventRow(event) {
+    return el(
+        "tr",
+        {},
+        el("td", { text: formatTime(event.time) }),
+        el("td", {}, el("span", { class: "badge " + LEVEL_BADGE[event.level], text: t("event:level_" + event.level) })),
+        el("td", { text: eventSource(event.source) }),
+        el("td", {}, eventText(event), event.message && strings["event:" + event.code]
+            ? el("div", { class: "muted", text: event.message }) : null)
+    );
+}
+
+function eventTable(events) {
+    return table([t("log:time"), "", t("log:source"), t("log:event")], events.map(eventRow));
+}
+
 // --- status tab ------------------------------------------------------------------------
 
 function resultBadge(pair) {
@@ -238,6 +271,10 @@ async function renderStatus() {
     document.getElementById("daemon").textContent = daemon.running
         ? t("status:daemon_running", daemon.running)
         : Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
+    const notices = data.notices || [];
+    document
+        .getElementById("notices")
+        .replaceChildren(notices.length ? el("div", {}, el("h3", { text: t("status:notices") }), eventTable(notices)) : "");
     const rows = data.pairs.map((pair) => {
         const run = pair.last_run;
         const blocked = run && run.blocked && !pair.pending;
@@ -569,7 +606,13 @@ function codeDialog(name) {
 // --- log tab ---------------------------------------------------------------------------
 
 async function renderLog() {
-    const [runs, log] = await Promise.all([api("log.runs", { limit: 50 }), api("log.tail", { lines: 300 })]);
+    const level = document.getElementById("event-level").value;
+    const [events, runs, log] = await Promise.all([
+        api("log.events", { limit: 200, level: level }),
+        api("log.runs", { limit: 50 }),
+        api("log.tail", { lines: 300 }),
+    ]);
+    document.getElementById("events-table").replaceChildren(eventTable(events.events));
     const rows = runs.runs.map((run) =>
         el(
             "tr",
@@ -629,6 +672,7 @@ async function start() {
     document.getElementById("photos-add").addEventListener("click", () => photosDialog(null));
     document.getElementById("account-add").addEventListener("click", accountDialog);
     document.getElementById("log-refresh").addEventListener("click", () => guarded(renderLog));
+    document.getElementById("event-level").addEventListener("change", () => guarded(renderLog));
     selectTab(activeTab);
 }
 

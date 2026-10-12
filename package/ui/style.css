@@ -78,3 +78,6 @@ fieldset { border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px 
   display: flex; flex-direction: column; gap: 6px; }
 legend { color: var(--muted); padding: 0 4px; }
 dialog label.check { flex-direction: row; align-items: center; gap: 8px; }
+label.inline { display: flex; align-items: center; gap: 8px; }
+#notices h3 { margin-top: 0; }
+#notices { margin-bottom: 16px; }

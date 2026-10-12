@@ -32,6 +32,7 @@ backend once and never written anywhere.
 | `accounts.remove` | yes | `name` |
 | `log.runs` | | `limit` |
 | `log.tail` | | `lines` |
+| `log.events` | | `limit`, `level` (`info`, `warning`, `error`) |
 
 Answers: `{"success": true, "data": ...}` or
 `{"success": false, "error": {"code": "...", "message": "..."}}`; each code has a
@@ -54,6 +55,11 @@ Below `/var/packages/homeward/var` (`$HOMEWARD_VAR`):
 - `requests/<pair>.json`: "sync now" requests; the daemon calls `take_requests()`.
 - `status.json`: written by the daemon, e.g. `{"running": "<pair>"}` or `{}` when idle.
 - `homeward.log`: the daemon's log, shown on the log page.
+- `events.jsonl`: the event log. Anything that runs in the background calls
+  `runtime.record_event(level, source, code, message, until=...)` for waits, retries
+  and errors (source `photos:<name>`, `pair:<name>`, `account:<name>` or `service`;
+  codes with UI texts in `runtime.EVENT_CODES`). The status page shows running waits
+  and the warnings and errors of the last 24 hours; the log page shows all events.
 
 ## DSM notifications
 
