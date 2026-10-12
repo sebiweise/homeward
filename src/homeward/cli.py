@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import fcntl
+import functools
 import getpass
 import logging
 import os
@@ -29,7 +30,7 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
-from homeward.providers.icloud_photos import ICloudPhotosSource
+from homeward.providers.icloud_photos import ICloudPhotosSource, PhotosNotReady
 from homeward.providers.nas import NasProvider, find_recycle_bin
 from homeward.runtime import EventLogHandler, Paths
 
@@ -114,6 +115,32 @@ def _events(config_path: Path, source: str) -> Iterator[None]:
         logger.removeHandler(handler)
 
 
+def _reported(run: Callable[[], int]) -> int:
+    """Run one pair or job; an error that ends it becomes a readable event, not only
+    a traceback in the log."""
+    try:
+        return run()
+    except ConfigError:
+        raise
+    except PhotosNotReady as exc:
+        print(f"homeward: {exc}", file=sys.stderr)
+        log.warning("%s", exc, extra={"event": "icloud_indexing"})
+        return EXIT_FAILED
+    except Exception as exc:
+        log.exception("the run stopped: %s", _describe(exc))
+        return EXIT_FAILED
+
+
+def _describe(exc: BaseException) -> str:
+    """The error and what caused it, e.g. "Photos service not available (iCloud Photo
+    Library not finished indexing)"."""
+    text = str(exc) or type(exc).__name__
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and str(cause) and str(cause) not in text:
+        text += f" ({cause})"
+    return text
+
+
 def _cmd_sync(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     pairs = [config.pair(args.pair)] if args.pair else list(config.pairs)
@@ -122,7 +149,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for pair in pairs:
         with _events(args.config, f"pair:{pair.name}"):
-            status = max(status, _sync_one(args, config, pair))
+            status = max(status, _reported(functools.partial(_sync_one, args, config, pair)))
     return status
 
 
@@ -222,7 +249,7 @@ def _cmd_photos(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for job in jobs:
         with _events(args.config, f"photos:{job.name}"):
-            status = max(status, _photos_one(args, config, job))
+            status = max(status, _reported(functools.partial(_photos_one, args, config, job)))
     return status
 
 

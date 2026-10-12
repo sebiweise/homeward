@@ -55,6 +55,10 @@ XmpBuilder = Callable[[Any], bytes | None]
 Lookup = Callable[[Any, list[str], list[str]], Iterable[Any]]
 
 
+class PhotosNotReady(Exception):
+    """iCloud kept refusing the photo library while it indexes; try again later."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Resource:
     filename: str
@@ -304,8 +308,12 @@ class ICloudPhotosSource:
             try:
                 return cast(dict[str, Any], self.service.photos.libraries)
             except Exception as exc:
-                if type(exc).__name__ != INDEXING_ERROR or wait is None:
+                if not _indexing(exc):
                     raise
+                if wait is None:
+                    raise PhotosNotReady(
+                        "iCloud is still indexing the photo library; the next run will try again"
+                    ) from exc
                 log.info(
                     "iCloud is still indexing the photo library, waiting %d s and trying again",
                     wait,
@@ -486,6 +494,17 @@ def _url(asset: Any, resource: str) -> str | None:
         resources.update(_edited(asset, record))
     found = resources.get(resource)
     return found.url if found is not None and found.url else None
+
+
+def _indexing(exc: BaseException) -> bool:
+    """True if iCloud refused because it is indexing; pyicloud may wrap that refusal
+    (opening the root library raises PyiCloudServiceUnavailable from it)."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if type(seen).__name__ == INDEXING_ERROR:
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 def _status(exc: Exception) -> object:

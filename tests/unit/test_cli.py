@@ -269,3 +269,32 @@ def test_photos_refuses_a_second_run_for_the_same_account(
     assert source.listed == 0
 
     assert main(["photos", "--config", str(config)]) == EXIT_OK
+
+
+def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
+    import logging
+
+    from homeward.cli import EXIT_FAILED, _events, _reported
+    from homeward.providers.icloud_photos import PhotosNotReady
+    from homeward.runtime import Paths, read_events
+
+    class Unavailable(Exception):
+        pass
+
+    def crash() -> int:
+        try:
+            raise KeyError("indexing")
+        except KeyError as exc:
+            raise Unavailable("Photos service not available") from exc
+
+    def not_ready() -> int:
+        raise PhotosNotReady("iCloud is still indexing the photo library")
+
+    config = tmp_path / "config.toml"
+    logging.getLogger("homeward").setLevel(logging.INFO)
+    with _events(config, "photos:me"):
+        assert _reported(crash) == EXIT_FAILED
+        assert _reported(not_ready) == EXIT_FAILED
+    events = read_events(Paths(var_dir=tmp_path, config=config))
+    assert [(e.code, e.level) for e in events] == [("icloud_indexing", "warning"), ("log", "error")]
+    assert events[1].message == "the run stopped: Photos service not available ('indexing')"
