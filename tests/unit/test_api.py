@@ -524,3 +524,118 @@ def test_version_comes_from_the_dsm_package(tmp_path: Path) -> None:
     info.write_text('package="homeward"\nversion="0.1.0-2"\n')
     assert package_version(info) == "0.1.0-2"
     assert package_version(tmp_path / "missing")  # falls back to the wheel's version
+
+
+# --- folder picker -------------------------------------------------------------------
+
+
+@pytest.fixture
+def volumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from homeward.api.handlers import folders
+
+    root = tmp_path / "root"
+    for folder in (
+        "volume1/photo/2024",
+        "volume1/photo/@eaDir",
+        "volume1/photo/#recycle",
+        "volume1/photo/.hidden",
+        "volume1/homes/alice",
+        "volume1/@appstore",
+        "volumeUSB1/usbshare",
+        "elsewhere/secret",
+    ):
+        (root / folder).mkdir(parents=True)
+    (root / "volume1" / "photo" / "notes.txt").write_text("not a folder")
+    (root / "volume1" / "photo" / "outside").symlink_to(root / "elsewhere")
+    (root / "volume1" / "photo" / "alias").symlink_to(root / "volume1" / "homes")
+    monkeypatch.setattr(folders, "ROOT", root)
+    return root
+
+
+def _names(listing: dict[str, Any]) -> list[str]:
+    return [folder["name"] for folder in listing["folders"]]
+
+
+def test_folders_lists_shares_then_subfolders(client: Client, volumes: Path) -> None:
+    shares = client.call("folders.list")
+    assert shares["path"] is None
+    assert [f["path"] for f in shares["folders"]] == [
+        str(volumes / "volume1" / "homes"),
+        str(volumes / "volume1" / "photo"),
+        str(volumes / "volumeUSB1" / "usbshare"),
+    ]
+    photo = client.call("folders.list", path=str(volumes / "volume1" / "photo"))
+    # files, DSM folders, the recycle bin, dot folders and links off the volumes are hidden
+    assert _names(photo) == ["2024", "alias"]
+    assert photo["parent"] is None and photo["writable"]
+    year = client.call("folders.list", path=str(volumes / "volume1" / "photo" / "2024"))
+    assert year["parent"] == str(volumes / "volume1" / "photo")
+    assert year["folders"] == []
+
+
+def test_folders_stay_inside_the_shares(client: Client, volumes: Path) -> None:
+    photo = volumes / "volume1" / "photo"
+    cases = {
+        "invalid_param": ["relative/path", f"{photo}/../homes"],
+        "folder_not_found": [
+            str(volumes / "volume1"),
+            str(volumes / "elsewhere"),
+            str(volumes / "volume1" / "@appstore"),
+            str(photo / "@eaDir"),
+            str(photo / "outside"),
+            str(photo / "missing"),
+            str(photo / "notes.txt"),
+        ],
+    }
+    for code, paths in cases.items():
+        for path in paths:
+            with pytest.raises(ApiError) as excinfo:
+                client.call("folders.list", path=path)
+            assert _error(excinfo) == code, path
+    assert _names(client.call("folders.list", path=str(photo / "alias"))) == ["alice"]
+
+
+def test_folders_only_shows_what_homeward_may_open(
+    client: Client, volumes: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    homes = volumes / "volume1" / "homes"
+    photo = volumes / "volume1" / "photo"
+    real_access = os.access
+
+    def access(path: Any, mode: int, **kwargs: Any) -> bool:
+        if Path(path) == homes:
+            return False
+        if Path(path) == photo and mode & os.W_OK:
+            return False
+        return real_access(path, mode, **kwargs)
+
+    monkeypatch.setattr(os, "access", access)
+    shares = client.call("folders.list")["folders"]
+    assert [(f["name"], f["writable"]) for f in shares] == [("photo", False), ("usbshare", True)]
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.list", path=str(homes))
+    assert _error(excinfo) == "folder_denied"
+    assert client.call("folders.list", path=str(photo))["writable"] is False
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.create", post=True, path=str(photo), name="new")
+    assert _error(excinfo) == "folder_denied"
+    assert not (photo / "new").exists()
+
+
+def test_folders_create(client: Client, volumes: Path) -> None:
+    photo = volumes / "volume1" / "photo"
+    created = client.call("folders.create", post=True, path=str(photo), name=" Alice ")
+    assert created == {"name": "Alice", "path": str(photo / "Alice"), "writable": True}
+    assert (photo / "Alice").is_dir()
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.create", post=True, path=str(photo), name="Alice")
+    assert _error(excinfo) == "folder_exists"
+    for name in ("", "a/b", "..", "@eaDir", ".x", "#recycle", "x" * 256):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("folders.create", post=True, path=str(photo), name=name)
+        assert _error(excinfo) in ("invalid_param", "missing_param"), name
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.create", path=str(photo), name="get")
+    assert _error(excinfo) == "post_required"

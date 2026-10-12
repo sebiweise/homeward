@@ -211,6 +211,125 @@ function select(name, options, value) {
     );
 }
 
+// --- folder picker ---------------------------------------------------------------------
+
+const PICKER_MAX = 2000;
+
+// A text field for a NAS folder with a "Browse..." button that opens the picker.
+function folderField(label, name, value, hint) {
+    const input = el("input", { name: name, value: value, required: true });
+    const browse = el("button", {
+        type: "button",
+        text: t("picker:browse"),
+        onclick: () => pickFolder(input.value.trim(), (path) => (input.value = path)),
+    });
+    return el(
+        "label",
+        {},
+        label,
+        el("div", { class: "folder-input" }, input, browse),
+        hint ? el("span", { class: "hint", text: hint }) : null
+    );
+}
+
+// Lets the user browse the shared folders Homeward can open; `onPick` gets the path.
+// It runs on top of the open form dialog, which keeps its values.
+function pickFolder(start, onPick) {
+    const dialog = document.getElementById("picker");
+    const where = el("div", { class: "where" });
+    const list = el("ul", { class: "folders" });
+    const note = el("p", { class: "hint", hidden: true });
+    const error = el("p", { class: "error", hidden: true });
+    const up = el("button", { type: "button", text: t("picker:up") });
+    const newName = el("input", { placeholder: t("picker:folder_name"), "aria-label": t("picker:folder_name") });
+    const create = el("button", { type: "button", text: t("picker:create") });
+    const newRow = el("div", { class: "folder-input", hidden: true }, newName, create);
+    const newFolder = el("button", { type: "button", text: t("picker:new_folder") });
+    const cancel = el("button", { type: "button", text: t("common:cancel") });
+    const choose = el("button", { type: "button", class: "primary", text: t("picker:select") });
+    let current = null;
+
+    function fail(e) {
+        error.textContent = errorText(e);
+        error.hidden = false;
+    }
+
+    async function load(path, fallback) {
+        let data;
+        try {
+            data = await api("folders.list", path ? { path: path } : {});
+        } catch (e) {
+            if (fallback) return load(null, false);
+            fail(e);
+            return;
+        }
+        error.hidden = true;
+        current = data;
+        where.textContent = data.path || t("picker:shares");
+        up.disabled = !data.path;
+        choose.disabled = !data.path;
+        newFolder.disabled = !data.path || !data.writable;
+        newRow.hidden = true;
+        const notes = [];
+        if (data.path && !data.writable) notes.push(t("picker:read_only_hint"));
+        if (data.truncated) notes.push(t("picker:truncated", PICKER_MAX));
+        note.textContent = notes.join(" ");
+        note.hidden = !notes.length;
+        list.replaceChildren(
+            ...data.folders.map((folder) =>
+                el(
+                    "li",
+                    {},
+                    el(
+                        "button",
+                        { type: "button", class: "folder", title: folder.path, onclick: () => load(folder.path, false) },
+                        el("span", { class: "name", text: folder.name }),
+                        data.path ? null : el("span", { class: "muted", text: folder.path }),
+                        folder.writable ? null : el("span", { class: "muted", text: t("picker:read_only") })
+                    )
+                )
+            )
+        );
+        if (!data.folders.length)
+            list.append(el("li", { class: "muted", text: t(data.path ? "picker:empty" : "picker:no_shares") }));
+    }
+
+    up.addEventListener("click", () => load(current && current.parent, false));
+    newFolder.addEventListener("click", () => {
+        newRow.hidden = false;
+        newName.value = "";
+        newName.focus();
+    });
+    create.addEventListener("click", async () => {
+        if (!newName.value.trim()) return;
+        try {
+            const folder = await api("folders.create", { path: current.path, name: newName.value.trim() }, true);
+            await load(folder.path, false);
+        } catch (e) {
+            fail(e);
+        }
+    });
+    newName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            create.click();
+        }
+    });
+    cancel.addEventListener("click", () => dialog.close());
+    choose.addEventListener("click", () => {
+        onPick(current.path);
+        dialog.close();
+    });
+
+    dialog.replaceChildren(
+        el("h2", { text: t("picker:title") }),
+        el("div", { class: "body" }, el("div", { class: "nav" }, up, where), list, newRow, note, error),
+        el("div", { class: "foot" }, newFolder, el("span", { class: "spacer" }), cancel, choose)
+    );
+    dialog.showModal();
+    load(start, true);
+}
+
 // --- events ----------------------------------------------------------------------------
 
 const LEVEL_BADGE = { info: "idle", warning: "warn", error: "bad" };
@@ -425,7 +544,7 @@ function pairDialog(pair) {
             )
         ),
         field(t("pair:account"), select("account", accountOptions, p.account)),
-        field(t("pair:local"), el("input", { name: "local", value: p.local, required: true }), t("pair:local_hint")),
+        folderField(t("pair:local"), "local", p.local, t("pair:local_hint")),
         field(t("pair:remote"), el("input", { name: "remote", value: p.remote, required: true }), t("pair:remote_hint")),
         field(
             t("pair:mode"),
@@ -531,7 +650,7 @@ function photosDialog(job) {
     const fields = [
         field(t("photos:name"), el("input", { name: "name", value: j.name, required: true, readonly: editing })),
         field(t("photos:account"), select("account", accountOptions, j.account)),
-        field(t("photos:target"), el("input", { name: "target", value: j.target, required: true }), t("photos:target_hint")),
+        folderField(t("photos:target"), "target", j.target, t("photos:target_hint")),
         el("fieldset", {}, el("legend", { text: t("photos:libraries") }),
             LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
@@ -704,7 +823,7 @@ function selectTab(name) {
     clearInterval(refreshTimer);
     if (name === "status") {
         refreshTimer = setInterval(() => {
-            if (!document.getElementById("dialog").open) guarded(renderStatus);
+            if (!document.querySelector("dialog[open]")) guarded(renderStatus);
         }, REFRESH_MS);
     }
 }

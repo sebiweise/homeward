@@ -56,6 +56,11 @@ Homeward keeps only the trusted session Apple hands out after the 2FA step (in
 When Apple expires the session, the affected jobs fail and the Accounts tab asks you to
 sign in again. A failed sync also sends a DSM notification.
 
+NAS folders are picked with *Browse...*: it lists the shared folders the user
+`homeward` can open, and *New folder* creates one in place. A share missing there
+needs read/write permission for `homeward` (see above). Typing the full path still
+works.
+
 Every change in the app is checked before it is saved; the previous configuration is
 kept in `var/config-backups/` (the last 20). Removing a pair, a photos backup or an
 account never touches any files.
