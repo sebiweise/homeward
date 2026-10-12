@@ -41,4 +41,5 @@ def notify(event: Event, *args: str, binary: str = SYNODSMNOTIFY) -> bool:
     if result.returncode != 0:
         log.warning("notification %s failed: %s", event, result.stderr.strip())
         return False
+    log.info("notification %s sent for %s", event, ", ".join(args) or "-")
     return True
