@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -32,6 +33,17 @@ CREATE TABLE IF NOT EXISTS runs (
     blocked TEXT
 );
 """
+
+
+@dataclass(frozen=True, slots=True)
+class RunRecord:
+    pair: str
+    started_at: float
+    finished_at: float
+    dry_run: bool
+    actions: int
+    errors: int
+    blocked: str | None
 
 
 class StateDB:
@@ -94,6 +106,24 @@ class StateDB:
 
     def forget(self, pair: str, path: str) -> None:
         self._conn.execute("DELETE FROM files WHERE pair = ? AND path = ?", (pair, path))
+
+    def reset(self, pair: str) -> int:
+        """Forget every file of a pair, so its next run is a first run again."""
+        cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
+        return cursor.rowcount
+
+    def runs(self, pair: str | None = None, limit: int = 50) -> list[RunRecord]:
+        """The most recent runs, newest first."""
+        query = "SELECT pair, started_at, finished_at, dry_run, actions, errors, blocked FROM runs"
+        args: tuple[object, ...] = ()
+        if pair is not None:
+            query += " WHERE pair = ?"
+            args = (pair,)
+        rows = self._conn.execute(query + " ORDER BY id DESC LIMIT ?", (*args, limit))
+        return [
+            RunRecord(pair, started, finished, bool(dry), actions, errors, blocked)
+            for pair, started, finished, dry, actions, errors, blocked in rows
+        ]
 
     def log_run(
         self,

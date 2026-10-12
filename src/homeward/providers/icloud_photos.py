@@ -55,6 +55,10 @@ XmpBuilder = Callable[[Any], bytes | None]
 Lookup = Callable[[Any, list[str], list[str]], Iterable[Any]]
 
 
+class PhotosNotReady(Exception):
+    """iCloud kept refusing the photo library while it indexes; try again later."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Resource:
     filename: str
@@ -184,13 +188,18 @@ class ICloudPhotosSource:
                 log.info(
                     "iCloud answered %s for %s, retrying in %d s",
                     _status(exc), item.filename, RETRY_DELAY,
+                    extra={"event": "apple_unavailable", "until": time.time() + RETRY_DELAY},
                 )  # fmt: skip
                 self._sleep(RETRY_DELAY)
                 return self._stream(self._get(url))
             fresh = self._fresh_url(item.key) if _expired(exc) else None
             if fresh is None:
                 raise
-            log.info("download link of %s had expired, fetched a new one", item.filename)
+            log.info(
+                "download link of %s had expired, fetched a new one",
+                item.filename,
+                extra={"event": "link_expired"},
+            )
             self._urls[item.key] = fresh
             self._fetched_at[item.key] = self._clock()
             response = self._get(fresh)
@@ -299,11 +308,16 @@ class ICloudPhotosSource:
             try:
                 return cast(dict[str, Any], self.service.photos.libraries)
             except Exception as exc:
-                if type(exc).__name__ != INDEXING_ERROR or wait is None:
+                if not _indexing(exc):
                     raise
+                if wait is None:
+                    raise PhotosNotReady(
+                        "iCloud is still indexing the photo library; the next run will try again"
+                    ) from exc
                 log.info(
                     "iCloud is still indexing the photo library, waiting %d s and trying again",
                     wait,
+                    extra={"event": "icloud_indexing", "until": time.time() + wait},
                 )
                 self._sleep(wait)
         raise AssertionError("unreachable")
@@ -480,6 +494,17 @@ def _url(asset: Any, resource: str) -> str | None:
         resources.update(_edited(asset, record))
     found = resources.get(resource)
     return found.url if found is not None and found.url else None
+
+
+def _indexing(exc: BaseException) -> bool:
+    """True if iCloud refused because it is indexing; pyicloud may wrap that refusal
+    (opening the root library raises PyiCloudServiceUnavailable from it)."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if type(seen).__name__ == INDEXING_ERROR:
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 def _status(exc: Exception) -> object:

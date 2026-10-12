@@ -479,7 +479,9 @@ class PhotoExecutor:
         try:
             apply()
         except Exception as exc:
-            log.warning("%s %s failed: %s", action.kind, action.path, exc)
+            log.warning(
+                "%s %s failed: %s", action.kind, action.path, exc, extra={"event": "file_failed"}
+            )
             result.failed.append(PhotoFailure(action, f"{type(exc).__name__}: {exc}"))
         else:
             result.done.append(action)

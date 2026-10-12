@@ -258,3 +258,51 @@ target = "{tmp_path / "photos"}"
     _request(tmp_path, "p", '{"pair": "photos:me", "dry_run": true, "allow_deletes": true}')
     daemon.cycle()
     assert runner.argv[-1] == ("photos", "--config", str(config), "--job", "me", "--dry-run")
+
+
+def test_runs_write_events_and_notify_once(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    sent: list[tuple[str, str]] = []
+    runner = Recorder(code=1)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, Clock(), notifier=lambda e, *a: sent.append((e, *a))
+    )
+    job = Job("pair:docs", ("sync",))
+    scheduler.run(job)
+    scheduler.run(job)
+    runner.code = 3
+    scheduler.run(job)
+    runner.code = 0
+    scheduler.run(job)
+
+    events = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    codes = [(e.source, e.code) for e in reversed(events) if e.code != "sync_started"]
+    assert codes == [("pair:docs", c) for c in ("sync_failed", "sync_failed", "delete_brake",
+                                                "sync_finished")]  # fmt: skip
+    assert sent == [("sync_failed", "docs"), ("delete_brake", "docs")]
+
+
+def test_config_errors_become_events(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    config = tmp_path / "config.toml"
+    config.write_text("[[pair]]\nname = 1\n")
+    daemon = Daemon(config, _scheduler(tmp_path, Recorder(), Clock()), SubprocessRunner())
+    assert not daemon.reload()
+    assert not daemon.reload()  # the same error is recorded once
+    events = read_events(Paths(var_dir=tmp_path, config=config))
+    assert [(e.source, e.code) for e in events] == [("service", "config_error")]
+
+
+def test_a_stopped_run_is_a_warning_not_an_error(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    sent: list[str] = []
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=-15), Clock(), notifier=lambda e, *a: sent.append(e)
+    )
+    scheduler.run(Job("photos:me", ("photos",)))
+    (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    assert (event.level, event.code) == ("warning", "sync_stopped")
+    assert sent == []

@@ -1,0 +1,28 @@
+{
+    "desktop.js": {
+        "SYNO.SDS.Homeward.Instance": {
+            "type": "app",
+            "title": "app:app_name",
+            "desc": "app:app_desc",
+            "appWindow": "SYNO.SDS.Homeward.MainWindow",
+            "icon": "images/icon_{0}.png",
+            "texts": "texts",
+            "allUsers": false,
+            "allowMultiInstance": false,
+            "depend": ["SYNO.SDS.Homeward.MainWindow"],
+            "preloadTexts": [
+                "app:app_name",
+                "notify:sync_failed",
+                "notify:delete_brake",
+                "notify:login_needed",
+                "notify:conflicts"
+            ]
+        },
+        "SYNO.SDS.Homeward.MainWindow": {
+            "type": "lib",
+            "title": "app:app_name",
+            "icon": "images/icon_{0}.png",
+            "texts": "texts"
+        }
+    }
+}
