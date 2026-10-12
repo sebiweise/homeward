@@ -208,19 +208,79 @@ class PhotoRunResult:
 
 
 class _Paths:
-    """Hands out NAS paths that no other photo or link owns and that are free on disk."""
+    """Hands out NAS paths that no other photo or link owns and that are free on disk.
+
+    Names are compared ignoring case: Synology Drive (and SMB clients on macOS or
+    Windows) see ``IMG_1.JPG`` and ``img_1.jpg`` as the same file and rename one of them.
+    """
 
     def __init__(self, root: Path, owned: Iterable[str]) -> None:
         self.root = root
-        self.taken = set(owned)
+        self.taken = {p.casefold() for p in owned}
+        self._listings: dict[PurePosixPath, set[str]] = {}
 
     def claim(self, wanted: PurePosixPath) -> str:
         candidate, number = wanted, 2
-        while str(candidate) in self.taken or (self.root / candidate).exists():
+        while str(candidate).casefold() in self.taken or self._on_disk(candidate):
             candidate = numbered(wanted, number)
             number += 1
-        self.taken.add(str(candidate))
+        self.taken.add(str(candidate).casefold())
         return str(candidate)
+
+    def _on_disk(self, path: PurePosixPath) -> bool:
+        return path.name.casefold() in _listing(self.root, path.parent, self._listings)
+
+
+class _Folders:
+    """Gives every album its own folder; folders differing only in case count as one."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.used: dict[str, PurePosixPath] = {}  # casefolded folder or parent -> folder
+        self.leaves: set[str] = set()  # casefolded album folders
+        self._listings: dict[PurePosixPath, set[str]] = {}
+
+    def keep(self, folder: PurePosixPath) -> PurePosixPath:
+        self._register(folder)
+        return folder
+
+    def claim(self, wanted: PurePosixPath) -> PurePosixPath:
+        parent = self._canonical(wanted.parent)
+        name, number = wanted.name, 2
+        while self._taken(parent / name):
+            name = f"{wanted.name} ({number})"
+            number += 1
+        return self.keep(parent / name)
+
+    def _canonical(self, folder: PurePosixPath) -> PurePosixPath:
+        """``folder`` with each part spelled like a folder already in use."""
+        result = PurePosixPath()
+        for part in folder.parts:
+            result = self.used.get(str(result / part).casefold(), result / part)
+        return result
+
+    def _taken(self, folder: PurePosixPath) -> bool:
+        key = str(folder).casefold()
+        if key in self.leaves or (key in self.used and self.used[key] != folder):
+            return True
+        names = _listing(self.root, folder.parent, self._listings)
+        return folder.name.casefold() in names and not (self.root / folder).is_dir()
+
+    def _register(self, folder: PurePosixPath) -> None:
+        self.leaves.add(str(folder).casefold())
+        for prefix in [folder, *folder.parents]:
+            if prefix.parts:
+                self.used.setdefault(str(prefix).casefold(), prefix)
+
+
+def _listing(root: Path, folder: PurePosixPath, cache: dict[PurePosixPath, set[str]]) -> set[str]:
+    """Casefolded names in ``root / folder``, read once per plan."""
+    if folder not in cache:
+        try:
+            cache[folder] = {entry.casefold() for entry in os.listdir(root / folder)}
+        except OSError:
+            cache[folder] = set()
+    return cache[folder]
 
 
 def _all_present(root: Path, records: Iterable[PhotoRecord], links: Iterable[str]) -> bool:
@@ -289,13 +349,24 @@ def build_photo_plan(
             plan.actions.append(PhotoAction(PhotoActionKind.GONE, record.path, key=key))
 
     existing = {(key, album): path for path, (key, album) in links.items()}
+    folders = _album_folders(root, layout, existing, {album for _key, album in wanted_links})
     for (key, album), target in sorted(wanted_links.items()):
         link_path = existing.get((key, album))
-        if link_path is not None and (root / link_path).exists():
+        folder = folders[album]
+        if link_path is not None and PurePosixPath(link_path).parent != folder:
+            # The album moved to another folder (one only differing in case got renamed
+            # by Synology Drive): link again there and forget the old place.
+            if (root / link_path).exists():
+                continue
+            plan.actions.append(
+                PhotoAction(PhotoActionKind.UNLINK, link_path, key=key, album=album)
+            )
+            link_path = None
+        elif link_path is not None and (root / link_path).exists():
             continue
         if link_path is None:
             name = PurePosixPath(target).name
-            link_path = paths.claim(layout.album_folder(album) / name)
+            link_path = paths.claim(folder / name)
         plan.actions.append(
             PhotoAction(PhotoActionKind.LINK, link_path, key=key, target=target, album=album)
         )
@@ -312,6 +383,24 @@ def build_photo_plan(
                 )
             )
     return plan
+
+
+def _album_folders(
+    root: Path,
+    layout: PhotoLayout,
+    existing: dict[tuple[str, str], str],
+    albums: Iterable[str],
+) -> dict[str, PurePosixPath]:
+    """The folder of every album: where its links already are, else a new one."""
+    folders = _Folders(root)
+    present: dict[str, PurePosixPath] = {}
+    for (_key, album), path in sorted(existing.items()):
+        if album not in present and (root / path).exists():
+            present[album] = PurePosixPath(path).parent
+    result = {album: folders.keep(folder) for album, folder in sorted(present.items())}
+    for album in sorted(set(albums) - set(result)):
+        result[album] = folders.claim(layout.album_folder(album))
+    return result
 
 
 def _sidecar_owner(item: PhotoItem, assigned: dict[str, str]) -> PurePosixPath | None:

@@ -224,6 +224,54 @@ def test_deleted_album_link_is_recreated(
     assert run(source, tmp_path, pstate) == {PhotoActionKind.LINK: 1}
 
 
+def test_names_differing_only_in_case_get_numbered(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    # Synology Drive and SMB clients treat these as one file and rename one of them.
+    source.add("a1", "IMG_0001.JPG", b"first", created=at(2024, 5, 1))
+    source.add("a2", "img_0001.jpg", b"second", created=at(2024, 5, 2))
+    run(source, tmp_path, pstate)
+    month = tmp_path / "2024" / "05"
+    assert sorted(p.name for p in month.iterdir()) == ["IMG_0001.JPG", "img_0001 (2).jpg"]
+
+
+def test_albums_differing_only_in_case_get_separate_folders(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "a.jpg", created=at(2024, 5), albums=("Ebay",))
+    source.add("a2", "b.jpg", created=at(2024, 5), albums=("eBay",))
+    run(source, tmp_path, pstate)
+    assert (tmp_path / "Alben" / "Ebay" / "a.jpg").exists()
+    assert (tmp_path / "Alben" / "eBay (2)" / "b.jpg").exists()
+    assert not (tmp_path / "Alben" / "eBay").exists()
+
+    source.add("a3", "c.jpg", created=at(2024, 5))
+    assert run(source, tmp_path, pstate) == {PhotoActionKind.DOWNLOAD: 1}
+
+
+def test_album_folder_renamed_by_synology_drive_moves_once(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a2", "b.jpg", created=at(2024, 5), albums=("eBay",))
+    run(source, tmp_path, pstate)
+    # Drive renames a folder that clashes with another one only differing in case.
+    albums = tmp_path / "Alben"
+    (albums / "eBay").rename(albums / "eBay_ADMIN_Oct-12-183149-2026_Conflict")
+    (albums / "Ebay").mkdir()
+    source.add("a1", "a.jpg", created=at(2024, 5), albums=("Ebay",))
+
+    assert run(source, tmp_path, pstate) == {
+        PhotoActionKind.DOWNLOAD: 1,
+        PhotoActionKind.LINK: 2,
+        PhotoActionKind.UNLINK: 1,
+    }
+    assert (albums / "Ebay" / "a.jpg").exists()
+    assert os.path.samefile(albums / "eBay (2)" / "b.jpg", tmp_path / "2024" / "05" / "b.jpg")
+
+    source.add("a3", "c.jpg", created=at(2024, 5))
+    assert run(source, tmp_path, pstate) == {PhotoActionKind.DOWNLOAD: 1}
+
+
 def test_albums_can_be_switched_off(
     source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
 ) -> None:
