@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from homeward.core.models import SyncMode
+from homeward.core.photos import (
+    DEFAULT_WORKERS,
+    MAX_WORKERS,
+    Library,
+    PhotoLayout,
+    check_scheme,
+)
 from homeward.core.planner import DeleteBrake
 
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
@@ -34,10 +41,50 @@ class PairConfig:
     trash_days: int = DEFAULT_TRASH_DAYS
 
 
+FOLDER_OPTIONS = (
+    "shared_folder",
+    "albums_folder",
+    "favorites_folder",
+    "hidden_folder",
+    "shared_albums_folder",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PhotosConfig:
+    """One Apple ID's iCloud Photos backed up into one NAS folder."""
+
+    name: str
+    target: Path
+    account: str = "default"
+    apple_id: str | None = None
+    libraries: tuple[Library, ...] = tuple(Library)
+    albums: bool = True
+    videos: bool = True
+    live_videos: bool = True
+    raw_alternative: bool = True  # the second file of RAW+JPEG shots
+    edited: bool = True  # edited versions next to the original: "Name (bearbeitet).ext"
+    favorites: bool = True  # hard links in the favorites folder
+    hidden: bool = False  # hidden photos, kept in their own folder
+    xmp: bool = True  # XMP sidecars with caption, keywords, location and rating
+    workers: int = DEFAULT_WORKERS  # parallel downloads
+    layout: PhotoLayout = field(default_factory=PhotoLayout)
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     state_dir: Path
     pairs: tuple[PairConfig, ...]
+    photos: tuple[PhotosConfig, ...] = ()
+
+    def photos_job(self, name: str) -> PhotosConfig:
+        for job in self.photos:
+            if job.name == name:
+                return job
+        raise ConfigError(f"no photos job named {name!r}")
+
+    def photo_state_path(self, account: str) -> Path:
+        return self.state_dir / f"{account}.photos.sqlite3"
 
     def pair(self, name: str) -> PairConfig:
         for pair in self.pairs:
@@ -70,8 +117,74 @@ def parse_config(data: Mapping[str, Any], base: Path = Path(".")) -> Config:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ConfigError(f"duplicate pair names: {', '.join(duplicates)}")
+    photo_entries = data.get("photos", [])
+    if not isinstance(photo_entries, list):
+        raise ConfigError("'photos' must be a list of [[photos]] tables")
+    photos = tuple(_parse_photos(entry, i) for i, entry in enumerate(photo_entries, 1))
+    names = [job.name for job in photos]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ConfigError(f"duplicate photos job names: {', '.join(duplicates)}")
     return Config(state_dir=state_dir if state_dir.is_absolute() else base / state_dir,
-                  pairs=parsed)  # fmt: skip
+                  pairs=parsed, photos=photos)  # fmt: skip
+
+
+def _parse_photos(entry: object, index: int) -> PhotosConfig:
+    if not isinstance(entry, dict):
+        raise ConfigError(f"photos #{index} must be a table")
+    name = _get(entry, "name", str, None, f"photos #{index}")
+    where = f"photos {name!r}"
+    target = Path(_get(entry, "target", str, None, where))
+    if not target.is_absolute():
+        raise ConfigError(f"{where}: target must be an absolute path")
+    values = _get(entry, "libraries", list, [lib.value for lib in Library], where)
+    try:
+        libraries = tuple(Library(value) for value in values)
+    except ValueError:
+        choices = ", ".join(lib.value for lib in Library)
+        raise ConfigError(f"{where}: libraries may only contain {choices}") from None
+    if not libraries:
+        raise ConfigError(f"{where}: libraries must not be empty")
+    defaults = PhotoLayout()
+    scheme = _get(entry, "folder_scheme", str, defaults.scheme, where)
+    try:
+        check_scheme(scheme)
+    except ValueError as exc:
+        raise ConfigError(f"{where}: {exc}") from None
+    apple_id = _get(entry, "apple_id", str, "", where) or None
+    workers = entry.get("workers", DEFAULT_WORKERS)
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
+        raise ConfigError(f"{where}: 'workers' must be a whole number from 1 to {MAX_WORKERS}")
+    return PhotosConfig(
+        name=name,
+        target=target,
+        account=_get(entry, "account", str, "default", where),
+        apple_id=apple_id,
+        libraries=libraries,
+        albums=_get_bool(entry, "albums", True, where),
+        videos=_get_bool(entry, "videos", True, where),
+        live_videos=_get_bool(entry, "live_videos", True, where),
+        raw_alternative=_get_bool(entry, "raw_alternative", True, where),
+        edited=_get_bool(entry, "edited", True, where),
+        favorites=_get_bool(entry, "favorites", True, where),
+        hidden=_get_bool(entry, "hidden", False, where),
+        xmp=_get_bool(entry, "xmp", True, where),
+        workers=workers,
+        layout=PhotoLayout(
+            scheme=scheme,
+            **{
+                name: _get(entry, name, str, getattr(defaults, name), where)
+                for name in FOLDER_OPTIONS
+            },
+        ),
+    )
+
+
+def _get_bool(table: Mapping[str, Any], key: str, default: bool, where: str) -> bool:
+    value = table.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where}: '{key}' must be true or false")
+    return value
 
 
 def _parse_pair(entry: object, index: int) -> PairConfig:
