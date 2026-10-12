@@ -540,3 +540,33 @@ def test_cdn_hiccup_is_retried_once() -> None:
     failures.extend([BadGateway("again"), BadGateway("Bad Gateway")])
     with pytest.raises(BadGateway):
         source.open_read(item)
+
+
+class PyiCloudServiceNotActivatedException(Exception):
+    pass
+
+
+def test_waits_while_icloud_is_indexing(caplog: pytest.LogCaptureFixture) -> None:
+    service, pauses = make_service(), []
+    libraries, refusals = service.photos.libraries, [2]
+
+    class Indexing:
+        streams = None
+
+        @property
+        def libraries(self) -> dict[str, Library_]:
+            if refusals[0]:
+                refusals[0] -= 1
+                raise PyiCloudServiceNotActivatedException("not finished indexing")
+            return libraries
+
+    service.photos = Indexing()  # type: ignore[assignment]
+    source = ICloudPhotosSource(service, [Library.PERSONAL], sleep=pauses.append)
+    with caplog.at_level("INFO", logger="homeward"):
+        assert source.cursor() is not None
+    assert pauses == [60.0, 120.0]
+    assert "still indexing" in caplog.text
+
+    refusals[0] = 10
+    with pytest.raises(PyiCloudServiceNotActivatedException):
+        source.cursor()

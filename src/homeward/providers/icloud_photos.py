@@ -37,6 +37,10 @@ RENEW_AFTER = 5 * 60
 LOOKUP_BATCH = 100  # photos per lookup request (two records each)
 TRANSIENT_STATUS = (500, 502, 503, 504)
 RETRY_DELAY = 10.0
+# Apple sometimes re-indexes a library (seen on the Shared Library); pyicloud then refuses
+# to open it until indexing has finished.
+INDEXING_ERROR = "PyiCloudServiceNotActivatedException"
+INDEXING_WAITS = (60.0, 120.0, 300.0)
 PROGRESS_EVERY = 500
 
 # Edited renders live on the asset record (the master record holds the originals).
@@ -140,7 +144,7 @@ class ICloudPhotosSource:
         self._blobs.clear()
         self._origins.clear()
         self._fetched_at.clear()
-        personal = self.service.photos.libraries[PERSONAL_KEY]
+        personal = self._photo_libraries()[PERSONAL_KEY]
         # Albums live in the personal library but may hold Shared Library photos too.
         # (pyicloud 2.7 cannot read the Shared Library's own albums.)
         members = self._album_members(personal)
@@ -252,7 +256,7 @@ class ICloudPhotosSource:
     # Listing
 
     def _libraries(self) -> list[tuple[Library, str, Any]]:
-        found = self.service.photos.libraries
+        found = self._photo_libraries()
         result: list[tuple[Library, str, Any]] = []
         if Library.PERSONAL in self.wanted:
             result.append((Library.PERSONAL, PERSONAL_KEY, found[PERSONAL_KEY]))
@@ -263,6 +267,18 @@ class ICloudPhotosSource:
                 if key.startswith(SHARED_PREFIX)
             )
         return result
+
+    def _photo_libraries(self) -> dict[str, Any]:
+        """pyicloud's libraries, waiting while iCloud is still indexing one of them."""
+        for wait in (*INDEXING_WAITS, None):
+            try:
+                return cast(dict[str, Any], self.service.photos.libraries)
+            except Exception as exc:
+                if type(exc).__name__ != INDEXING_ERROR or wait is None:
+                    raise
+                log.info("iCloud is still indexing the photo library, waiting %d s", wait)
+                self._sleep(wait)
+        raise AssertionError("unreachable")
 
     def _shared_albums(self) -> list[Any]:
         try:

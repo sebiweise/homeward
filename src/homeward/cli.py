@@ -1,10 +1,13 @@
 """Command line interface."""
 
 import argparse
+import contextlib
+import fcntl
 import getpass
 import logging
 import os
 import sys
+from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -163,22 +166,47 @@ def _cmd_photos(args: argparse.Namespace) -> int:
         raise ConfigError("no photos jobs configured")
     status = EXIT_OK
     for job in jobs:
-        log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
-        try:
-            source = _photo_source(config, job)
-        except LoginRequired as exc:
-            print(f"homeward: {exc}", file=sys.stderr)
-            status = max(status, EXIT_FAILED)
-            continue
-        with PhotoStateDB(config.photo_state_path(job.account)) as state:
-            outcome = backup_photos(
-                job.name, source, job.target, state, job.layout,
-                albums=job.albums or job.favorites, dry_run=args.dry_run,
-            )  # fmt: skip
+        state_path = config.photo_state_path(job.account)
+        with _run_lock(state_path.with_suffix(".lock")) as locked:
+            if not locked:
+                print(
+                    f"homeward: another photos run for account {job.account} is still running",
+                    file=sys.stderr,
+                )
+                status = max(status, EXIT_FAILED)
+                continue
+            log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
+            try:
+                source = _photo_source(config, job)
+            except LoginRequired as exc:
+                print(f"homeward: {exc}", file=sys.stderr)
+                status = max(status, EXIT_FAILED)
+                continue
+            with PhotoStateDB(state_path) as state:
+                outcome = backup_photos(
+                    job.name, source, job.target, state, job.layout,
+                    albums=job.albums or job.favorites, dry_run=args.dry_run,
+                )  # fmt: skip
         _print_photos(job, outcome, args.dry_run)
         if outcome.result and outcome.result.failed:
             status = max(status, EXIT_FAILED)
     return status
+
+
+@contextlib.contextmanager
+def _run_lock(path: Path) -> Iterator[bool]:
+    """Hold an exclusive lock for one account's run; yields False if another run has it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _cmd_login(args: argparse.Namespace) -> int:

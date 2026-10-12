@@ -187,3 +187,27 @@ def test_photos_progress_on_stderr(
     err = capsys.readouterr().err
     assert "reading iCloud" in err
     assert "1 of 1 files downloaded" in err
+
+
+def test_photos_refuses_a_second_run_for_the_same_account(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    config = _photos_config(tmp_path)
+    lock = tmp_path / "state" / "seb@example.com.photos.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock.open("a") as other_run:
+        fcntl.flock(other_run, fcntl.LOCK_EX)
+        assert main(["photos", "--config", str(config)]) == EXIT_FAILED
+    assert "still running" in capsys.readouterr().err
+    assert source.listed == 0
+
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
