@@ -29,5 +29,6 @@ Python 3.12.13 from SynoCommunity, pyicloud 2.7.0.
 ## Open
 
 - Whether a change deep in the tree also changes the etags of its ancestor folders
-  (only top-level folders were tested). Verify in M3 before relying on skipping parents.
+  (only top-level folders were tested). Verify in M3 before relying on skipping parents;
+  see ADR 0002.
 - aarch64 install not yet tested.

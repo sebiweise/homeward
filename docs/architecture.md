@@ -56,7 +56,28 @@ Safety nets:
 - **Dry run**: `homeward sync --dry-run` prints the plan and changes nothing.
 - **Exclusions**: Synology folders, `.DS_Store`, the trash and temp files, plus patterns
   per pair.
-- NAS deletions go to `.homeward-papierkorb/<date>/` below the pair's folder.
+- NAS deletions go to the share's Synology recycle bin (`#recycle`) when it is enabled,
+  so DSM's own retention applies; otherwise, or if Homeward may not write there, to
+  `.homeward-papierkorb/<date>/` below the pair's folder. Day folders there older than
+  `trash_days` (default 30, 0 keeps them forever) are removed after each run.
+- iCloud deletions go to iCloud's "Recently Deleted" (kept 30 days by Apple).
+
+## iCloud Drive provider
+
+`providers/icloud_drive.py` maps one Drive folder to the provider interface on top of
+`providers/drive_api.py`, a thin seam over pyicloud's authenticated session:
+
+- **Uploads are streamed** (`providers/multipart.py`): the request body is read from
+  disk while it is sent, with a known `Content-Length`. pyicloud's own upload builds
+  the whole body in memory (~2x the file size, ADR 0001). A file only appears in its
+  folder after the final commit request, so a failed upload leaves nothing behind.
+- **Listing** walks the tree level by level and fetches up to 50 folders per request.
+  A folder whose etag is unchanged since the last run can be served from a cache
+  (`<state_dir>/<account>.drive-folders.json`) including its whole subtree; this is
+  off (`trust_folder_etags=False`): on a real account a rename changes no folder
+  etag (ADR 0002), so a cached listing would miss it.
+- A file's version is `docwsid:etag`. Only plain files and folders sync; app
+  libraries (Shortcuts, Scriptable) and other node types such as packages are skipped.
 
 ## Configuration
 
@@ -66,6 +87,7 @@ state_dir = "/var/packages/homeward/var/state"
 [[pair]]
 name = "docs"
 account = "sebastian"
+apple_id = "sebastian@example.com"  # optional if account is the Apple ID
 local = "/volume1/homes/sebastian/Documents"
 remote = "Documents"
 mode = "bidirectional"            # upload | download | bidirectional
@@ -73,6 +95,7 @@ remote_provider = "icloud_drive"  # "folder" syncs with a second NAS folder (tes
 exclude = ["*.tmp"]
 max_delete_ratio = 0.10
 max_delete_count = 50
+trash_days = 30                   # NAS trash retention, 0 = keep forever
 ```
 
 ## Photos backup

@@ -7,7 +7,7 @@ import getpass
 import logging
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -27,8 +27,10 @@ from homeward.core.photos import PhotoOutcome, PhotoSource, backup_photos
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
+from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
+from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
 from homeward.providers.icloud_photos import ICloudPhotosSource
-from homeward.providers.nas import NasProvider
+from homeward.providers.nas import NasProvider, find_recycle_bin
 
 log = logging.getLogger(__name__)
 
@@ -45,12 +47,33 @@ def _version() -> str:
         return "0.0.0"
 
 
-def _remote_provider(pair: PairConfig) -> Provider:
+def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
+    """Sign in with the account's stored trusted session (see ``homeward login``)."""
+    try:
+        service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
+    except LoginRequired as exc:
+        raise ConfigError(f"pair {pair.name!r}: {exc}") from exc
+    return PyiCloudDriveApi(service.drive)
+
+
+def _pair_apple_id(pair: PairConfig) -> str:
+    if pair.apple_id:
+        return pair.apple_id
+    if "@" in pair.account:
+        return pair.account
+    raise ConfigError(f"pair {pair.name!r}: set apple_id (or use the Apple ID as account)")
+
+
+# Returns a signed-in Drive API for the pair's account; tests replace it.
+drive_api_factory: Callable[[PairConfig, Config], DriveApi] = _icloud_drive_api
+
+
+def _remote_provider(pair: PairConfig, config: Config) -> Provider:
     if pair.remote_provider == "folder":
         return NasProvider(Path(pair.remote), name="remote")
-    raise ConfigError(
-        f"pair {pair.name!r}: the iCloud Drive provider is not available yet; "
-        'use remote_provider = "folder" to try the sync core'
+    cache = FolderCache(config.state_dir / f"{pair.account}.drive-folders.json")
+    return ICloudDriveProvider(
+        drive_api_factory(pair, config), pair.remote, excludes=pair.exclude, cache=cache
     )
 
 
@@ -84,13 +107,24 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         raise ConfigError("no sync pairs configured")
     status = EXIT_OK
     for pair in pairs:
-        remote = _remote_provider(pair)
-        local = NasProvider(pair.local, name="nas")
-        with StateDB(config.state_path(pair.account)) as state:
-            outcome = sync_pair(
-                pair, local, remote, state, dry_run=args.dry_run, allow_deletes=args.allow_deletes
-            )
+        remote = _remote_provider(pair, config)
+        local = NasProvider(pair.local, name="nas", recycle_bin=find_recycle_bin(pair.local))
+        try:
+            with StateDB(config.state_path(pair.account)) as state:
+                outcome = sync_pair(
+                    pair, local, remote, state, dry_run=args.dry_run,
+                    allow_deletes=args.allow_deletes,
+                )  # fmt: skip
+        except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
+            print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
+            status = max(status, EXIT_FAILED)
+            continue
         _print_outcome(outcome, args.dry_run)
+        if not args.dry_run:
+            purged = local.purge_trash(pair.trash_days)
+            if purged:
+                print(f"  Emptied {purged} day folder(s) older than {pair.trash_days} days "
+                      "from the NAS trash.")  # fmt: skip
         if outcome.plan.blocked and (outcome.result is None or outcome.result.blocked):
             status = max(status, EXIT_BLOCKED)
         elif outcome.result and outcome.result.failed:
@@ -214,7 +248,11 @@ def _cmd_login(args: argparse.Namespace) -> int:
     apple_id = args.apple_id
     if not apple_id:
         jobs = [job for job in config.photos if job.account == args.account]
-        apple_id = _apple_id(jobs[0]) if jobs else None
+        pairs = [p for p in config.pairs if p.account == args.account and p.apple_id]
+        if jobs:
+            apple_id = _apple_id(jobs[0])
+        elif pairs:
+            apple_id = pairs[0].apple_id
     if not apple_id:
         raise ConfigError(f"no apple_id known for account {args.account!r}: pass --apple-id")
     password = os.environ.get("HOMEWARD_PASSWORD") or getpass.getpass("Apple ID password: ")
