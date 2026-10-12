@@ -33,6 +33,8 @@ from types import FrameType
 from typing import Any
 
 from homeward.core.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from homeward.dsm.notify import Event, notify
+from homeward.runtime import Level, Paths, record_event
 
 log = logging.getLogger("homeward.daemon")
 
@@ -45,6 +47,15 @@ STOP_TIMEOUT_SECONDS = 30.0
 
 # Exit codes of `homeward sync` (see homeward.cli).
 _RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked"}
+# result -> event level and code for the event log shown in the DSM UI
+_EVENTS = {
+    "ok": (Level.INFO, "sync_finished"),
+    "blocked": (Level.WARNING, "delete_brake"),
+    "config_error": (Level.ERROR, "config_error"),
+    "killed": (Level.WARNING, "sync_stopped"),
+}
+# results that send a DSM notification when they first occur
+_NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,10 +155,14 @@ class Scheduler:
         status_path: Path,
         runner: Callable[[Job], int],
         clock: Callable[[], float] = time.time,
+        notifier: Callable[..., bool] = notify,
     ) -> None:
         self.status_path = status_path
         self._runner = runner
         self._clock = clock
+        self._notify = notifier
+        var_dir = status_path.parent
+        self.events = Paths(var_dir=var_dir, config=var_dir / "config.toml")
         self.settings = Settings()
         self.jobs: list[Job] = []
         self.status: dict[str, JobStatus] = self._load_status()
@@ -179,6 +194,9 @@ class Scheduler:
     def run(self, job: Job, *, record: bool = True) -> JobStatus:
         """Run one job; ``record=False`` (dry runs) leaves its schedule alone."""
         status = JobStatus(started_at=self._clock())
+        previous = self.status.get(job.name, JobStatus()).result
+        dry_run = "--dry-run" in job.argv
+        record_event(Level.INFO, job.name, "sync_started", paths=self.events, dry_run=dry_run)
         if record:
             self._forced.discard(job.name)
             self.status[job.name] = status
@@ -194,6 +212,14 @@ class Scheduler:
         status.exit_code = code
         status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
+        level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
+        message = (
+            "stopped, runs again shortly" if status.result == "killed" else f"exit code {code}"
+        )
+        record_event(level, job.name, event, message, paths=self.events,
+                     dry_run=dry_run, exit_code=code)  # fmt: skip
+        if status.result in _NOTIFY and status.result != previous and not dry_run:
+            self._notify(_NOTIFY[status.result], job.name.split(":", 1)[-1])
         self.running = None
         self.save()
         return status
@@ -323,6 +349,8 @@ class Daemon:
             message = str(exc)
             if message != self._config_error:
                 log.error("config: %s", message)
+                record_event(Level.ERROR, "service", "config_error", message,
+                             paths=self.scheduler.events)  # fmt: skip
                 self._config_error = message
             return False
         if self._config_error is not None:
