@@ -480,3 +480,33 @@ def test_parallel_downloads(source: FakePhotoSource, pstate: PhotoStateDB, tmp_p
         PhotoActionKind.DOWNLOAD: 1,
         PhotoActionKind.LINK: 1,
     }
+
+
+class _Cancelled(BaseException):
+    pass
+
+
+def test_cancelled_run_drops_queued_downloads(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    for i in range(20):
+        source.add(f"a{i}", f"{i:02}.jpg", created=at(2024, 5))
+    opened: list[str] = []
+    open_read = source.open_read
+
+    def cancel_on_first(item):  # type: ignore[no-untyped-def]
+        opened.append(item.key)
+        if len(opened) == 1:
+            raise _Cancelled
+        return open_read(item)
+
+    source.open_read = cancel_on_first  # type: ignore[method-assign]
+    with pytest.raises(_Cancelled):
+        backup_photos("photos", source, tmp_path, pstate, workers=1)
+    assert len(opened) < 20  # the queued downloads did not run
+    assert not list(tmp_path.rglob("*.homeward-tmp"))
+    assert pstate.cursor("photos") is None
+
+    source.open_read = open_read  # type: ignore[method-assign]
+    done = len(pstate.records("photos"))
+    assert run(source, tmp_path, pstate)[PhotoActionKind.DOWNLOAD] == 20 - done

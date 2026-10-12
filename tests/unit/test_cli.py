@@ -319,3 +319,40 @@ def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
     assert run.returncode == 1, run.stderr
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [e["code"] for e in events] == ["login_required"]
+
+
+def test_sigterm_ends_a_sync_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+    import shutil
+    import signal
+
+    from homeward.cli import EXIT_CANCELLED
+    from homeward.providers import nas
+
+    config = _config(tmp_path)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / "nas" / name).write_text(name * 1000)
+    copies: list[int] = []
+    copy = shutil.copyfileobj
+
+    def copy_then_sigterm(src, dst, length=0):  # type: ignore[no-untyped-def]
+        copies.append(1)
+        if len(copies) == 2:
+            dst.write(src.read(10))  # half a file, then the cancel arrives
+            os.kill(os.getpid(), signal.SIGTERM)
+        return copy(src, dst, length)
+
+    handler = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(nas.shutil, "copyfileobj", copy_then_sigterm)
+    assert main(["sync", "--config", str(config)]) == EXIT_CANCELLED
+    assert signal.getsignal(signal.SIGTERM) == handler  # restored after the run
+    assert "cancelled" in capsys.readouterr().err
+    cloud = tmp_path / "cloud"
+    assert [p.name for p in cloud.iterdir()] == ["a.txt"]  # no half or temporary file
+
+    monkeypatch.undo()
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert sorted(p.name for p in cloud.iterdir()) == ["a.txt", "b.txt", "c.txt"]
+    assert "2 upload" in capsys.readouterr().out  # a.txt was kept from the first run

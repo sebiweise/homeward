@@ -47,6 +47,11 @@ text in the `[error]` section of the strings.
 - Changing a pair's folders or account resets its sync state, so the next run is a
   first run (no deletes, no overwrites).
 - The delete brake is approved per run from the status page ("Approve deletions").
+- "Cancel" on the status page (`status.cancel`) drops a queued run, or stops the
+  running one: the daemon sends the sync process SIGTERM, which ends it cleanly
+  (temporary files removed, every finished step kept in the state database). It is
+  logged as a warning (`sync_cancelled`), sends no notification, and the job keeps
+  its normal schedule.
 
 ## Files shared with the daemon (`homeward/runtime.py`)
 
@@ -54,6 +59,8 @@ Below `/var/packages/homeward/var` (`$HOMEWARD_VAR`):
 
 - `config.toml`: accounts (`[[account]]` with `name`, `apple_id`) and pairs.
 - `requests/<pair>.json`: "sync now" requests; the daemon calls `take_requests()`.
+- `cancel/<pair>.json`: "cancel" requests for the running sync (pair name or
+  `photos:<job>`); a watcher thread in the daemon calls `take_cancels()` every second.
 - `status.json`: written by the daemon, e.g. `{"running": "<pair>"}` or `{}` when idle.
 - `homeward.log`: the daemon's log, shown on the log page.
 - `events.jsonl`: the event log. Anything that runs in the background calls

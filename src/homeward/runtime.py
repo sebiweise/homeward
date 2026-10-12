@@ -2,6 +2,7 @@
 
 - ``config.toml``: accounts and sync pairs (the UI writes it, the daemon reads it)
 - ``requests/<pair>.json``: "run now" requests from the UI, consumed by the daemon
+- ``cancel/<pair>.json``: "cancel" requests from the UI, consumed by the daemon
 - ``status.json``: what the daemon is doing right now, written by the daemon
 - ``homeward.log``: the daemon's log, shown in the UI
 - ``events.jsonl``: the event log (waits, retries, errors) shown in the UI
@@ -38,6 +39,10 @@ class Paths:
     @property
     def requests_dir(self) -> Path:
         return self.var_dir / "requests"
+
+    @property
+    def cancel_dir(self) -> Path:
+        return self.var_dir / "cancel"
 
     @property
     def status_file(self) -> Path:
@@ -115,6 +120,44 @@ def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
         yield file, request
 
 
+def drop_request(paths: Paths, pair: str) -> bool:
+    """Remove a pending run request; False when there was none."""
+    try:
+        (paths.requests_dir / f"{pair}.json").unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class CancelRequest:
+    """Stop the running sync of ``pair`` (a pair name or ``photos:<job>``)."""
+
+    pair: str
+    requested_at: float = 0.0
+
+
+def request_cancel(paths: Paths, request: CancelRequest) -> None:
+    """Ask the daemon to stop the running sync of one pair or photos job."""
+    data = {"pair": request.pair, "requested_at": request.requested_at or time.time()}
+    write_json_atomic(paths.cancel_dir / f"{request.pair}.json", data)
+
+
+def take_cancels(paths: Paths) -> list[CancelRequest]:
+    """Return and remove all cancel requests (for the daemon)."""
+    if not paths.cancel_dir.is_dir():
+        return []
+    taken = []
+    for file in sorted(paths.cancel_dir.glob("*.json")):
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+            taken.append(CancelRequest(str(data["pair"]), float(data.get("requested_at", 0.0))))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        file.unlink(missing_ok=True)
+    return taken
+
+
 def read_status(paths: Paths) -> dict[str, Any]:
     """The daemon's status file, or an empty dict when there is none (yet)."""
     try:
@@ -136,6 +179,7 @@ EVENT_CODES = (
     "sync_finished",
     "sync_failed",
     "sync_stopped",  # the service stopped (e.g. package update); the run is repeated
+    "sync_cancelled",  # the user cancelled the run in the DSM UI
     "delete_brake",
     "conflict",
     "file_failed",

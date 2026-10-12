@@ -1,4 +1,5 @@
-"""Overview for the status page: version, daemon state and each pair's last run."""
+"""Overview for the status page: version, daemon state and each pair's last run,
+and cancelling a queued or running sync."""
 
 import os
 import pwd
@@ -6,9 +7,19 @@ import time
 from dataclasses import asdict
 from typing import Any
 
-from homeward.api.handlers.common import existing_state, package_version
+from homeward.api.errors import ApiError
+from homeward.api.handlers.common import check_name, existing_state, package_version
 from homeward.api.server import Context, Request
-from homeward.runtime import Level, pending_requests, read_events, read_status
+from homeward.runtime import (
+    CancelRequest,
+    Level,
+    drop_request,
+    pending_requests,
+    read_events,
+    read_status,
+    record_event,
+    request_cancel,
+)
 
 NOTICE_HOURS = 24
 MAX_NOTICES = 10
@@ -52,6 +63,25 @@ def get(ctx: Context, request: Request) -> dict[str, Any]:
         "photos": photos,
         "notices": notices(ctx),
     }
+
+
+def cancel(ctx: Context, request: Request) -> dict[str, Any]:
+    """Stop a sync: a queued one is dropped, a running one is asked to stop.
+
+    ``name`` is a pair name or ``photos:<job>``, as in ``daemon.running``. The daemon
+    stops the run cleanly; files already synced stay, nothing is left half-written.
+    """
+    name = request.get("name")
+    check_name(name.removeprefix("photos:"), "job")  # it becomes a file name
+    if drop_request(ctx.paths, name):
+        source = name if ":" in name else f"pair:{name}"
+        record_event(Level.WARNING, source, "sync_cancelled",
+                     "cancelled by the user before it started", paths=ctx.paths)  # fmt: skip
+        return {"name": name, "cancelled": "queued"}
+    if read_status(ctx.paths).get("running") != name:
+        raise ApiError("not_running", name, status=409)
+    request_cancel(ctx.paths, CancelRequest(name))
+    return {"name": name, "cancelled": "running"}
 
 
 def notices(ctx: Context) -> list[dict[str, Any]]:

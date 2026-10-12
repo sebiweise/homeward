@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -306,3 +307,81 @@ def test_a_stopped_run_is_a_warning_not_an_error(tmp_path: Path) -> None:
     (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
     assert (event.level, event.code) == ("warning", "sync_stopped")
     assert sent == []
+
+
+class StoppableRunner(SubprocessRunner):
+    """Stands in for the sync process; ``terminate`` makes it end like one on SIGTERM."""
+
+    def __init__(self, during: Callable[[], None] = lambda: None) -> None:
+        super().__init__()
+        self.during = during
+        self.terminated = 0
+        self.calls: list[str] = []
+
+    def __call__(self, job: Job) -> int:
+        self.calls.append(job.name)
+        self.during()
+        return 4 if self.terminated else 0
+
+    def terminate(self, timeout: float = 0.0) -> None:
+        self.terminated += 1
+
+
+def test_cancelling_the_running_sync(tmp_path: Path) -> None:
+    from homeward.runtime import CancelRequest, Paths, read_events, request_cancel
+
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    config = _config(tmp_path, pairs=("a",))
+    sent: list[str] = []
+    clock = Clock()
+
+    def cancel_while_running() -> None:
+        request_cancel(paths, CancelRequest("other"))  # not running: ignored
+        request_cancel(paths, CancelRequest("a"))
+        daemon.check_cancels()
+        request_cancel(paths, CancelRequest("a"))  # a second click changes nothing
+        daemon.check_cancels()
+
+    runner = StoppableRunner(cancel_while_running)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append(e)
+    )
+    daemon = Daemon(config, scheduler, runner)
+    daemon.cycle()
+
+    assert runner.terminated == 1
+    status = scheduler.status["pair:a"]
+    assert (status.result, status.exit_code) == ("cancelled", 4)
+    assert scheduler.running is None and scheduler.cancelled is None
+    assert not list((tmp_path / "cancel").glob("*.json"))
+    (event, _started) = read_events(paths)
+    assert (event.level, event.code, event.source) == ("warning", "sync_cancelled", "pair:a")
+    assert sent == []  # cancelling is not an error worth a notification
+    # Unlike an interrupted run, a cancelled one waits for its next scheduled time.
+    assert scheduler.next_due(Job("pair:a", ())) == clock.now + scheduler.settings.interval_seconds
+
+
+def test_sigterm_without_a_cancel_is_an_interrupted_run(tmp_path: Path) -> None:
+    scheduler = Scheduler(tmp_path / "status.json", Recorder(code=4), Clock())
+    assert scheduler.run(Job("pair:a", ())).result == "killed"
+
+
+def test_cancelling_a_request_the_daemon_already_took(tmp_path: Path) -> None:
+    from homeward.runtime import CancelRequest, Paths, read_events, request_cancel
+
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    config = _config(tmp_path, pairs=("a", "b"))
+    clock = Clock()
+    runner = StoppableRunner(lambda: request_cancel(paths, CancelRequest("b")))
+    daemon = Daemon(config, Scheduler(tmp_path / "status.json", runner, clock), runner)
+    daemon.cycle()  # the scheduled runs of a and b
+    runner.calls.clear()
+    clock.now += 60
+    request_cancel(paths, CancelRequest("a"))  # stale: from before the requests below
+
+    _request(tmp_path, "a", '{"pair": "a"}')
+    _request(tmp_path, "b", '{"pair": "b"}')
+    daemon.cycle()  # a runs and, while it does, the user cancels the queued b
+    assert runner.calls == ["pair:a"]
+    assert runner.terminated == 0
+    assert read_events(paths)[0].code == "sync_cancelled"

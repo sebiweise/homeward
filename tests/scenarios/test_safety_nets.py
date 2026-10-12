@@ -201,3 +201,26 @@ def test_conflict_names_do_not_collide(
     assert nas.content(taken) == b"old"
     assert nas.content("f (Konflikt NAS 2026-10-11 2).txt") == b"nas"
     assert icloud.content("f (Konflikt NAS 2026-10-11 2).txt") == b"nas"
+
+
+def test_interrupted_overwrite_is_copied_again_not_deleted(
+    state: StateDB, nas: FakeProvider, icloud: FakeProvider
+) -> None:
+    _synced(state, nas, icloud, 30)
+    nas.put("0.txt", "edit")
+    write = icloud.write
+
+    def fail_write(*args: object, **kwargs: object) -> object:
+        raise OSError("cancelled mid-upload")
+
+    icloud.write = fail_write  # type: ignore[method-assign]
+    sync_pair(_pair(), nas, icloud, state, dry_run=False)
+    # The old iCloud version went to the trash, the new one never arrived.
+    assert "0.txt" not in icloud.files and icloud.trashed("0.txt") == [b"0"]
+    assert "0.txt" not in state.records("p")
+
+    icloud.write = write  # type: ignore[method-assign]
+    retry = sync_pair(_pair(), nas, icloud, state, dry_run=False)
+    # A missing file without a record is copied again, never read as a delete.
+    assert [(a.kind, a.path) for a in retry.plan.actions] == [(ActionKind.UPLOAD, "0.txt")]
+    assert nas.content("0.txt") == icloud.content("0.txt") == b"edit"
