@@ -95,7 +95,16 @@ class ICloudPhotosSource:
                 return None
             if tags:
                 parts.append("shared_albums=" + ",".join(cast(list[str], tags)))
+        # Turning a feature on must list again even when nothing changed in iCloud.
+        parts.append(f"options={self._options()}")
         return "|".join(parts)
+
+    def _options(self) -> str:
+        switches = (
+            self.albums, self.videos, self.live_videos, self.raw_alternative, self.edited,
+            self.favorites, self.hidden, self.xmp,
+        )  # fmt: skip
+        return "".join("1" if on else "0" for on in switches)
 
     def list_items(self) -> Iterator[PhotoItem]:
         self._urls.clear()

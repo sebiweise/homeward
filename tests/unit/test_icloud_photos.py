@@ -178,9 +178,11 @@ def test_filters() -> None:
 def test_cursor_combines_library_tokens() -> None:
     service = make_service()
     source = ICloudPhotosSource(service)
-    assert source.cursor() == "root=t1|shared:SharedSync-1=t9"
+    assert source.cursor() == "root=t1|shared:SharedSync-1=t9|options=11111101"
     service.photos.libraries["root"].token = "t2"
-    assert source.cursor() == "root=t2|shared:SharedSync-1=t9"
+    assert source.cursor() == "root=t2|shared:SharedSync-1=t9|options=11111101"
+    switched = ICloudPhotosSource(service, hidden=True).cursor()
+    assert switched is not None and switched.endswith("options=11111111")
 
 
 def test_cursor_none_when_a_library_has_no_token() -> None:
@@ -295,7 +297,7 @@ def test_all_features() -> None:
         assert stream.read() == b"<xmp id='r'/>"
     with source.open_read(items["personal/r/edited"]) as stream:
         assert stream.read() == b"https://cdn/r-edit"
-    assert source.cursor() == "root=t1|shared_albums=ctag1"
+    assert source.cursor() == "root=t1|shared_albums=ctag1|options=11111111"
 
 
 def test_features_can_be_switched_off() -> None:
