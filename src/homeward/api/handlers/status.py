@@ -69,12 +69,20 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
     }
 
 
-def clear_notices(ctx: Context, _request: Request) -> dict[str, Any]:
-    """Hide the current notices on the status page; the event log keeps them."""
+def clear_notices(ctx: Context, request: Request) -> dict[str, Any]:
+    """Hide the current notices, of one ``source`` or all; the event log keeps them."""
+    source = request.get("source", "")
+    if source and source != "service" and not _is_job(source):
+        raise ApiError("invalid_param", "source")
     cleared_at = time.time()
-    write_json_atomic(ctx.paths.notices_file, {"cleared_at": cleared_at})
-    record_event(Level.INFO, "service", "notices_cleared",
-                 "notices cleared on the status page", paths=ctx.paths)  # fmt: skip
+    data = _cleared(ctx)
+    if source:
+        data.setdefault("sources", {})[source] = cleared_at
+    else:
+        data = {"cleared_at": cleared_at}
+    write_json_atomic(ctx.paths.notices_file, data)
+    record_event(Level.INFO, source or "service", "notices_cleared",
+                 "notices cleared in the DSM UI", paths=ctx.paths)  # fmt: skip
     return {"cleared_at": cleared_at}
 
 
@@ -106,14 +114,16 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
     keeps all of them.
     """
     now = time.time()
-    since = max(now - NOTICE_HOURS * 3600, _cleared_at(ctx))
+    cleared = _cleared(ctx)
+    since = max(now - NOTICE_HOURS * 3600, float(cleared.get("cleared_at", 0.0)))
+    by_source: dict[str, float] = cleared.get("sources", {})
     shown = _ShownSources(_existing_sources(ctx))
     seen: set[tuple[str, str]] = set()
     result = []
     for event in read_events(ctx.paths, limit=2000):
         if event.time <= since:
             break
-        if not shown.keeps(event):
+        if event.time <= by_source.get(event.source, 0.0) or not shown.keeps(event):
             continue
         waiting = event.until is not None and event.until > now
         key = (event.source, event.code)
@@ -158,12 +168,15 @@ def _existing_sources(ctx: Context) -> set[str]:
     }
 
 
-def _cleared_at(ctx: Context) -> float:
+def _cleared(ctx: Context) -> dict[str, Any]:
+    """``cleared_at`` (all notices) and ``sources`` (one job's) from the last clearing."""
     try:
         data = json.loads(ctx.paths.notices_file.read_text(encoding="utf-8"))
-        return float(data["cleared_at"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return 0.0
+        cleared_at = float(data.get("cleared_at", 0.0))
+        sources = {str(k): float(v) for k, v in dict(data.get("sources") or {}).items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+    return {"cleared_at": cleared_at, "sources": sources}
 
 
 def _user() -> str:

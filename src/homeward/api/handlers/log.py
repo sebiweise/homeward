@@ -33,15 +33,71 @@ def runs(ctx: Context, request: Request) -> dict[str, Any]:
     return {"runs": result[:limit]}
 
 
+# Codes the daemon writes when a run ends (with ``exit_code``), see daemon.scheduler.
+RUN_END = frozenset(
+    {"sync_finished", "sync_failed", "sync_stopped", "sync_cancelled", "sync_postponed",
+     "delete_brake", "config_error"}
+)  # fmt: skip
+MAX_HISTORY_EVENTS = 20_000
+
+
+def history(ctx: Context, request: Request) -> dict[str, Any]:
+    """The runs of one pair or photos job (``source``), newest first, built from the
+    event log: when each started and ended, how it ended, what it did and every wait,
+    retry or error in between."""
+    source = request.get("source")
+    limit = _int(request.get("limit", "30"), 1, 200)
+    found = [e for e in read_events(ctx.paths, limit=MAX_HISTORY_EVENTS) if e.source == source]
+    runs: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for event in reversed(found):  # oldest first
+        if event.code == "sync_started":
+            current = _new_run(event.time, event.details)
+            runs.append(current)
+        elif event.code in RUN_END and "exit_code" in event.details:
+            if current is None:  # its start is older than the event log
+                current = _new_run(None, event.details)
+                runs.append(current)
+            current |= {"finished_at": event.time, "result": event.code,
+                        "level": event.level, "message": event.message}  # fmt: skip
+            current = None
+        elif current is not None:
+            if event.code == "sync_summary":
+                current["counts"] = event.details.get("counts") or {}
+            else:
+                current["events"].append(asdict(event))
+    runs.reverse()
+    return {"source": source, "runs": runs[:limit]}
+
+
+def _new_run(started_at: float | None, details: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "started_at": started_at,
+        "finished_at": None,
+        "result": None,  # None while it runs, or if the service stopped without a word
+        "level": None,
+        "message": "",
+        "dry_run": bool(details.get("dry_run")),
+        "counts": None,
+        "events": [],
+    }
+
+
 def events(ctx: Context, request: Request) -> dict[str, Any]:
-    """The event log, newest first; ``level`` hides less important events."""
+    """The event log, newest first; ``level`` hides less important events and
+    ``source`` limits it to one pair, photos job or the service."""
     limit = _int(request.get("limit", "200"), 1, 2000)
     order = list(Level)
     try:
         minimum = order.index(Level(request.get("level", Level.INFO)))
     except ValueError:
         raise ApiError("invalid_param", "level") from None
-    found = [e for e in read_events(ctx.paths, limit=10_000) if order.index(e.level) >= minimum]
+    source = request.get("source", "")
+    found = [
+        e
+        for e in read_events(ctx.paths, limit=10_000)
+        if order.index(e.level) >= minimum and (not source or e.source == source)
+    ]
     return {"events": [asdict(event) for event in found[:limit]]}
 
 

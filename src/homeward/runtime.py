@@ -192,6 +192,7 @@ EVENT_CODES = (
     "config_error",  # the config file is invalid; nothing runs until it is fixed
     "already_running",  # another run for the same account still holds the lock
     "notices_cleared",  # the user cleared the notices on the status page
+    "sync_summary",  # what a run did; ``counts`` maps an action kind to a number
 )
 
 
@@ -304,7 +305,8 @@ class EventLogHandler(logging.Handler):
         else:
             level = Level.INFO
         until = getattr(record, "until", None)
-        details = {key: getattr(record, key) for key in ("account",) if hasattr(record, key)}
+        keys = ("account", "counts")
+        details = {key: getattr(record, key) for key in keys if hasattr(record, key)}
         record_event(
             level,
             self.source,

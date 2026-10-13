@@ -6,8 +6,6 @@ const API = "api.cgi";
 const REFRESH_MS = 10000;
 const strings = {};
 let tokenRequest = null;
-let activeTab = "status";
-let refreshTimer = null;
 let accountsCache = [];
 let settingsCache = null;
 
@@ -359,207 +357,598 @@ function eventText(event) {
     return text;
 }
 
-function eventRow(event) {
+function badge(cls, text) {
+    return el("span", { class: "badge " + cls, text: text });
+}
+
+function eventRow(event, withSource) {
     return el(
         "tr",
         {},
-        el("td", { text: formatTime(event.time) }),
-        el("td", {}, el("span", { class: "badge " + LEVEL_BADGE[event.level], text: t("event:level_" + event.level) })),
-        el("td", { text: eventSource(event.source) }),
+        el("td", { class: "nowrap", text: formatTime(event.time) }),
+        el("td", {}, badge(LEVEL_BADGE[event.level], t("event:level_" + event.level))),
+        withSource ? el("td", { text: eventSource(event.source) }) : null,
         el("td", {}, eventText(event), event.message && strings["event:" + event.code]
             ? el("div", { class: "muted", text: event.message }) : null)
     );
 }
 
-function eventTable(events) {
-    return table([t("log:time"), "", t("log:source"), t("log:event")], events.map(eventRow));
+function eventTable(events, withSource) {
+    const headers = [t("log:time"), "", withSource ? t("log:source") : null, t("log:event")].filter((h) => h !== null);
+    return table(headers, events.map((event) => eventRow(event, withSource)));
 }
 
-// --- status tab ------------------------------------------------------------------------
+// --- state -----------------------------------------------------------------------------
 
-function resultBadge(pair, running) {
-    const run = pair.last_run;
-    const job = pair.job;
-    if (pair.pending) return el("span", { class: "badge idle", text: t("status:queued") });
-    if (running && job && job.started_at)
-        return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
-    // A cancelled or interrupted run leaves no entry in the run history.
-    if (job && JOB_UNFINISHED.includes(job.result) && (!run || job.finished_at > run.finished_at))
-        return el("span", { class: "badge " + JOB_BADGE[job.result], text: t("status:job_" + job.result) });
-    if (!run) return el("span", { class: "muted", text: t("common:never") });
-    if (run.blocked) return el("span", { class: "badge warn", text: t("status:result_blocked") });
-    if (run.errors) return el("span", { class: "badge bad", text: t("status:result_errors", run.errors) });
-    if (run.dry_run) return el("span", { class: "badge idle", text: t("status:result_dry", run.actions) });
-    return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
+// What the sidebar and the detail pane show: a sync pair or photos backup ("pair:<name>",
+// "photos:<name>"), the background service ("service") or an Apple ID ("account:<name>").
+const view = { mode: "jobs", key: null, tab: "overview", run: null };
+let data = { status: null, pairs: [], photos: [], accounts: [] };
+
+async function loadData() {
+    const [status, pairs, photos, accounts] = await Promise.all([
+        api("status.get"),
+        api("pairs.list"),
+        api("photos.list"),
+        api("accounts.list"),
+        settingsCache ? null : loadSettings(),
+    ]);
+    accountsCache = accounts.accounts;
+    data = { status: status, pairs: pairs.pairs, photos: photos.photos, accounts: accounts.accounts };
+}
+
+// Every pair and photos backup with its live status and its settings.
+function jobs() {
+    const status = data.status || { pairs: [], photos: [] };
+    const result = status.pairs.map((item) => ({
+        key: "pair:" + item.name,
+        run: item.name, // the name the daemon and cancel use
+        kind: "pair",
+        name: item.name,
+        item: item,
+        config: data.pairs.find((p) => p.name === item.name),
+    }));
+    for (const item of status.photos || []) {
+        result.push({
+            key: "photos:" + item.name,
+            run: "photos:" + item.name,
+            kind: "photos",
+            name: item.name,
+            item: item,
+            config: data.photos.find((p) => p.name === item.name),
+        });
+    }
+    return result;
+}
+
+function currentJob() {
+    return jobs().find((job) => job.key === view.key) || null;
 }
 
 const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn" };
 const JOB_UNFINISHED = ["killed", "cancelled"];
 
-function jobBadge(item) {
-    if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
-    const job = item.job;
-    if (job?.started_at && !job.finished_at)
-        return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
-    if (!job?.result) return el("span", { class: "muted", text: t("common:never") });
-    return el("span", { class: "badge " + (JOB_BADGE[job.result] || "bad"), text: t("status:job_" + job.result) });
-}
-
-function nextRun(item) {
-    const job = item.job ?? {};
-    if (!job.next_due) return null;
-    let text = t("status:next_run", formatTime(job.next_due));
-    if (job.interval_minutes) text += " · " + t("schedule:every", job.interval_minutes);
-    return el("div", { class: "muted", text: text });
-}
-
-// name is a pair name or "photos:<job>", label what the user sees
-function cancelButton(name, label, running) {
-    return el("button", {
-        class: "danger",
-        text: t("status:cancel"),
-        onclick: () =>
-            running
-                ? confirmDialog(t("status:cancel_confirm", label), t("status:cancel"), () => cancelRun(name, label))
-                : cancelRun(name, label),
-    });
-}
-
-function cancelRun(name, label) {
-    return guarded(async () => {
-        const result = await api("status.cancel", { name: name }, true);
-        showMessage(t(result.cancelled === "queued" ? "status:cancel_dequeued" : "status:cancel_requested", label));
-        await renderStatus();
-    });
-}
-
-// Hides the notices on the status page; the event log on the log tab keeps them.
-function clearNotices() {
-    return guarded(async () => {
-        await api("status.clear_notices", {}, true);
-        await renderStatus();
-    });
-}
-
-function runPhotos(job, options) {
-    return guarded(async () => {
-        await api("photos.run", { name: job.name, ...options }, true);
-        showMessage(t("status:run_queued", job.name));
-        await renderStatus();
-    });
-}
-
-function runPair(pair, options) {
-    return guarded(async () => {
-        await api("pairs.run", { name: pair.name, ...options }, true);
-        showMessage(t("status:run_queued", pair.name));
-        await renderStatus();
-    });
-}
-
-function daemonText(daemon) {
-    if (daemon.running) {
-        const job = daemon.running.startsWith("photos:")
-            ? t("event:src_photos", daemon.running.slice(7))
-            : daemon.running;
-        return t("status:daemon_running", job);
+// The state of a job as a badge class ("ok", "warn", "bad", "idle", "busy") and a text.
+function jobState(job) {
+    const item = job.item;
+    const daemon = data.status?.daemon || {};
+    const status = item.job;
+    if (item.pending) return { cls: "busy", text: t("status:queued") };
+    if (daemon.running === job.run)
+        return { cls: "busy", text: status?.started_at ? t("status:running_since", formatTime(status.started_at)) : t("ui:running") };
+    const run = item.last_run;
+    // A cancelled or interrupted run leaves no entry in the run history of a pair.
+    if (job.kind === "pair" && run && !(status && JOB_UNFINISHED.includes(status.result) && status.finished_at > run.finished_at)) {
+        if (run.blocked) return { cls: "warn", text: t("status:result_blocked") };
+        if (run.errors) return { cls: "bad", text: t("status:result_errors", run.errors) };
+        if (run.dry_run) return { cls: "idle", text: t("status:result_dry", run.actions) };
+        return { cls: "ok", text: t("status:result_ok", run.actions) };
     }
-    return Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
+    if (!status?.result) return { cls: "idle", text: t("ui:never_ran") };
+    return { cls: JOB_BADGE[status.result] || "bad", text: t("status:job_" + status.result) };
 }
 
-async function renderStatus() {
-    const data = await api("status.get");
-    document.getElementById("version").textContent = t("common:version", data.version);
-    const daemon = data.daemon || {};
-    document.getElementById("daemon").textContent = daemonText(daemon);
-    const service = [t("status:api_user", data.api_user || "?")];
-    const interval = data.interval_minutes || daemon.interval_minutes;
-    if (interval) service.push(t("status:interval", interval));
-    document
-        .getElementById("service")
-        .replaceChildren(
-            service.join(" · ") + " ",
-            el("button", { class: "link", text: t("schedule:change"), onclick: () => guarded(scheduleDialog) })
-        );
-    const notices = data.notices || [];
-    document
-        .getElementById("notices")
-        .replaceChildren(
-            notices.length
-                ? el(
-                      "div",
-                      {},
-                      el(
-                          "div",
-                          { class: "notices-head" },
-                          el("h3", { text: t("status:notices") }),
-                          el("button", { text: t("status:clear_notices"), title: t("status:clear_notices_hint"), onclick: () => void clearNotices() })
-                      ),
-                      eventTable(notices)
-                  )
-                : ""
-        );
-    const rows = data.pairs.map((pair) => {
-        const run = pair.last_run;
-        const running = daemon.running === pair.name;
-        const busy = running || pair.pending;
-        const blocked = run?.blocked && !busy;
-        return el(
-            "tr",
-            {},
-            el("td", { text: pair.name }),
-            el("td", { text: t("mode:" + pair.mode) }),
-            el("td", {}, run ? formatTime(run.finished_at) : t("common:never"), nextRun(pair)),
-            el("td", {}, resultBadge(pair, running), blocked ? el("div", { class: "muted", text: run.blocked }) : null),
-            el(
-                "td",
-                { class: "actions" },
-                blocked
-                    ? el("button", {
-                          class: "danger",
-                          text: t("status:approve_deletes"),
-                          onclick: () =>
-                              confirmDialog(
-                                  t("status:approve_confirm", pair.name, run.blocked),
-                                  t("status:approve_deletes"),
-                                  () => runPair(pair, { allow_deletes: "true" })
-                              ),
-                      })
-                    : null,
-                busy ? cancelButton(pair.name, pair.name, running) : null,
-                busy ? null : el("button", { text: t("status:dry_run"), onclick: () => runPair(pair, { dry_run: "true" }) }),
-                busy ? null : el("button", { class: "primary", text: t("status:run_now"), onclick: () => runPair(pair, {}) })
+const STATE_BADGE = { signed_in: "ok", needs_2fa: "warn", signed_out: "bad", unavailable: "idle" };
+
+function kindText(job) {
+    return job.kind === "photos" ? t("status:photos_kind") : t("mode:" + job.item.mode);
+}
+
+// --- sidebar ---------------------------------------------------------------------------
+
+function sideItem(key, name, sub, cls, onSelect) {
+    return el(
+        "li",
+        {},
+        el(
+            "button",
+            { class: "side-item", "aria-current": view.key === key ? "true" : null, onclick: onSelect },
+            el("span", { class: "dot " + cls }),
+            el("span", { class: "side-text" }, el("span", { class: "side-name", text: name }), el("span", { class: "muted small", text: sub }))
+        )
+    );
+}
+
+function renderSidebar() {
+    for (const button of document.querySelectorAll("[data-mode]")) {
+        button.setAttribute("aria-current", String(button.dataset.mode === view.mode));
+    }
+    document.getElementById("service").setAttribute("aria-current", String(view.key === "service"));
+    document.getElementById("version").textContent = data.status ? t("common:version", data.status.version) : "";
+    const list = document.getElementById("side-list");
+    if (view.mode === "accounts") {
+        list.replaceChildren(
+            ...data.accounts.map((account) =>
+                sideItem("account:" + account.name, account.name, account.apple_id, STATE_BADGE[account.state],
+                    () => choose("account:" + account.name))
             )
         );
+        if (!data.accounts.length) list.append(el("li", { class: "muted side-empty", text: t("ui:no_accounts") }));
+        return;
+    }
+    list.replaceChildren(
+        ...jobs().map((job) => sideItem(job.key, job.name, kindText(job), jobState(job).cls, () => choose(job.key)))
+    );
+    if (!jobs().length) list.append(el("li", { class: "muted side-empty", text: t("ui:no_jobs") }));
+}
+
+// --- detail pane -----------------------------------------------------------------------
+
+const TABS = {
+    job: ["overview", "runs", "settings", "log"],
+    service: ["overview", "log"],
+    account: ["overview"],
+    empty: ["overview"],
+};
+
+function viewKind() {
+    if (view.key === "service") return "service";
+    if (view.key?.startsWith("account:")) return "account";
+    return currentJob() ? "job" : "empty";
+}
+
+function renderTabs() {
+    const tabs = TABS[viewKind()];
+    if (!tabs.includes(view.tab)) view.tab = "overview";
+    document.getElementById("tabs").replaceChildren(
+        ...tabs.map((tab) =>
+            el("button", {
+                role: "tab",
+                "aria-selected": String(tab === view.tab),
+                text: t("ui:tab_" + tab),
+                onclick: () => {
+                    view.tab = tab;
+                    void guarded(renderDetail);
+                },
+            })
+        )
+    );
+}
+
+async function renderDetail() {
+    renderTabs();
+    const content = document.getElementById("content");
+    const kind = viewKind();
+    let nodes;
+    if (kind === "service") nodes = view.tab === "log" ? await serviceLog() : serviceOverview();
+    else if (kind === "account") nodes = accountOverview(data.accounts.find((a) => "account:" + a.name === view.key));
+    else if (kind === "empty") nodes = emptyOverview();
+    else nodes = await JOB_TABS[view.tab](currentJob());
+    content.replaceChildren(...[nodes].flat());
+}
+
+function choose(key) {
+    if (key !== view.key) view.run = null;
+    view.key = key;
+    renderSidebar();
+    void guarded(renderDetail);
+}
+
+// Loads everything again and redraws; keeps the selection if it still exists.
+async function refresh() {
+    await loadData();
+    const keys = view.mode === "accounts" ? data.accounts.map((a) => "account:" + a.name) : jobs().map((j) => j.key);
+    if (view.key !== "service" && !keys.includes(view.key)) {
+        view.key = keys[0] ?? null;
+        view.run = null;
+    }
+    renderSidebar();
+    await renderDetail();
+}
+
+function setMode(mode) {
+    view.mode = mode;
+    view.key = null;
+    view.tab = "overview";
+    void guarded(refresh);
+}
+
+// A card with a big state icon, a title, a subtitle and actions, like DSM's Cloud Sync.
+function headCard(cls, title, subtitle, actions) {
+    return el(
+        "section",
+        { class: "card head" },
+        el("div", { class: "state-icon " + cls, "aria-hidden": "true", text: STATE_ICON[cls] || "" }),
+        el("div", { class: "head-text" }, el("h2", { text: title }), el("div", { class: "muted", text: subtitle }), el("div", { class: "head-actions" }, actions))
+    );
+}
+
+const STATE_ICON = { ok: "✓", warn: "!", bad: "!", busy: "↻", idle: "–" };
+
+function infoCard(title, rows) {
+    return el(
+        "section",
+        { class: "card" },
+        el("h3", { text: title }),
+        el(
+            "dl",
+            { class: "info" },
+            rows.filter(Boolean).flatMap(([label, value]) => [el("dt", { text: label }), el("dd", {}, value)])
+        )
+    );
+}
+
+// --- menus -----------------------------------------------------------------------------
+
+let openMenu = null;
+
+function closeMenu() {
+    if (openMenu) openMenu.remove();
+    openMenu = null;
+}
+
+// A drop-down below `anchor`; items are [label, action, class].
+function showMenu(anchor, items) {
+    closeMenu();
+    const menu = el(
+        "div",
+        { class: "menu", role: "menu" },
+        items.map(([label, action, cls]) =>
+            el("button", {
+                role: "menuitem",
+                class: cls,
+                text: label,
+                onclick: (event) => {
+                    event.stopPropagation();
+                    closeMenu();
+                    void action();
+                },
+            })
+        )
+    );
+    const box = anchor.getBoundingClientRect();
+    menu.style.left = box.left + "px";
+    menu.style.top = box.bottom + 2 + "px";
+    document.body.append(menu);
+    openMenu = menu;
+}
+
+function menuButton(label, items) {
+    return el("button", {
+        class: "menu-button",
+        text: label + " ▾",
+        onclick: (event) => {
+            event.stopPropagation();
+            if (openMenu) closeMenu();
+            else showMenu(event.currentTarget, items);
+        },
     });
-    for (const job of data.photos || []) {
-        const finished = job.job?.finished_at;
-        const name = "photos:" + job.name;
-        const running = daemon.running === name;
-        const busy = running || job.pending;
-        rows.push(
+}
+
+// --- job: overview ---------------------------------------------------------------------
+
+function runJob(job, options) {
+    return guarded(async () => {
+        if (job.kind === "photos") await api("photos.run", { name: job.name, ...options }, true);
+        else await api("pairs.run", { name: job.name, ...options }, true);
+        showMessage(t("status:run_queued", job.name));
+        await refresh();
+    });
+}
+
+function cancelRun(job, running) {
+    const label = job.kind === "photos" ? t("event:src_photos", job.name) : job.name;
+    const cancel = () =>
+        guarded(async () => {
+            const result = await api("status.cancel", { name: job.run }, true);
+            showMessage(t(result.cancelled === "queued" ? "status:cancel_dequeued" : "status:cancel_requested", label));
+            await refresh();
+        });
+    if (running) confirmDialog(t("status:cancel_confirm", label), t("status:cancel"), cancel);
+    else void cancel();
+}
+
+function jobActions(job) {
+    const daemon = data.status?.daemon || {};
+    const running = daemon.running === job.run;
+    const busy = running || job.item.pending;
+    const run = job.item.last_run;
+    const blocked = job.kind === "pair" && run?.blocked && !busy;
+    const items = busy
+        ? [[t("status:cancel"), () => cancelRun(job, running), "danger"]]
+        : [
+              [job.kind === "photos" ? t("status:backup_now") : t("status:run_now"), () => runJob(job, {})],
+              [t("status:dry_run"), () => runJob(job, { dry_run: "true" })],
+          ];
+    const approve = blocked
+        ? el("button", {
+              class: "danger",
+              text: t("status:approve_deletes"),
+              onclick: () =>
+                  confirmDialog(t("status:approve_confirm", job.name, run.blocked), t("status:approve_deletes"), () =>
+                      runJob(job, { allow_deletes: "true" })
+                  ),
+          })
+        : null;
+    const primary = busy
+        ? null
+        : el("button", { class: "primary", text: items[0][0], onclick: () => void items[0][1]() });
+    return [primary, menuButton(t("ui:manage"), items), approve];
+}
+
+function scheduleText(job) {
+    const own = job.config?.interval_minutes;
+    const interval = own || data.status?.interval_minutes;
+    return interval ? t(own ? "ui:schedule_own" : "ui:schedule_default", interval) : "–";
+}
+
+function accountText(name) {
+    const account = data.accounts.find((a) => a.name === name);
+    return account ? account.name + " (" + account.apple_id + ")" : name;
+}
+
+function lastRunText(job) {
+    const status = job.item.job;
+    const finished = job.kind === "pair" ? job.item.last_run?.finished_at ?? status?.finished_at : status?.finished_at;
+    return finished ? formatTime(finished) : t("common:never");
+}
+
+function noticesCard(notices, source) {
+    if (!notices.length) return null;
+    return el(
+        "section",
+        { class: "card" },
+        el(
+            "div",
+            { class: "card-head" },
+            el("h3", { text: t("status:notices") }),
+            el("button", {
+                text: t("status:clear_notices"),
+                title: t("status:clear_notices_hint"),
+                onclick: () => void clearNotices(source),
+            })
+        ),
+        eventTable(notices, !source)
+    );
+}
+
+// Hides the notices of one job (or all); the event log keeps them.
+function clearNotices(source) {
+    return guarded(async () => {
+        await api("status.clear_notices", source ? { source: source } : {}, true);
+        await refresh();
+    });
+}
+
+function jobOverview(job) {
+    const state = jobState(job);
+    const c = job.config || {};
+    const next = job.item.job?.next_due;
+    const rows = [
+        [t("ui:kind"), kindText(job)],
+        [t("ui:account"), accountText(job.item.account)],
+        job.kind === "photos" ? [t("photos:target"), c.target] : [t("pair:local"), c.local],
+        job.kind === "photos"
+            ? [t("photos:libraries"), (c.libraries || []).map((lib) => t("photos:lib_" + lib)).join(", ")]
+            : [c.remote_provider === "folder" ? t("pair:provider_folder") : t("pair:remote"), c.remote],
+        [t("ui:schedule"), scheduleText(job)],
+        [t("status:last_run"), lastRunText(job)],
+        [t("ui:next_run"), next ? formatTime(next) : "–"],
+    ];
+    const notices = (data.status?.notices || []).filter((n) => n.source === job.key);
+    return [
+        headCard(state.cls, job.name, state.text, jobActions(job)),
+        noticesCard(notices, job.key),
+        infoCard(t("ui:details"), rows),
+    ].filter(Boolean);
+}
+
+// --- job: runs -------------------------------------------------------------------------
+
+const RUN_BADGE = {
+    sync_finished: "ok",
+    sync_failed: "bad",
+    config_error: "bad",
+    delete_brake: "warn",
+    sync_cancelled: "warn",
+    sync_stopped: "idle",
+    sync_postponed: "idle",
+};
+
+function runState(run, running) {
+    if (!run.result) return running ? { cls: "busy", text: t("ui:running") } : { cls: "idle", text: t("run:unknown") };
+    return { cls: RUN_BADGE[run.result] || "bad", text: t("run:" + run.result) };
+}
+
+function runBadge(run, running) {
+    const state = runState(run, running);
+    return badge(state.cls, state.text);
+}
+
+function countsText(counts) {
+    const parts = Object.entries(counts || {}).map(([kind, n]) => {
+        const key = "count:" + kind;
+        const number = Number(n).toLocaleString(language() === "ger" ? "de-DE" : "en-GB");
+        return strings[key] ? t(key, number) : number + " " + kind;
+    });
+    return parts.length ? parts.join(", ") : t("run:nothing");
+}
+
+async function jobRuns(job) {
+    const history = await api("log.history", { source: job.key, limit: 50 });
+    const runs = history.runs;
+    if (!runs.length) return el("p", { class: "muted", text: t("run:none") });
+    const running = data.status?.daemon?.running === job.run;
+    const runKey = (run) => run.started_at ?? run.finished_at;
+    const index = Math.max(0, runs.findIndex((run) => runKey(run) === view.run));
+    const list = el(
+        "ul",
+        { class: "run-list" },
+        runs.map((run, i) =>
             el(
-                "tr",
+                "li",
                 {},
-                el("td", { text: job.name }),
-                el("td", { text: t("status:photos_kind") }),
-                el("td", {}, finished ? formatTime(finished) : t("common:never"), nextRun(job)),
-                el("td", {}, jobBadge(job)),
                 el(
-                    "td",
-                    { class: "actions" },
-                    busy ? cancelButton(name, t("event:src_photos", job.name), running) : null,
-                    busy ? null : el("button", { text: t("status:dry_run"), onclick: () => runPhotos(job, { dry_run: "true" }) }),
-                    busy ? null : el("button", { class: "primary", text: t("status:backup_now"), onclick: () => runPhotos(job, {}) })
+                    "button",
+                    {
+                        class: "run-item",
+                        "aria-current": i === index ? "true" : null,
+                        onclick: () => {
+                            view.run = runKey(run);
+                            void guarded(renderDetail);
+                        },
+                    },
+                    el("span", { class: "dot " + runState(run, running && i === 0).cls }),
+                    el(
+                        "span",
+                        { class: "side-text" },
+                        el("span", { class: "nowrap", text: formatTime(runKey(run)) }),
+                        el("span", { class: "muted small", text: runState(run, running && i === 0).text + (run.dry_run ? " · " + t("log:dry") : "") })
+                    )
                 )
             )
-        );
+        )
+    );
+    return el("div", { class: "runs" }, list, runDetail(runs[index], running && index === 0));
+}
+
+function runDetail(run, running) {
+    const end = run.finished_at ?? (running ? Date.now() / 1000 : null);
+    const rows = [
+        [t("run:result"), runBadge(run, running)],
+        [t("log:started"), run.started_at ? formatTime(run.started_at) : t("run:unknown")],
+        [t("run:finished"), run.finished_at ? formatTime(run.finished_at) : "–"],
+        run.started_at && end ? [t("log:duration"), formatDuration(end - run.started_at)] : null,
+        [t("run:kind"), run.dry_run ? t("log:dry") : t("run:real")],
+        [t("run:counts"), run.counts ? countsText(run.counts) : "–"],
+        run.message && !/^exit code \d+$/.test(run.message) ? [t("run:message"), run.message] : null,
+    ];
+    return el(
+        "div",
+        { class: "run-detail" },
+        infoCard(t("run:title"), rows),
+        el("section", { class: "card" }, el("h3", { text: t("run:events") }),
+            run.events.length ? eventTable(run.events, false) : el("p", { class: "muted", text: t("run:no_events") }))
+    );
+}
+
+// --- job: settings ---------------------------------------------------------------------
+
+function onOff(value) {
+    return value ? t("ui:yes") : t("ui:no");
+}
+
+function jobSettings(job) {
+    const c = job.config;
+    if (!c) return el("p", { class: "muted", text: t("common:loading") });
+    const rows =
+        job.kind === "photos"
+            ? [
+                  [t("photos:account"), accountText(c.account)],
+                  [t("photos:target"), c.target],
+                  [t("photos:libraries"), c.libraries.map((lib) => t("photos:lib_" + lib)).join(", ")],
+                  ...PHOTO_SWITCHES.map((key) => [t("photos:" + key), onOff(c[key])]),
+                  ...PHOTO_FOLDERS.map((key) => [t("photos:" + key), c[key]]),
+                  [t("ui:schedule"), scheduleText(job)],
+              ]
+            : [
+                  [t("pair:provider"), c.remote_provider === "folder" ? t("pair:provider_folder") : t("pair:provider_icloud")],
+                  [t("pair:account"), accountText(c.account)],
+                  [t("pair:local"), c.local],
+                  [t("pair:remote"), c.remote],
+                  [t("pair:mode"), t("mode:" + c.mode)],
+                  [t("pair:exclude"), c.exclude.length ? c.exclude.join(", ") : "–"],
+                  [t("pair:brake_ratio"), Math.round(c.max_delete_ratio * 100) + " %"],
+                  [t("pair:brake_count"), String(c.max_delete_count)],
+                  [t("ui:schedule"), scheduleText(job)],
+              ];
+    const edit = () => (job.kind === "photos" ? void guarded(() => photosDialog(c)) : pairDialog(c));
+    const remove = () =>
+        confirmDialog(t(job.kind === "photos" ? "photos:delete_confirm" : "pair:delete_confirm", job.name), t("common:delete"), async () => {
+            await api(job.kind === "photos" ? "photos.delete" : "pairs.delete", { name: job.name }, true);
+            await refresh();
+        });
+    return [
+        el("div", { class: "toolbar" }, el("button", { class: "primary", text: t("common:edit"), onclick: edit }),
+            el("button", { class: "danger", text: t("common:delete"), onclick: remove })),
+        infoCard(t("ui:tab_settings"), rows),
+        job.kind === "photos" ? el("p", { class: "muted", text: t("photos:only_download") }) : null,
+    ].filter(Boolean);
+}
+
+// --- logs ------------------------------------------------------------------------------
+
+let eventLevel = "info";
+
+function levelSelect() {
+    const choice = el(
+        "select",
+        {
+            onchange: (event) => {
+                eventLevel = event.target.value;
+                void guarded(renderDetail);
+            },
+        },
+        ["info", "warning", "error"].map((level) =>
+            el("option", { value: level, selected: level === eventLevel, text: t("log:level_" + level) })
+        )
+    );
+    return el("div", { class: "toolbar" }, el("label", { class: "inline" }, t("log:level"), choice),
+        el("button", { text: t("common:refresh"), onclick: () => void guarded(refresh) }));
+}
+
+async function jobLog(job) {
+    const events = await api("log.events", { limit: 200, level: eventLevel, source: job.key });
+    return [levelSelect(), eventTable(events.events, false)];
+}
+
+const JOB_TABS = { overview: jobOverview, runs: jobRuns, settings: jobSettings, log: jobLog };
+
+// --- service ---------------------------------------------------------------------------
+
+function daemonState(daemon) {
+    if (daemon.running) {
+        const job = daemon.running.startsWith("photos:") ? t("event:src_photos", daemon.running.slice(7)) : daemon.running;
+        return { cls: "busy", text: t("status:daemon_running", job) };
     }
-    document
-        .getElementById("status-table")
-        .replaceChildren(
-            table([t("status:pair"), t("status:mode"), t("status:last_run"), t("status:result"), ""], rows)
-        );
+    return Object.keys(daemon).length ? { cls: "ok", text: t("status:daemon_idle") } : { cls: "warn", text: t("status:daemon_unknown") };
+}
+
+function serviceOverview() {
+    const status = data.status || {};
+    const state = daemonState(status.daemon || {});
+    const change = el("button", { text: t("schedule:change"), onclick: () => void guarded(scheduleDialog) });
+    const rows = [
+        [t("ui:version"), status.version || "–"],
+        [t("ui:api_user"), status.api_user || "?"],
+        [t("ui:schedule"), status.interval_minutes ? t("schedule:every_long", status.interval_minutes) : "–"],
+        [t("ui:jobs"), String(jobs().length)],
+    ];
+    return [
+        headCard(state.cls, t("nav:service_title"), state.text, [change]),
+        noticesCard(status.notices || [], null),
+        infoCard(t("ui:details"), rows),
+    ].filter(Boolean);
+}
+
+async function serviceLog() {
+    const [events, log] = await Promise.all([
+        api("log.events", { limit: 200, level: eventLevel }),
+        api("log.tail", { lines: 300 }),
+    ]);
+    const pre = el("pre", { class: "log", text: log.lines.join("\n") });
+    setTimeout(() => (pre.scrollTop = pre.scrollHeight), 0);
+    return [levelSelect(), eventTable(events.events, true), el("h3", { text: t("log:lines") }), pre];
 }
 
 // --- schedule --------------------------------------------------------------------------
@@ -601,47 +990,13 @@ async function scheduleDialog() {
     ];
     openDialog(t("schedule:title"), fields, t("common:save"), async (v) => {
         await api("settings.update", { interval_minutes: v.interval }, true);
+        await loadSettings();
         showMessage(t("schedule:saved", v.interval));
-        await renderStatus();
+        await refresh();
     });
 }
 
-// --- pairs tab -------------------------------------------------------------------------
-
-async function renderPairs() {
-    const [pairs, accounts] = await Promise.all([api("pairs.list"), api("accounts.list"), loadSettings()]);
-    accountsCache = accounts.accounts;
-    const rows = pairs.pairs.map((pair) =>
-        el(
-            "tr",
-            {},
-            el("td", { text: pair.name }),
-            el("td", { text: pair.remote_provider === "folder" ? t("pair:provider_folder") : pair.account }),
-            el("td", { text: pair.local }),
-            el("td", { text: pair.remote }),
-            el("td", { text: t("mode:" + pair.mode) }),
-            el(
-                "td",
-                { class: "actions" },
-                el("button", { text: t("common:edit"), onclick: () => pairDialog(pair) }),
-                el("button", {
-                    class: "danger",
-                    text: t("common:delete"),
-                    onclick: () =>
-                        confirmDialog(t("pair:delete_confirm", pair.name), t("common:delete"), async () => {
-                            await api("pairs.delete", { name: pair.name }, true);
-                            await renderPairs();
-                        }),
-                })
-            )
-        )
-    );
-    document
-        .getElementById("pairs-table")
-        .replaceChildren(
-            table([t("pair:name"), t("pair:account"), t("pair:local"), t("pair:remote"), t("pair:mode"), ""], rows)
-        );
-}
+// --- pair dialog -----------------------------------------------------------------------
 
 function pairDialog(pair) {
     const editing = Boolean(pair);
@@ -711,7 +1066,7 @@ function pairDialog(pair) {
         editing ? el("p", { class: "hint", text: t("pair:reset_hint") }) : null,
     ];
     openDialog(t(editing ? "pair:edit_title" : "pair:add_title"), fields, t("common:save"), async (v) => {
-        const data = {
+        const pair = {
             name: v.name,
             account: v.account || "default",
             local: v.local,
@@ -723,58 +1078,25 @@ function pairDialog(pair) {
             max_delete_count: Number(v.count),
             interval_minutes: jobInterval(v.interval),
         };
-        await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(data) }, true);
-        await renderPairs();
+        await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(pair) }, true);
+        view.key = "pair:" + pair.name;
+        await refresh();
     });
 }
 
-// --- photos tab ------------------------------------------------------------------------
+// --- photos dialog ---------------------------------------------------------------------
 
 const LIBRARIES = ["personal", "shared", "shared_albums"];
 const PHOTO_SWITCHES = ["albums", "favorites", "videos", "live_videos", "raw_alternative", "edited", "xmp", "hidden"];
 const PHOTO_FOLDERS = ["folder_scheme", "shared_folder", "albums_folder", "favorites_folder", "hidden_folder", "shared_albums_folder"];
 let photoDefaults = null;
 
-async function renderPhotos() {
-    const [jobs, accounts] = await Promise.all([api("photos.list"), api("accounts.list"), loadSettings()]);
-    accountsCache = accounts.accounts;
-    if (photoDefaults === null) photoDefaults = await api("photos.defaults");
-    const rows = jobs.photos.map((job) =>
-        el(
-            "tr",
-            {},
-            el("td", { text: job.name }),
-            el("td", { text: job.account }),
-            el("td", { text: job.target }),
-            el("td", { text: job.libraries.map((lib) => t("photos:lib_" + lib)).join(", ") }),
-            el(
-                "td",
-                { class: "actions" },
-                el("button", { text: t("common:edit"), onclick: () => photosDialog(job) }),
-                el("button", {
-                    class: "danger",
-                    text: t("common:delete"),
-                    onclick: () =>
-                        confirmDialog(t("photos:delete_confirm", job.name), t("common:delete"), async () => {
-                            await api("photos.delete", { name: job.name }, true);
-                            await renderPhotos();
-                        }),
-                })
-            )
-        )
-    );
-    document
-        .getElementById("photos-table")
-        .replaceChildren(
-            table([t("photos:name"), t("photos:account"), t("photos:target"), t("photos:libraries"), ""], rows)
-        );
-}
-
 function checkbox(name, label, checked) {
     return el("label", { class: "check" }, el("input", { type: "checkbox", name: name, checked: checked }), label);
 }
 
-function photosDialog(job) {
+async function photosDialog(job) {
+    if (photoDefaults === null) photoDefaults = await api("photos.defaults");
     const editing = Boolean(job);
     const j = job || { name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "", ...photoDefaults };
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
@@ -793,62 +1115,50 @@ function photosDialog(job) {
         jobIntervalField(j.interval_minutes),
     ];
     openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
-        const data = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
-        data.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
-        for (const key of PHOTO_SWITCHES) data[key] = v[key] === "on";
-        for (const key of PHOTO_FOLDERS) data[key] = v[key];
-        await api(editing ? "photos.update" : "photos.create", { photos: JSON.stringify(data) }, true);
-        await renderPhotos();
+        const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
+        photos.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
+        for (const key of PHOTO_SWITCHES) photos[key] = v[key] === "on";
+        for (const key of PHOTO_FOLDERS) photos[key] = v[key];
+        await api(editing ? "photos.update" : "photos.create", { photos: JSON.stringify(photos) }, true);
+        view.key = "photos:" + photos.name;
+        await refresh();
     });
 }
 
-// --- accounts tab ----------------------------------------------------------------------
+// --- Apple IDs -------------------------------------------------------------------------
 
-const STATE_BADGE = { signed_in: "ok", needs_2fa: "warn", signed_out: "bad", unavailable: "idle" };
-
-async function renderAccounts() {
-    const data = await api("accounts.list");
-    accountsCache = data.accounts;
-    const rows = data.accounts.map((account) =>
-        el(
-            "tr",
-            {},
-            el("td", { text: account.name }),
-            el("td", { text: account.apple_id }),
-            el("td", {}, el("span", { class: "badge " + STATE_BADGE[account.state], text: t("state:" + account.state) })),
-            el("td", { text: account.pairs.concat(account.photos || []).join(", ") }),
-            el(
-                "td",
-                { class: "actions" },
-                account.state === "needs_2fa"
-                    ? el("button", { class: "primary", text: t("account:verify"), onclick: () => codeDialog(account.name) })
-                    : null,
-                account.state === "signed_out"
-                    ? el("button", { class: "primary", text: t("account:login"), onclick: () => loginDialog(account) })
-                    : null,
-                el("button", {
-                    class: "danger",
-                    text: t("common:delete"),
-                    onclick: () =>
-                        confirmDialog(t("account:delete_confirm", account.name), t("common:delete"), async () => {
-                            await api("accounts.remove", { name: account.name }, true);
-                            await renderAccounts();
-                        }),
-                })
-            )
-        )
-    );
-    document
-        .getElementById("accounts-table")
-        .replaceChildren(
-            table([t("account:name"), t("account:apple_id"), t("account:state"), t("account:pairs"), ""], rows)
-        );
+function accountOverview(account) {
+    if (!account) return emptyOverview();
+    const actions = [
+        account.state === "needs_2fa"
+            ? el("button", { class: "primary", text: t("account:verify"), onclick: () => codeDialog(account.name) })
+            : null,
+        account.state === "signed_out"
+            ? el("button", { class: "primary", text: t("account:login"), onclick: () => loginDialog(account) })
+            : null,
+        el("button", {
+            class: "danger",
+            text: t("common:delete"),
+            onclick: () =>
+                confirmDialog(t("account:delete_confirm", account.name), t("common:delete"), async () => {
+                    await api("accounts.remove", { name: account.name }, true);
+                    await refresh();
+                }),
+        }),
+    ];
+    const rows = [
+        [t("account:apple_id"), account.apple_id],
+        [t("account:state"), badge(STATE_BADGE[account.state], t("state:" + account.state))],
+        [t("account:pairs"), account.pairs.concat(account.photos || []).join(", ") || "–"],
+    ];
+    return [headCard(STATE_BADGE[account.state], account.name, t("state:" + account.state), actions), infoCard(t("ui:details"), rows)];
 }
 
 function afterLogin(result) {
     // The dialog closes after this returns; open the code dialog on the next tick.
     if (result.state === "needs_2fa") setTimeout(() => codeDialog(result.name), 0);
-    void guarded(renderAccounts);
+    view.key = "account:" + result.name;
+    void guarded(refresh);
 }
 
 function accountDialog() {
@@ -897,82 +1207,68 @@ function codeDialog(name) {
     ];
     openDialog(t("account:code_title"), fields, t("account:verify"), async (v) => {
         await api("accounts.verify", { name: name, code: v.code }, true);
-        await renderAccounts();
+        await refresh();
     });
 }
 
-// --- log tab ---------------------------------------------------------------------------
+// --- empty state and "+" ---------------------------------------------------------------
 
-async function renderLog() {
-    const level = document.getElementById("event-level").value;
-    const [events, runs, log] = await Promise.all([
-        api("log.events", { limit: 200, level: level }),
-        api("log.runs", { limit: 50 }),
-        api("log.tail", { lines: 300 }),
-    ]);
-    document.getElementById("events-table").replaceChildren(eventTable(events.events));
-    const rows = runs.runs.map((run) =>
-        el(
-            "tr",
-            {},
-            el("td", { text: formatTime(run.started_at) }),
-            el("td", { text: run.pair + (run.dry_run ? " (" + t("log:dry") + ")" : "") }),
-            el("td", { text: formatDuration(run.finished_at - run.started_at) }),
-            el("td", { text: run.actions }),
-            el("td", { text: run.errors }),
-            el("td", { text: run.blocked || "" })
-        )
+function emptyOverview() {
+    if (view.mode === "accounts")
+        return el("section", { class: "card empty" }, el("p", { text: t("ui:no_accounts") }),
+            el("button", { class: "primary", text: t("account:add_title"), onclick: accountDialog }));
+    return el(
+        "section",
+        { class: "card empty" },
+        el("p", { text: t("ui:no_jobs") }),
+        el("div", { class: "toolbar" },
+            el("button", { class: "primary", text: t("pair:add_title"), onclick: () => pairDialog(null) }),
+            el("button", { class: "primary", text: t("photos:add_title"), onclick: () => void guarded(() => photosDialog(null)) }))
     );
-    document
-        .getElementById("runs-table")
-        .replaceChildren(
-            table([t("log:started"), t("status:pair"), t("log:duration"), t("log:actions"), t("log:errors"), ""], rows)
-        );
-    const pre = document.getElementById("log-lines");
-    pre.textContent = log.lines.join("\n");
-    pre.scrollTop = pre.scrollHeight;
 }
 
-// --- tabs ------------------------------------------------------------------------------
+function addClicked(event) {
+    event.stopPropagation();
+    if (view.mode === "accounts") {
+        accountDialog();
+        return;
+    }
+    if (openMenu) {
+        closeMenu();
+        return;
+    }
+    showMenu(event.currentTarget, [
+        [t("pair:add_title"), () => pairDialog(null)],
+        [t("photos:add_title"), () => guarded(() => photosDialog(null))],
+    ]);
+}
 
-const RENDER = {
-    status: renderStatus,
-    pairs: renderPairs,
-    photos: renderPhotos,
-    accounts: renderAccounts,
-    log: renderLog,
-};
+// --- start -----------------------------------------------------------------------------
 
-function selectTab(name) {
-    activeTab = name;
-    for (const button of document.querySelectorAll("[data-tab]")) {
-        button.setAttribute("aria-selected", String(button.dataset.tab === name));
-    }
-    for (const section of document.querySelectorAll(".tab")) {
-        section.hidden = section.id !== "tab-" + name;
-    }
-    void guarded(RENDER[name]);
-    clearInterval(refreshTimer);
-    if (name === "status") {
-        refreshTimer = setInterval(() => {
-            if (!document.querySelector("dialog[open]")) void guarded(renderStatus);
-        }, REFRESH_MS);
-    }
+function autoRefresh() {
+    const live = view.tab === "overview" || view.tab === "runs";
+    if (live && !openMenu && !document.querySelector("dialog[open]")) void guarded(refresh);
 }
 
 async function start() {
     document.documentElement.lang = language() === "ger" ? "de" : "en";
     await loadStrings();
     for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
-    for (const button of document.querySelectorAll("[data-tab]")) {
-        button.addEventListener("click", () => selectTab(button.dataset.tab));
+    for (const button of document.querySelectorAll("[data-mode]")) {
+        button.addEventListener("click", () => setMode(button.dataset.mode));
     }
-    document.getElementById("pair-add").addEventListener("click", () => pairDialog(null));
-    document.getElementById("photos-add").addEventListener("click", () => photosDialog(null));
-    document.getElementById("account-add").addEventListener("click", accountDialog);
-    document.getElementById("log-refresh").addEventListener("click", () => guarded(renderLog));
-    document.getElementById("event-level").addEventListener("change", () => guarded(renderLog));
-    selectTab(activeTab);
+    document.getElementById("add").addEventListener("click", addClicked);
+    document.getElementById("add").title = t("ui:add_hint");
+    document.getElementById("service").addEventListener("click", () => {
+        view.mode = "jobs";
+        choose("service");
+    });
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeMenu();
+    });
+    await guarded(refresh);
+    setInterval(autoRefresh, REFRESH_MS);
 }
 
 await start();

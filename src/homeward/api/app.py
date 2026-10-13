@@ -17,6 +17,7 @@ def build_api(paths: Paths, backend: AccountBackend) -> Api:
     api.add("log.tail", log.tail)
     api.add("log.runs", log.runs)
     api.add("log.events", log.events)
+    api.add("log.history", log.history)
     api.add("pairs.list", pairs.list_pairs)
     api.add("pairs.create", pairs.create, write=True)
     api.add("pairs.update", pairs.update, write=True)

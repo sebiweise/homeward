@@ -206,6 +206,9 @@ def _sync_one(args: argparse.Namespace, config: Config, pair: PairConfig) -> int
         log.exception("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
         return EXIT_FAILED
     _print_outcome(outcome, args.dry_run)
+    failed = len(outcome.result.failed) if outcome.result else 0
+    counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
+    _log_summary(f"pair {pair.name}", counts, failed)
     if not args.dry_run:
         purged = local.purge_trash(pair.trash_days)
         if purged:
@@ -314,9 +317,22 @@ def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> 
                 albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
+    failed = len(outcome.result.failed) if outcome.result else 0
+    counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
+    counts["up_to_date"] = outcome.plan.up_to_date
+    _log_summary(f"photos {job.name}", counts, failed)
     if outcome.result and outcome.result.failed:
         return EXIT_FAILED
     return EXIT_OK
+
+
+def _log_summary(what: str, counts: dict[str, int], failed: int) -> None:
+    """Record what a run did (planned, for a dry run), so the DSM UI can show it."""
+    counts = {kind: n for kind, n in counts.items() if n}
+    if failed:
+        counts["failed"] = failed
+    text = ", ".join(f"{n} {kind}" for kind, n in counts.items()) or "nothing to do"
+    log.info("%s: %s", what, text, extra={"event": "sync_summary", "counts": counts})
 
 
 @contextlib.contextmanager

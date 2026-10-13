@@ -19,6 +19,8 @@ backend once and never written anywhere.
 | Method | POST | Parameters |
 | --- | --- | --- |
 | `status.get` | | |
+| `status.cancel` | yes | `name` (pair or `photos:<job>`) |
+| `status.clear_notices` | yes | `source` (one job; empty: all notices) |
 | `pairs.list` | | |
 | `pairs.create`, `pairs.update` | yes | `pair` (JSON object) |
 | `pairs.delete` | yes | `name` |
@@ -35,7 +37,13 @@ backend once and never written anywhere.
 | `accounts.remove` | yes | `name` |
 | `log.runs` | | `limit` |
 | `log.tail` | | `lines` |
-| `log.events` | | `limit`, `level` (`info`, `warning`, `error`) |
+| `log.events` | | `limit`, `level` (`info`, `warning`, `error`), `source` |
+| `log.history` | | `source` (`pair:<name>` or `photos:<name>`), `limit` |
+
+`log.history` builds a job's runs from the event log: a run starts with
+`sync_started` and ends with the event the daemon writes with an `exit_code`
+(`sync_finished`, `sync_failed`, `delete_brake`, ...). Events in between belong to the
+run; `sync_summary` (written by the CLI at the end of a run) gives its `counts`.
 
 `folders.*` back the folder picker. They run as the package user, so they only show
 shared folders (`/volumeN/<share>`) and subfolders that `homeward` may open; DSM's
@@ -55,8 +63,8 @@ text in the `[error]` section of the strings.
 - Removing a pair, a photos backup or an account never touches files.
 - Changing a pair's folders or account resets its sync state, so the next run is a
   first run (no deletes, no overwrites).
-- The delete brake is approved per run from the status page ("Approve deletions").
-- "Cancel" on the status page (`status.cancel`) drops a queued run, or stops the
+- The delete brake is approved per run from a pair's overview ("Approve deletions").
+- "Cancel" in a task's *Manage* menu (`status.cancel`) drops a queued run, or stops the
   running one: the daemon sends the sync process SIGTERM, which ends it cleanly
   (temporary files removed, every finished step kept in the state database). It is
   logged as a warning (`sync_cancelled`), sends no notification, and the job keeps
@@ -71,12 +79,14 @@ Below `/var/packages/homeward/var` (`$HOMEWARD_VAR`):
 - `cancel/<pair>.json`: "cancel" requests for the running sync (pair name or
   `photos:<job>`); a watcher thread in the daemon calls `take_cancels()` every second.
 - `status.json`: written by the daemon, e.g. `{"running": "<pair>"}` or `{}` when idle.
-- `homeward.log`: the daemon's log, shown on the log page.
+- `homeward.log`: the daemon's log, shown on the service's log tab.
+- `notices.json`: when the notices were last cleared, for all and per job.
 - `events.jsonl`: the event log. Anything that runs in the background calls
   `runtime.record_event(level, source, code, message, until=...)` for waits, retries
   and errors (source `photos:<name>`, `pair:<name>`, `account:<name>` or `service`;
-  codes with UI texts in `runtime.EVENT_CODES`). The status page shows running waits
-  and the warnings and errors of the last 24 hours; the log page shows all events.
+  codes with UI texts in `runtime.EVENT_CODES`). A task's overview shows its running
+  waits and the warnings and errors of the last 24 hours that no later good run
+  settled; its runs and log tabs and the service's log tab show all events.
 
 ## DSM notifications
 
