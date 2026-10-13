@@ -26,7 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from homeward.api.accounts import LoginResult, SessionState
+from homeward.api.accounts import AccountBackend, LoginResult, SessionState
 from homeward.api.errors import ApiError
 from homeward.api.store import ConfigStore
 from homeward.auth.session import logout, session_dir
@@ -131,7 +131,7 @@ def run_helper(
     channel.write("result", {"seq": answered + 1, "state": "expired"})
 
 
-class PyiCloudBackend:
+class PyiCloudBackend(AccountBackend):
     """:class:`~homeward.api.accounts.AccountBackend` that signs in with pyicloud."""
 
     def __init__(

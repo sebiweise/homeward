@@ -218,7 +218,8 @@ def build(arch: str, out_dir: Path, work: Path) -> Path:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     spk = out_dir / f"{PACKAGE_NAME}-{version}-{arch}.spk"
-    checksum = hashlib.md5(package_tgz).hexdigest()
+    # DSM's INFO file wants an MD5 of package.tgz; it is an integrity check, not security.
+    checksum = hashlib.md5(package_tgz, usedforsecurity=False).hexdigest()
     with tarfile.open(spk, mode="w", format=tarfile.GNU_FORMAT) as tar:
         add_bytes(tar, "INFO", info(version, arch, checksum, has_ui).encode())
         add_bytes(tar, "package.tgz", package_tgz)
@@ -236,7 +237,16 @@ def build(arch: str, out_dir: Path, work: Path) -> Path:
     return spk
 
 
-def main(argv: list[str] | None = None) -> int:
+def _inside_repo(path: Path) -> Path:
+    """Build output and scratch space stay inside the checkout: ``--work`` is deleted
+    before every build, so a typo must not point it at anything else."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(ROOT):
+        raise SystemExit(f"build_spk: {path} is outside the repository ({ROOT})")
+    return resolved
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--arch", choices=sorted(ARCHS), required=True)
     parser.add_argument("--out", type=Path, default=ROOT / "dist")
@@ -245,10 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.print_version:
         print(dsm_version())
-        return 0
-    build(args.arch, args.out, args.work or ROOT / "build" / f"spk-{args.arch}")
-    return 0
+        return
+    out = _inside_repo(args.out)
+    work = _inside_repo(args.work or ROOT / "build" / f"spk-{args.arch}")
+    build(args.arch, out, work)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

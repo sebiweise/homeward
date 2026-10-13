@@ -50,11 +50,11 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def defaults(ctx: Context, request: Request) -> dict[str, Any]:
+def defaults(_ctx: Context, _request: Request) -> dict[str, Any]:
     return {"libraries": list(LIBRARIES), **SWITCHES, **FOLDERS}
 
 
-def list_jobs(ctx: Context, request: Request) -> dict[str, Any]:
+def list_jobs(ctx: Context, _request: Request) -> dict[str, Any]:
     return {"photos": [to_dict(entry) for entry in _entries(ctx.store.read())]}
 
 
@@ -143,19 +143,12 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         raise ApiError("invalid_param", "target")
     if not target.is_dir():
         raise ApiError("local_missing", str(target))
-    libraries = data.get("libraries", list(LIBRARIES))
-    if (
-        not isinstance(libraries, list)
-        or not libraries
-        or any(lib not in LIBRARIES for lib in libraries)
-    ):
-        raise ApiError("invalid_param", "libraries")
     entry: dict[str, Any] = {
         "name": name,
         "account": account,
         "apple_id": accounts[account].get("apple_id", ""),
         "target": str(target),
-        "libraries": [lib for lib in LIBRARIES if lib in libraries],
+        "libraries": _libraries(data),
     }
     for key, switch in SWITCHES.items():
         enabled = data.get(key, switch)
@@ -163,13 +156,27 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
             raise ApiError("invalid_param", key)
         entry[key] = enabled
     for key, folder in FOLDERS.items():
-        value = text(key, folder)
-        if key == "folder_scheme":
-            _check_scheme(value)
-        elif "/" in value or value in (".", ".."):
-            raise ApiError("invalid_param", key)
-        entry[key] = value
+        entry[key] = _folder(key, text(key, folder))
     return entry
+
+
+def _libraries(data: dict[str, Any]) -> list[str]:
+    libraries = data.get("libraries", list(LIBRARIES))
+    if (
+        not isinstance(libraries, list)
+        or not libraries
+        or any(lib not in LIBRARIES for lib in libraries)
+    ):
+        raise ApiError("invalid_param", "libraries")
+    return [lib for lib in LIBRARIES if lib in libraries]
+
+
+def _folder(key: str, value: str) -> str:
+    if key == "folder_scheme":
+        _check_scheme(value)
+    elif "/" in value or value in (".", ".."):
+        raise ApiError("invalid_param", key)
+    return value
 
 
 def _check_scheme(scheme: str) -> None:

@@ -30,7 +30,7 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
-from homeward.providers.icloud_photos import ICloudPhotosSource, PhotosNotReady
+from homeward.providers.icloud_photos import ICloudPhotosSource, PhotoOptions, PhotosNotReady
 from homeward.providers.nas import NasProvider, find_recycle_bin
 from homeward.runtime import EventLogHandler, Paths
 
@@ -56,9 +56,14 @@ def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
     try:
         service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
     except LoginRequired as exc:
-        log.error("%s", exc, extra={"event": "login_required", "account": pair.account})
+        _log_login_required(exc, pair.account)
         raise ConfigError(f"pair {pair.name!r}: {exc}") from exc
     return PyiCloudDriveApi(service.drive)
+
+
+def _log_login_required(exc: LoginRequired, account: str) -> None:
+    """An expected state, not a crash: the event log gets the message, no traceback."""
+    log.error("%s", exc, extra={"event": "login_required", "account": account})
 
 
 def _pair_apple_id(pair: PairConfig) -> str:
@@ -167,7 +172,7 @@ def _sync_one(args: argparse.Namespace, config: Config, pair: PairConfig) -> int
             )  # fmt: skip
     except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
         print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
-        log.error("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
+        log.exception("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
         return EXIT_FAILED
     _print_outcome(outcome, args.dry_run)
     if not args.dry_run:
@@ -211,14 +216,16 @@ def _photo_source(config: Config, job: PhotosConfig) -> PhotoSource:
     return ICloudPhotosSource(
         service,
         job.libraries,
-        albums=job.albums,
-        videos=job.videos,
-        live_videos=job.live_videos,
-        raw_alternative=job.raw_alternative,
-        edited=job.edited,
-        favorites=job.favorites,
-        hidden=job.hidden,
-        xmp=job.xmp,
+        PhotoOptions(
+            albums=job.albums,
+            videos=job.videos,
+            live_videos=job.live_videos,
+            raw_alternative=job.raw_alternative,
+            edited=job.edited,
+            favorites=job.favorites,
+            hidden=job.hidden,
+            xmp=job.xmp,
+        ),
     )
 
 
@@ -268,7 +275,7 @@ def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> 
             source = _photo_source(config, job)
         except LoginRequired as exc:
             print(f"homeward: {exc}", file=sys.stderr)
-            log.error("%s", exc, extra={"event": "login_required", "account": job.account})
+            _log_login_required(exc, job.account)
             return EXIT_FAILED
         with PhotoStateDB(state_path) as state:
             outcome = backup_photos(

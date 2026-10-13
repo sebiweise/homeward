@@ -21,6 +21,7 @@ from typing import Any, BinaryIO
 
 from homeward.core.models import FileMeta
 from homeward.core.rules import is_excluded
+from homeward.providers.base import Provider
 from homeward.providers.drive_api import ROOT_ID, ZONE, DriveApi, DriveApiError, Item, item_name
 
 log = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ def _sized(data: BinaryIO) -> Iterator[tuple[BinaryIO, int]]:
         yield spool, size
 
 
-class ICloudDriveProvider:
+class ICloudDriveProvider(Provider):
     """Files below ``root`` (a folder path in iCloud Drive, "" for the whole Drive).
 
     Deleted files go to iCloud's "Recently Deleted" (kept 30 days). New files are
@@ -164,23 +165,34 @@ class ICloudDriveProvider:
             next_level: list[tuple[str, Item]] = []
             for (prefix, _), children in zip(level, self._children(level), strict=True):
                 for child in children:
-                    rel = f"{prefix}/{item_name(child)}" if prefix else item_name(child)
-                    if is_excluded(rel, self._excludes):
-                        continue
-                    kind = child.get("type")
-                    if kind == FILE:
-                        self._index[rel] = child
-                        files[rel] = _meta(rel, child)
-                    elif kind == FOLDER:
-                        self._index[rel] = child
-                        next_level.append((rel, child))
-                    else:
-                        skipped[str(kind)] = skipped.get(str(kind), 0) + 1
+                    self._add(prefix, child, files, next_level, skipped)
             level = next_level
         if skipped:
             log.info("skipped iCloud Drive nodes that are not files or folders: %s", skipped)
         self._cache.save()
         return files
+
+    def _add(
+        self,
+        prefix: str,
+        child: Item,
+        files: dict[str, FileMeta],
+        folders: list[tuple[str, Item]],
+        skipped: dict[str, int],
+    ) -> None:
+        """Index one node of the walk: a file, a folder to descend into, or neither."""
+        rel = f"{prefix}/{item_name(child)}" if prefix else item_name(child)
+        if is_excluded(rel, self._excludes):
+            return
+        kind = child.get("type")
+        if kind == FILE:
+            self._index[rel] = child
+            files[rel] = _meta(rel, child)
+        elif kind == FOLDER:
+            self._index[rel] = child
+            folders.append((rel, child))
+        else:
+            skipped[str(kind)] = skipped.get(str(kind), 0) + 1
 
     def open_read(self, path: str) -> BinaryIO:
         item = self._file(path)

@@ -26,7 +26,7 @@ class Authenticator(Protocol):
         ...
 
 
-class DsmAuthenticator:
+class DsmAuthenticator(Authenticator):
     def __init__(self, cgi: str = AUTHENTICATE_CGI, admin_group: str = ADMIN_GROUP) -> None:
         self.cgi = cgi
         self.admin_group = admin_group

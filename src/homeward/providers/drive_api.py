@@ -87,7 +87,7 @@ class ChunkReader(io.RawIOBase):
         super().close()
 
 
-class PyiCloudDriveApi:
+class PyiCloudDriveApi(DriveApi):
     """``DriveApi`` on top of ``PyiCloudService(...).drive``.
 
     It uses pyicloud's session, service URLs and request parameters, which are not

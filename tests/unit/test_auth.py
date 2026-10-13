@@ -83,8 +83,9 @@ def test_expired_session_is_login_required(tmp_path: Path) -> None:
 
 
 def test_verify_before_login(tmp_path: Path) -> None:
+    flow = LoginFlow("seb", "x", tmp_path, factory=FakeService)
     with pytest.raises(LoginError):
-        LoginFlow("seb", "x", tmp_path, factory=FakeService).verify_2fa("1")
+        flow.verify_2fa("1")
 
 
 def test_accounts_have_separate_sessions(tmp_path: Path) -> None:

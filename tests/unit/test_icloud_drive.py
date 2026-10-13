@@ -83,8 +83,9 @@ def test_write_never_clobbers(api: FakeDriveApi) -> None:
     api.put("Docs/a.txt", "one")
     provider = _provider(api)
     provider.list_files()
+    data = io.BytesIO(b"two")
     with pytest.raises(FileExistsError):
-        provider.write("a.txt", io.BytesIO(b"two"), mtime=1.0)
+        provider.write("a.txt", data, mtime=1.0)
     assert api.content("Docs/a.txt") == b"one"
 
 
@@ -92,7 +93,8 @@ def test_write_returns_meta_that_the_next_listing_confirms(api: FakeDriveApi) ->
     provider = _provider(api)
     provider.list_files()
     meta = provider.write("a/b.txt", io.BytesIO(b"data"), mtime=1_700_000_123.0)
-    assert meta.size == 4 and meta.mtime == 1_700_000_123.0
+    assert meta.size == 4
+    assert meta.mtime == 1_700_000_123.0
     assert _provider(api).list_files()["a/b.txt"] == meta
 
 
@@ -100,8 +102,9 @@ def test_failed_upload_leaves_no_file(api: FakeDriveApi) -> None:
     api.fail_uploads.add("big.bin")
     provider = _provider(api)
     provider.list_files()
+    data = io.BytesIO(b"x" * 100)
     with pytest.raises(Exception, match="simulated"):
-        provider.write("big.bin", io.BytesIO(b"x" * 100), mtime=1.0)
+        provider.write("big.bin", data, mtime=1.0)
     assert not api.exists("Docs/big.bin")
 
 
@@ -140,8 +143,9 @@ def test_folder_named_like_a_file_is_an_error(api: FakeDriveApi) -> None:
     api.put("Docs/a", "file")
     provider = _provider(api)
     provider.list_files()
+    data = io.BytesIO(b"x")
     with pytest.raises(NotADirectoryError):
-        provider.write("a/b.txt", io.BytesIO(b"x"), mtime=1.0)
+        provider.write("a/b.txt", data, mtime=1.0)
 
 
 # Skipping unchanged folders

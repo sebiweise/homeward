@@ -8,7 +8,12 @@ from typing import Any, ClassVar
 import pytest
 
 from homeward.core.photos import FAVORITES_ALBUM, Library
-from homeward.providers.icloud_photos import RENEW_AFTER, ICloudPhotosSource, PhotosNotReady
+from homeward.providers.icloud_photos import (
+    RENEW_AFTER,
+    ICloudPhotosSource,
+    PhotoOptions,
+    PhotosNotReady,
+)
 
 
 @dataclass
@@ -177,13 +182,15 @@ def test_lists_personal_and_shared_with_albums_and_live_photos() -> None:
 
 def test_filters() -> None:
     source = ICloudPhotosSource(
-        make_service(), [Library.PERSONAL], albums=False, videos=True, live_videos=False
+        make_service(),
+        [Library.PERSONAL],
+        PhotoOptions(albums=False, videos=True, live_videos=False),
     )
     items = {item.key: item for item in source.list_items()}
     assert set(items) == {"personal/a/original", "personal/b/original", "personal/v/original"}
     assert items["personal/a/original"].albums == ()
 
-    no_videos = ICloudPhotosSource(make_service(), [Library.PERSONAL], videos=False)
+    no_videos = ICloudPhotosSource(make_service(), [Library.PERSONAL], PhotoOptions(videos=False))
     assert {i.key for i in no_videos.list_items()} == {"personal/a/original", "personal/b/original"}
 
 
@@ -193,8 +200,9 @@ def test_cursor_combines_library_tokens() -> None:
     assert source.cursor() == "root=t1|shared:SharedSync-1=t9|options=11111101"
     service.photos.libraries["root"].token = "t2"
     assert source.cursor() == "root=t2|shared:SharedSync-1=t9|options=11111101"
-    switched = ICloudPhotosSource(service, hidden=True).cursor()
-    assert switched is not None and switched.endswith("options=11111111")
+    switched = ICloudPhotosSource(service, options=PhotoOptions(hidden=True)).cursor()
+    assert switched is not None
+    assert switched.endswith("options=11111111")
 
 
 def test_cursor_none_when_a_library_has_no_token() -> None:
@@ -214,7 +222,8 @@ def test_open_read_streams_the_listed_url() -> None:
     with source.open_read(item) as stream:
         assert stream.read() == b"https://cdn/a"
     _url, kwargs = service.session.requests[0]
-    assert kwargs["stream"] is True and kwargs["timeout"] > 0
+    assert kwargs["stream"] is True
+    assert kwargs["timeout"] > 0
 
 
 def test_open_read_unknown_item() -> None:
@@ -281,7 +290,9 @@ def fake_xmp(asset: Any) -> bytes | None:
 
 
 def test_all_features() -> None:
-    source = ICloudPhotosSource(rich_service(), hidden=True, xmp_builder=fake_xmp)
+    source = ICloudPhotosSource(
+        rich_service(), options=PhotoOptions(hidden=True), xmp_builder=fake_xmp
+    )
     items = {item.key: item for item in source.list_items()}
 
     assert set(items) == {
@@ -300,10 +311,12 @@ def test_all_features() -> None:
     assert FAVORITES_ALBUM in items["personal/r/original"].albums
     assert items["personal/h/original"].hidden
     sidecar = items["personal/r/xmp"]
-    assert sidecar.filename == "r.DNG.xmp" and sidecar.sidecar_for == "original"
+    assert sidecar.filename == "r.DNG.xmp"
+    assert sidecar.sidecar_for == "original"
     assert sidecar.albums == ()
     shared = items["shared_albums/guid1:x/original"]
-    assert shared.collection == "Hochzeit" and shared.size == 9
+    assert shared.collection == "Hochzeit"
+    assert shared.size == 9
 
     with source.open_read(sidecar) as stream:
         assert stream.read() == b"<xmp id='r'/>"
@@ -316,11 +329,7 @@ def test_features_can_be_switched_off() -> None:
     source = ICloudPhotosSource(
         rich_service(),
         [Library.PERSONAL],
-        raw_alternative=False,
-        edited=False,
-        favorites=False,
-        hidden=False,
-        xmp=False,
+        PhotoOptions(raw_alternative=False, edited=False, favorites=False, hidden=False, xmp=False),
     )
     items = {item.key: item for item in source.list_items()}
     assert set(items) == {"personal/r/original", "personal/p/original"}
@@ -339,7 +348,8 @@ def test_xmp_failure_skips_only_the_sidecar() -> None:
 
     source = ICloudPhotosSource(rich_service(), [Library.PERSONAL], xmp_builder=broken)
     keys = {item.key for item in source.list_items()}
-    assert "personal/r/original" in keys and "personal/r/xmp" not in keys
+    assert "personal/r/original" in keys
+    assert "personal/r/xmp" not in keys
 
 
 def test_pyicloud_xmp_skips_photos_without_metadata() -> None:
@@ -350,7 +360,8 @@ def test_pyicloud_xmp_skips_photos_without_metadata() -> None:
 
     assert pyicloud_xmp(SimpleNamespace(asset_record=record(assetDate=1700000000000))) is None
     data = pyicloud_xmp(SimpleNamespace(asset_record=record(isFavorite=1)))
-    assert data is not None and b"<xmp:Rating>5</xmp:Rating>" in data
+    assert data is not None
+    assert b"<xmp:Rating>5</xmp:Rating>" in data
 
 
 def by_name(library: Library_, asset_ids: list[str], master_ids: list[str]) -> list[Asset]:
@@ -514,7 +525,8 @@ def test_pyicloud_lookup_builds_assets_with_new_urls() -> None:
         asset_type = PhotoAsset
 
     [asset] = pyicloud_lookup(Lib(), ["A1", "A2"], ["M1", "M2"])
-    assert asset.id == "A1" and asset.resources["original"].url == "https://cdn/new"
+    assert asset.id == "A1"
+    assert asset.resources["original"].url == "https://cdn/new"
 
 
 class BadGateway(Exception):

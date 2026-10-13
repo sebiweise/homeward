@@ -64,7 +64,10 @@ def png(size: int) -> bytes:
 
 
 def main(target: str) -> None:
-    out = Path(target)
+    root = Path(__file__).resolve().parent.parent
+    out = Path(target).resolve()
+    if not out.is_relative_to(root):
+        raise SystemExit(f"make_icons: {target} is outside the repository ({root})")
     out.mkdir(parents=True, exist_ok=True)
     for size in SIZES:
         (out / f"icon_{size}.png").write_bytes(png(size))

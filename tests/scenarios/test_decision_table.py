@@ -141,7 +141,8 @@ def test_decision_table_row(case: Case) -> None:
     assert tuple(d.decode() for d in nas.trashed(PATH)) == expect.nas_trash
     assert tuple(d.decode() for d in icloud.trashed(PATH)) == expect.icloud_trash
     if expect.conflict is None:
-        assert CONFLICT not in nas.files and CONFLICT not in icloud.files
+        assert CONFLICT not in nas.files
+        assert CONFLICT not in icloud.files
     else:
         assert nas.content(CONFLICT).decode() == expect.conflict
         assert icloud.content(CONFLICT).decode() == expect.conflict

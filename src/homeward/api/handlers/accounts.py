@@ -12,11 +12,10 @@ from homeward.api.handlers.common import check_name
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 
-_APPLE_ID = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _CODE = re.compile(r"^\d{6}$")
 
 
-def list_accounts(ctx: Context, request: Request) -> dict[str, Any]:
+def list_accounts(ctx: Context, _request: Request) -> dict[str, Any]:
     raw = ctx.store.read()
     config = ctx.store.parse(raw)
     result = []
@@ -41,7 +40,7 @@ def list_accounts(ctx: Context, request: Request) -> dict[str, Any]:
 def add(ctx: Context, request: Request) -> dict[str, Any]:
     name = check_name(request.get("name"), "account")
     apple_id = request.get("apple_id").strip()
-    if not _APPLE_ID.match(apple_id):
+    if not _is_apple_id(apple_id):
         raise ApiError("invalid_param", "apple_id")
     if any(a["name"] == name for a in _raw_accounts(ctx.store.read())):
         raise ApiError("account_exists", name)
@@ -105,3 +104,14 @@ def _raw_accounts(raw: RawConfig) -> list[dict[str, Any]]:
     if not isinstance(accounts, list):
         raise ApiError("config_invalid", "'account' must be a list of [[account]] tables")
     return [a for a in accounts if isinstance(a, dict) and isinstance(a.get("name"), str)]
+
+
+def _is_apple_id(value: str) -> bool:
+    """``name@domain.tld``: one ``@``, no whitespace, a dot inside the domain."""
+    user, _, domain = value.partition("@")
+    return (
+        bool(user)
+        and "@" not in domain
+        and "." in domain[1:-1]
+        and not any(char.isspace() for char in value)
+    )
