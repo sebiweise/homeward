@@ -261,7 +261,7 @@ function resultBadge(pair) {
     return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle" };
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle" };
 
 function jobBadge(item) {
     if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });

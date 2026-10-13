@@ -310,3 +310,17 @@ def test_a_stopped_run_is_a_warning_not_an_error(tmp_path: Path) -> None:
     (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
     assert (event.level, event.code) == ("warning", "sync_stopped")
     assert sent == []
+
+
+def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    sent: list[str] = []
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=4), Clock(), notifier=lambda e, *a: sent.append(e)
+    )
+    status = scheduler.run(Job("photos:me", ("photos",)))
+    assert status.result == "waiting"
+    (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    assert (event.level, event.code) == ("info", "sync_postponed")
+    assert sent == []
