@@ -438,14 +438,25 @@ function jobState(job) {
         return { cls: "busy", text: status?.started_at ? t("status:running_since", formatTime(status.started_at)) : t("ui:running") };
     const run = item.last_run;
     // A cancelled or interrupted run leaves no entry in the run history of a pair.
-    if (job.kind === "pair" && run && !(status && JOB_UNFINISHED.includes(status.result) && status.finished_at > run.finished_at)) {
-        if (run.blocked) return { cls: "warn", text: t("status:result_blocked") };
-        if (run.errors) return { cls: "bad", text: t("status:result_errors", run.errors) };
-        if (run.dry_run) return { cls: "idle", text: t("status:result_dry", run.actions) };
-        return { cls: "ok", text: t("status:result_ok", run.actions) };
-    }
+    const unfinished = status && JOB_UNFINISHED.includes(status.result) && status.finished_at > run?.finished_at;
+    if (job.kind === "pair" && run && !unfinished) return pairRunState(run);
     if (!status?.result) return { cls: "idle", text: t("ui:never_ran") };
     return { cls: JOB_BADGE[status.result] || "bad", text: t("status:job_" + status.result) };
+}
+
+function pairRunState(run) {
+    if (run.blocked) return { cls: "warn", text: t("status:result_blocked") };
+    if (run.errors) return { cls: "bad", text: t("status:result_errors", run.errors) };
+    if (run.dry_run) return { cls: "idle", text: t("status:result_dry", run.actions) };
+    return { cls: "ok", text: t("status:result_ok", run.actions) };
+}
+
+function remoteRow(c) {
+    return [c.remote_provider === "folder" ? t("pair:provider_folder") : t("pair:remote"), c.remote];
+}
+
+function providerText(c) {
+    return c.remote_provider === "folder" ? t("pair:provider_folder") : t("pair:provider_icloud");
 }
 
 const STATE_BADGE = { signed_in: "ok", needs_2fa: "warn", signed_out: "bad", unavailable: "idle" };
@@ -740,7 +751,7 @@ function jobOverview(job) {
         job.kind === "photos" ? [t("photos:target"), c.target] : [t("pair:local"), c.local],
         job.kind === "photos"
             ? [t("photos:libraries"), (c.libraries || []).map((lib) => t("photos:lib_" + lib)).join(", ")]
-            : [c.remote_provider === "folder" ? t("pair:provider_folder") : t("pair:remote"), c.remote],
+            : remoteRow(c),
         [t("ui:schedule"), scheduleText(job)],
         [t("status:last_run"), lastRunText(job)],
         [t("ui:next_run"), next ? formatTime(next) : "–"],
@@ -862,7 +873,7 @@ function jobSettings(job) {
                   [t("ui:schedule"), scheduleText(job)],
               ]
             : [
-                  [t("pair:provider"), c.remote_provider === "folder" ? t("pair:provider_folder") : t("pair:provider_icloud")],
+                  [t("pair:provider"), providerText(c)],
                   [t("pair:account"), accountText(c.account)],
                   [t("pair:local"), c.local],
                   [t("pair:remote"), c.remote],

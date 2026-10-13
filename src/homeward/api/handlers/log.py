@@ -7,7 +7,7 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import existing_state
 from homeward.api.server import Context, Request
-from homeward.runtime import Level, read_events
+from homeward.runtime import Event, Level, read_events
 
 MAX_LINES = 2000
 _CHUNK = 8192
@@ -48,26 +48,39 @@ def history(ctx: Context, request: Request) -> dict[str, Any]:
     source = request.get("source")
     limit = _int(request.get("limit", "30"), 1, 200)
     found = [e for e in read_events(ctx.paths, limit=MAX_HISTORY_EVENTS) if e.source == source]
-    runs: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
+    runs = _Runs()
     for event in reversed(found):  # oldest first
+        runs.add(event)
+    return {"source": source, "runs": runs.runs[::-1][:limit]}
+
+
+class _Runs:
+    """Groups one job's events, oldest first, into runs."""
+
+    def __init__(self) -> None:
+        self.runs: list[dict[str, Any]] = []
+        self.current: dict[str, Any] | None = None
+
+    def add(self, event: Event) -> None:
         if event.code == "sync_started":
-            current = _new_run(event.time, event.details)
-            runs.append(current)
+            self.current = _new_run(event.time, event.details)
+            self.runs.append(self.current)
         elif event.code in RUN_END and "exit_code" in event.details:
-            if current is None:  # its start is older than the event log
-                current = _new_run(None, event.details)
-                runs.append(current)
-            current |= {"finished_at": event.time, "result": event.code,
-                        "level": event.level, "message": event.message}  # fmt: skip
-            current = None
-        elif current is not None:
+            self._end(event)
+        elif self.current is not None:
             if event.code == "sync_summary":
-                current["counts"] = event.details.get("counts") or {}
+                self.current["counts"] = event.details.get("counts") or {}
             else:
-                current["events"].append(asdict(event))
-    runs.reverse()
-    return {"source": source, "runs": runs[:limit]}
+                self.current["events"].append(asdict(event))
+
+    def _end(self, event: Event) -> None:
+        run = self.current
+        if run is None:  # its start is older than the event log
+            run = _new_run(None, event.details)
+            self.runs.append(run)
+        run |= {"finished_at": event.time, "result": event.code,
+                "level": event.level, "message": event.message}  # fmt: skip
+        self.current = None
 
 
 def _new_run(started_at: float | None, details: dict[str, Any]) -> dict[str, Any]:
