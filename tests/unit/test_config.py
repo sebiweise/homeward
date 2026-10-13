@@ -13,6 +13,7 @@ name = "docs"
 local = "/volume1/homes/seb/Docs"
 remote = "Documents"
 mode = "bidirectional"
+beta = true
 exclude = ["*.tmp"]
 max_delete_count = 10
 trash_days = 7
@@ -33,6 +34,7 @@ def test_load_valid(tmp_path: Path) -> None:
     config = load_config(path)
     docs = config.pair("docs")
     assert docs.mode is SyncMode.BIDIRECTIONAL
+    assert docs.beta
     assert docs.exclude == ("*.tmp",)
     assert docs.delete_brake.max_count == 10
     assert docs.delete_brake.max_ratio == 0.10
@@ -54,6 +56,11 @@ def test_load_valid(tmp_path: Path) -> None:
             "remote_provider",
         ),
         ({"name": "x", "local": "/a", "remote": 5, "mode": "upload"}, "wrong type"),
+        ({"name": "x", "local": "/a", "remote": "r", "mode": "bidirectional"}, "in beta"),
+        (
+            {"name": "x", "local": "/a", "remote": "r", "mode": "bidirectional", "beta": "yes"},
+            "true or false",
+        ),
         (
             {"name": "x", "local": "/a", "remote": "r", "mode": "upload", "trash_days": -1},
             "trash_days",

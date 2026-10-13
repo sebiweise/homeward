@@ -172,6 +172,7 @@ def test_pair_lifecycle(client: Client, tmp_path: Path) -> None:
     created = client.call("pairs.create", post=True, pair=_pair(tmp_path))
     assert created["exclude"] == ["*.tmp"]
     assert created["max_delete_count"] == 50
+    assert created["beta"]  # choosing bidirectional in the UI opts into the beta
     assert [p["name"] for p in client.call("pairs.list")["pairs"]] == ["docs"]
 
     pair = _pair(tmp_path)
@@ -181,6 +182,7 @@ def test_pair_lifecycle(client: Client, tmp_path: Path) -> None:
 
     updated = client.call("pairs.update", post=True, pair=_pair(tmp_path, mode="upload"))
     assert updated["mode"] == "upload"
+    assert not updated["beta"]
 
     client.call("pairs.delete", post=True, name="docs")
     assert client.call("pairs.list") == {"pairs": []}
