@@ -38,6 +38,7 @@ button {
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.danger { color: var(--bad); }
+button.link { border: none; background: none; padding: 0; color: var(--accent); text-decoration: underline; }
 button:disabled { opacity: .5; cursor: default; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }

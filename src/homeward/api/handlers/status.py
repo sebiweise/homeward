@@ -59,6 +59,7 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
         "version": package_version(),
         "api_user": _user(),
         "daemon": daemon,
+        "interval_minutes": config.interval_minutes,
         "pairs": pairs,
         "photos": photos,
         "notices": notices(ctx),

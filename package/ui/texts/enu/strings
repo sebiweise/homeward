@@ -61,6 +61,17 @@ cancel_dequeued="{0} will not run."
 job_cancelled="Cancelled by the user"
 job_waiting="Waiting for iCloud"
 
+[schedule]
+title="Schedule"
+change="Change"
+interval="Interval in minutes"
+hint="Every sync pair and photos backup runs this often unless it has its own interval. Allowed: {0} to {1} minutes. The change applies right away, without a restart."
+saved="Schedule saved: every {0} minutes."
+every="every {0} min"
+job_interval="Own interval in minutes"
+job_hint="Leave empty to use the general schedule (every {0} minutes). At least {1} minutes."
+use_default="Default: {0}"
+
 [pair]
 name="Name"
 account="Account"
@@ -230,6 +241,7 @@ config_not_writable="Homeward cannot write its configuration. Details are in the
 folder_not_found="This folder does not exist or Homeward cannot reach it: {0}"
 folder_denied="Homeward has no permission for this folder: {0}"
 folder_exists="A folder with this name already exists: {0}"
+invalid_interval="The interval must be a whole number of minutes ({0})."
 
 [notify]
 sync_failed="{0}: the last run finished with errors. Details are in Homeward's event log."
