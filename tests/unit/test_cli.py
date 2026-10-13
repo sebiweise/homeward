@@ -296,7 +296,7 @@ def test_photos_refuses_a_second_run_for_the_same_account(
 def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     import logging
 
-    from homeward.cli import EXIT_FAILED, _events, _reported
+    from homeward.cli import EXIT_FAILED, EXIT_WAITING, _events, _reported
     from homeward.providers.icloud_photos import PhotosNotReady
     from homeward.runtime import Paths, read_events
 
@@ -316,7 +316,7 @@ def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     logging.getLogger("homeward").setLevel(logging.INFO)
     with _events(config, "photos:me"):
         assert _reported(crash) == EXIT_FAILED
-        assert _reported(not_ready) == EXIT_FAILED
+        assert _reported(not_ready) == EXIT_WAITING
     events = read_events(Paths(var_dir=tmp_path, config=config))
     assert [(e.code, e.level) for e in events] == [("icloud_indexing", "warning"), ("log", "error")]
     assert events[1].message == "the run stopped: Photos service not available ('indexing')"
@@ -340,3 +340,11 @@ def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
     assert run.returncode == 1, run.stderr
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [e["code"] for e in events] == ["login_required"]
+
+
+def test_the_worst_exit_code_wins() -> None:
+    from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_OK, EXIT_WAITING, _worst
+
+    assert _worst(EXIT_OK, EXIT_WAITING) == EXIT_WAITING
+    assert _worst(EXIT_WAITING, EXIT_FAILED) == EXIT_FAILED
+    assert _worst(EXIT_BLOCKED, EXIT_WAITING) == EXIT_BLOCKED

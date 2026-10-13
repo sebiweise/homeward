@@ -34,6 +34,7 @@ TIMEOUT = 60
 # a first backup's listing alone can take); Apple then answers 410. So every batch of
 # downloads gets fresh URLs first, unless they were renewed a moment ago.
 EXPIRED_STATUS = 410
+UNAUTHORIZED_STATUS = (401, 403)
 RENEW_AFTER = 5 * 60
 LOOKUP_BATCH = 100  # photos per lookup request (two records each)
 TRANSIENT_STATUS = (500, 502, 503, 504)
@@ -120,6 +121,9 @@ class ICloudPhotosSource(PhotoSource):
         self._urls: dict[str, str] = {}
         self._blobs: dict[str, bytes] = {}
         self._origins: dict[str, _Origin] = {}
+        # shared album items -> their album, which is listed again for fresh links
+        self._stream_albums: dict[str, Any] = {}
+        self._albums_relisted: dict[str, float] = {}
         self._fetched_at: dict[str, float] = {}
 
     # PhotoSource interface
@@ -209,7 +213,7 @@ class ICloudPhotosSource(PhotoSource):
 
     def _get(self, url: str) -> Any:
         response = self._download_session().get(url, stream=True, timeout=TIMEOUT)
-        if getattr(response, "status_code", 200) in (401, 403):  # wants iCloud's own session
+        if getattr(response, "status_code", 200) in UNAUTHORIZED_STATUS:  # wants iCloud's session
             response.close()
             with self._api_lock:
                 response = self.service.session.get(url, stream=True, timeout=TIMEOUT)
@@ -242,6 +246,14 @@ class ICloudPhotosSource(PhotoSource):
         if due:
             total = sum(len(e) for e in due.values())
             log.info("renewed %d of %d expiring download links", renewed, total)
+        stale_albums = {
+            id(album): album
+            for item in items
+            if (album := self._stream_albums.get(item.key)) is not None
+            and now - self._fetched_at.get(item.key, now) >= RENEW_AFTER
+        }
+        for album in stale_albums.values():
+            self._relist_shared_album(album, "")
 
     def _renew(self, groups: list[list[tuple[str, _Origin]]], now: float) -> int:
         origins = [group[0][1] for group in groups]
@@ -272,6 +284,9 @@ class ICloudPhotosSource(PhotoSource):
 
         (pyicloud's ``album.get`` scans the whole library when its query misses.)
         """
+        album = self._stream_albums.get(key)
+        if album is not None:
+            return self._relist_shared_album(album, key)
         origin = self._origins.get(key)
         if origin is None:
             return None
@@ -353,11 +368,32 @@ class ICloudPhotosSource(PhotoSource):
     def _shared_album_items(self) -> Iterator[PhotoItem]:
         for album in self._shared_albums():
             count = 0
-            for count, asset in enumerate(album.photos, 1):  # noqa: B007
-                yield from self._items(
-                    asset, Library.SHARED_ALBUMS, (), collection=album.fullname, id_prefix=album.id
-                )
-            log.info("shared album %s: %d photos read", album.fullname, count)
+            for count, item in enumerate(self._shared_album_photos(album), 1):  # noqa: B007
+                yield item
+            log.info("shared album %s: %d files read", album.fullname, count)
+
+    def _shared_album_photos(self, album: Any) -> Iterator[PhotoItem]:
+        for asset in album.photos:
+            for item in self._items(
+                asset, Library.SHARED_ALBUMS, (), collection=album.fullname, id_prefix=album.id
+            ):
+                self._stream_albums[item.key] = album
+                yield item
+
+    def _relist_shared_album(self, album: Any, key: str) -> str | None:
+        """Shared album links expire too (Apple then answers 401); listing the album
+        again renews the links of all its files, at most once per RENEW_AFTER."""
+        now = self._clock()
+        if now - self._albums_relisted.get(album.id, -RENEW_AFTER) >= RENEW_AFTER:
+            self._albums_relisted[album.id] = now
+            try:
+                with self._api_lock:
+                    for _item in self._shared_album_photos(album):
+                        pass
+            except Exception as exc:
+                log.warning("could not list shared album %s again: %s", album.fullname, exc)
+                return None
+        return self._urls.get(key)
 
     def _items(
         self,
@@ -536,8 +572,12 @@ def _size(value: object) -> int | None:
 
 
 def _expired(exc: Exception) -> bool:
-    """An expired download URL: pyicloud reports Apple's 410 as a withdrawn endpoint."""
-    return _status(exc) == EXPIRED_STATUS or type(exc).__name__ == "PyiCloudEndpointGoneException"
+    """An expired download URL: pyicloud reports Apple's 410 as a withdrawn endpoint;
+    shared album links answer 401 or 403 once they expire."""
+    return (
+        _status(exc) in (*UNAUTHORIZED_STATUS, EXPIRED_STATUS)
+        or type(exc).__name__ == "PyiCloudEndpointGoneException"
+    )
 
 
 def _field(record: Any, name: str) -> Any:
