@@ -7,6 +7,11 @@ from homeward import cli
 from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
 from homeward.providers.drive_api import DriveApiError
 from homeward.providers.fake_drive import FakeDriveApi
+from homeward.runtime import Event, Paths, read_events
+
+
+def _events(tmp_path: Path) -> list[Event]:
+    return read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
 
 
 def test_main_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -54,6 +59,8 @@ def test_sync_dry_run_then_real(tmp_path: Path, capsys: pytest.CaptureFixture[st
 
     assert main(["sync", "--config", str(config), "--pair", "docs"]) == EXIT_OK
     assert "nothing to do" in capsys.readouterr().out
+    summaries = [e.details["counts"] for e in _events(tmp_path) if e.code == "sync_summary"]
+    assert summaries == [{}, {"upload": 1, "download": 1}, {"upload": 1, "download": 1}]
 
 
 def test_sync_delete_brake_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -199,6 +206,9 @@ def test_photos_dry_run_then_real(
     capsys.readouterr()
     assert main(["photos", "--config", str(config)]) == EXIT_OK
     assert "nothing changed in iCloud, 1 photos up to date" in capsys.readouterr().out
+    summaries = [e.details["counts"] for e in _events(tmp_path) if e.code == "sync_summary"]
+    assert summaries == [{"up_to_date": 1}, {"download": 1, "link": 1},
+                         {"download": 1, "link": 1}]  # fmt: skip
 
 
 def test_photos_failed_download_exit_code(
@@ -213,6 +223,9 @@ def test_photos_failed_download_exit_code(
 
     assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_FAILED
     assert "FAILED download" in capsys.readouterr().out
+    (summary,) = [e for e in _events(tmp_path) if e.code == "sync_summary"]
+    assert summary.details["counts"] == {"download": 1, "failed": 1}
+    assert summary.source == "photos:seb"
 
 
 def test_photos_without_session_asks_for_login(

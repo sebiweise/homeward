@@ -43,17 +43,21 @@ first. Synced files are never touched by an uninstall.
 Open **Homeward** from the DSM main menu. Only members of the `administrators` group
 can use it.
 
-| Tab | What you do there |
+The app is laid out like DSM's Cloud Sync. The sidebar lists every sync pair and photos
+backup with a colored dot for its state; the switch at the bottom shows the Apple IDs
+instead. *+ Add* creates a sync pair, a photos backup or (in the Apple ID list) an
+Apple ID, and *Service* shows the background service.
+
+| Tab | What you see there |
 | --- | --- |
-| Status | See every pair and photos backup with its last result and next run; *Sync now*, *Test run* (changes nothing), *Approve deletions* after the delete brake stopped a run. Waits and errors of the last 24 hours are listed as notices. |
-| Sync pairs | Add, edit and delete iCloud Drive pairs. |
-| Photos | Add, edit and delete photos backups with every option listed below. |
-| Accounts | Add an Apple ID and sign in with password and 2FA code; sign in again when Apple ends the session. |
-| Log | Past runs, the event log (waits, retries, errors) and the raw service log. |
+| Overview | State, last and next run, folders and schedule of the selected task; *Sync now* and *Manage* (*Test run*, which changes nothing, or *Cancel*), *Approve deletions* after the delete brake stopped a run. Waits and errors of the last 24 hours are listed as notices, without anything a later successful run settled; *Clear notices* hides them (the event log keeps them). |
+| Runs | Every run of the task. Pick one to see when it ran, how it ended, what it did (files uploaded, downloaded, up to date, failed) and every wait, retry or error during it. |
+| Settings | The task's settings, with *Edit* and *Delete*. |
+| Log | The task's event log, filtered by level. Under *Service*, the log tab shows the events of all tasks and the raw service log. |
 
 Homeward keeps only the trusted session Apple hands out after the 2FA step (in
 `state/sessions/<account>/`, readable only by the package user), never the password.
-When Apple expires the session, the affected jobs fail and the Accounts tab asks you to
+When Apple expires the session, the affected jobs fail and the Apple ID list asks you to
 sign in again. A failed sync also sends a DSM notification.
 
 NAS folders are picked with *Browse...*: it lists the shared folders the user
@@ -93,7 +97,7 @@ state_dir = "/var/packages/homeward/var/state"
 interval_minutes = 60     # every job runs once per interval (5 to 10080 minutes)
 ```
 
-The Status tab sets this interval under "Change" next to the schedule. A sync pair or
+*Service* sets this interval under "Change". A sync pair or
 photos backup can also have its own `interval_minutes` (same range, field "Own
 interval" in its dialog); without one it follows the global schedule.
 
@@ -178,7 +182,7 @@ does not keep names apart that differ only in upper/lower case (`notes.txt`,
   `.homeward-papierkorb/<date>/` in the pair's folder; in iCloud, "Recently Deleted".
 - The first run of a pair never deletes or overwrites anything.
 - The delete brake stops a run that would delete too much. Check the plan with a dry
-  run and approve it once with *Approve deletions* on the Status tab or
+  run and approve it once with *Approve deletions* on the pair's overview or
   `hw sync --pair NAME --allow-deletes`.
 
 ## Command reference
@@ -200,7 +204,7 @@ sudo kill -USR1 "$(sudo cat /var/packages/homeward/var/homeward.pid)"
 
 ## Status and troubleshooting
 
-The Status and Log tabs show the same information as these files:
+The app's overview, runs and log tabs show the same information as these files:
 
 ```sh
 sudo cat /var/packages/homeward/var/status.json      # last result and next run per job
@@ -209,7 +213,7 @@ sudo tail -n 50 /var/packages/homeward/var/homeward.log
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `account '…' needs a login` | Apple ended the trusted session. Sign in again on the Accounts tab or with `hw login`. |
+| `account '…' needs a login` | Apple ended the trusted session. Sign in again in the Apple ID list of the app or with `hw login`. |
 | `Permission denied` on a NAS folder | Grant the user `sc-homeward` read/write access to the shared folder. |
 | Run stopped by the delete brake | Check with a test run, then *Approve deletions* (or `--allow-deletes`). |
 | Package says it is incompatible | Your model has no SynoCommunity Python 3.12 build. |

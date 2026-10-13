@@ -8,55 +8,22 @@
 <link rel="stylesheet" href="homeward.css">
 </head>
 <body>
-<header class="bar">
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="status" data-t="tab:status"></button>
-    <button role="tab" data-tab="pairs" data-t="tab:pairs"></button>
-    <button role="tab" data-tab="photos" data-t="tab:photos"></button>
-    <button role="tab" data-tab="accounts" data-t="tab:accounts"></button>
-    <button role="tab" data-tab="log" data-t="tab:log"></button>
+<aside class="side">
+  <div class="side-tools">
+    <button id="add" class="primary" data-t="ui:add"></button>
+    <button id="service" class="tool" data-t="ui:service"></button>
+  </div>
+  <ul id="side-list" class="side-list"></ul>
+  <nav class="side-modes">
+    <button data-mode="jobs" data-t="nav:jobs"></button>
+    <button data-mode="accounts" data-t="nav:accounts"></button>
   </nav>
-  <span id="version" class="muted"></span>
-</header>
-<div id="message" class="message" hidden></div>
-<main>
-  <section id="tab-status" class="tab" hidden>
-    <p id="daemon" class="muted"></p>
-    <p id="service" class="muted"></p>
-    <div id="notices"></div>
-    <div id="status-table"></div>
-  </section>
-  <section id="tab-pairs" class="tab" hidden>
-    <div class="toolbar"><button id="pair-add" class="primary" data-t="common:add"></button></div>
-    <div id="pairs-table"></div>
-  </section>
-  <section id="tab-photos" class="tab" hidden>
-    <p class="muted" data-t="photos:only_download"></p>
-    <div class="toolbar"><button id="photos-add" class="primary" data-t="common:add"></button></div>
-    <div id="photos-table"></div>
-  </section>
-  <section id="tab-accounts" class="tab" hidden>
-    <div class="toolbar"><button id="account-add" class="primary" data-t="common:add"></button></div>
-    <div id="accounts-table"></div>
-  </section>
-  <section id="tab-log" class="tab" hidden>
-    <div class="toolbar"><button id="log-refresh" data-t="common:refresh"></button></div>
-    <h3 data-t="log:events">Events</h3>
-    <div class="toolbar">
-      <label class="inline"><span data-t="log:level">Show</span>
-        <select id="event-level">
-          <option value="info" data-t="log:level_info"></option>
-          <option value="warning" data-t="log:level_warning"></option>
-          <option value="error" data-t="log:level_error"></option>
-        </select>
-      </label>
-    </div>
-    <div id="events-table"></div>
-    <h3 data-t="log:runs">Recent runs</h3>
-    <div id="runs-table"></div>
-    <h3 data-t="log:lines">Service log</h3>
-    <pre id="log-lines" class="log"></pre>
-  </section>
+  <div id="version" class="muted version"></div>
+</aside>
+<main class="detail">
+  <nav id="tabs" class="tabs" role="tablist"></nav>
+  <div id="message" class="message" hidden></div>
+  <div id="content" class="content"></div>
 </main>
 <dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
 <dialog id="picker" class="picker"></dialog>

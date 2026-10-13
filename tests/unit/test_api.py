@@ -518,7 +518,10 @@ def test_photos_validation(client: Client, tmp_path: Path) -> None:
 # --- events --------------------------------------------------------------------------
 
 
-def test_events_and_notices(client: Client) -> None:
+def test_events_and_notices(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    client.call("photos.create", post=True, photos=_photos(tmp_path))
     paths = client.paths
     now = time.time()
     record_event(Level.INFO, "service", "sync_started", paths=paths)
@@ -541,6 +544,109 @@ def test_events_and_notices(client: Client) -> None:
     assert [(n["code"], n["waiting"]) for n in notices] == [("file_failed", False),
                                                             ("icloud_indexing", True)]  # fmt: skip
     assert notices[0]["message"] == "b.txt: 503"
+
+
+def _event(paths: Paths, age: float, source: str, code: str,
+           level: Level = Level.WARNING) -> None:  # fmt: skip
+    """Write an event ``age`` seconds in the past."""
+    event = {"time": time.time() - age, "level": level.value, "source": source, "code": code}
+    with paths.events_file.open("a") as fh:
+        fh.write(json.dumps(event) + "\n")
+
+
+def test_notices_leave_out_deleted_jobs_and_resolved_events(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    client.call("photos.create", post=True, photos=_photos(tmp_path))
+    paths = client.paths
+    paths.events_file.parent.mkdir(parents=True, exist_ok=True)
+    # docs: an older failed run, then a good run, then a newer failed run
+    _event(paths, 600, "pair:docs", "delete_brake")
+    _event(paths, 500, "pair:docs", "sync_started", Level.INFO)
+    _event(paths, 490, "pair:docs", "file_failed")  # during the good run: still shown
+    _event(paths, 480, "pair:docs", "sync_finished", Level.INFO)
+    _event(paths, 100, "pair:docs", "sync_started", Level.INFO)
+    _event(paths, 90, "pair:docs", "sync_failed", Level.ERROR)
+    # fotos: indexing wait, then a good run settles it
+    _event(paths, 400, "photos:fotos", "icloud_indexing")
+    _event(paths, 300, "photos:fotos", "sync_started", Level.INFO)
+    _event(paths, 200, "photos:fotos", "sync_finished", Level.INFO)
+    # jobs that were deleted
+    _event(paths, 50, "pair:gone", "delete_brake")
+    _event(paths, 40, "photos:old", "sync_failed", Level.ERROR)
+    _event(paths, 30, "service", "config_error", Level.ERROR)
+
+    notices = client.call("status.get")["notices"]
+    assert [(n["source"], n["code"]) for n in notices] == [
+        ("service", "config_error"),
+        ("pair:docs", "sync_failed"),
+        ("pair:docs", "file_failed"),
+    ]
+
+
+def test_clear_notices_keeps_the_event_log(client: Client) -> None:
+    paths = client.paths
+    paths.events_file.parent.mkdir(parents=True, exist_ok=True)
+    _event(paths, 60, "service", "config_error", Level.ERROR)
+    assert len(client.call("status.get")["notices"]) == 1
+    with pytest.raises(ApiError):
+        client.call("status.clear_notices")  # changes need POST
+    client.call("status.clear_notices", post=True)
+    assert client.call("status.get")["notices"] == []
+    codes = [e["code"] for e in client.call("log.events")["events"]]
+    assert codes == ["notices_cleared", "config_error"]
+    record_event(Level.ERROR, "service", "config_error", "new", paths=paths)
+    assert [n["message"] for n in client.call("status.get")["notices"]] == ["new"]
+
+
+def test_clear_the_notices_of_one_job(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    client.call("photos.create", post=True, photos=_photos(tmp_path))
+    paths = client.paths
+    _event(paths, 60, "pair:docs", "delete_brake")
+    _event(paths, 50, "photos:fotos", "file_failed")
+    client.call("status.clear_notices", post=True, source="pair:docs")
+    assert [n["source"] for n in client.call("status.get")["notices"]] == ["photos:fotos"]
+    with pytest.raises(ApiError):
+        client.call("status.clear_notices", post=True, source="../x")
+
+
+def _run_event(paths: Paths, age: float, code: str, level: Level = Level.INFO,
+               **details: Any) -> None:  # fmt: skip
+    event = {"time": time.time() - age, "level": level.value, "source": "photos:fotos",
+             "code": code, "message": code, "details": details}  # fmt: skip
+    with paths.events_file.open("a") as fh:
+        fh.write(json.dumps(event) + "\n")
+
+
+def test_run_history_of_one_job(client: Client) -> None:
+    paths = client.paths
+    paths.events_file.parent.mkdir(parents=True, exist_ok=True)
+    _run_event(paths, 900, "sync_finished", exit_code=0)  # its start is not in the log
+    _run_event(paths, 800, "sync_started", dry_run=False)
+    _run_event(paths, 790, "icloud_indexing", Level.WARNING)
+    _run_event(paths, 780, "sync_postponed", exit_code=4)
+    _run_event(paths, 700, "sync_started", dry_run=True)
+    _run_event(paths, 690, "file_failed", Level.WARNING)
+    _run_event(paths, 680, "sync_summary", counts={"download": 3, "failed": 1})
+    _run_event(paths, 670, "sync_failed", Level.ERROR, exit_code=1, dry_run=True)
+    _run_event(paths, 100, "sync_started", dry_run=False)
+    record_event(Level.ERROR, "pair:docs", "file_failed", paths=paths)  # another job
+
+    runs = client.call("log.history", source="photos:fotos")["runs"]
+    assert [r["result"] for r in runs] == [None, "sync_failed", "sync_postponed",
+                                           "sync_finished"]  # fmt: skip
+    running, failed, postponed, finished = runs
+    assert running["finished_at"] is None and running["events"] == []
+    assert failed["dry_run"] and failed["counts"] == {"download": 3, "failed": 1}
+    assert failed["level"] == "error"
+    assert [e["code"] for e in failed["events"]] == ["file_failed"]
+    assert [e["code"] for e in postponed["events"]] == ["icloud_indexing"]
+    assert finished["started_at"] is None
+    assert len(client.call("log.history", source="photos:fotos", limit=1)["runs"]) == 1
+    events = client.call("log.events", source="pair:docs")["events"]
+    assert [e["source"] for e in events] == ["pair:docs"]
 
 
 def test_event_log_rotates_and_never_raises(
