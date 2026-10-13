@@ -220,6 +220,38 @@ sudo tail -n 50 /var/packages/homeward/var/homeward.log
 | Run stopped by the delete brake | Check with a test run, then *Approve deletions* (or `--allow-deletes`). |
 | Package says it is incompatible | Your model has no SynoCommunity Python 3.12 build. |
 | Sign-in fails although the password is right | Advanced Data Protection is on, or Apple temporarily blocks web sign-in; try again later. |
+| 421 "Invalid global session" right after signing in again | The account blocks web access to iCloud data; see [Known issues](#known-issues). |
+
+## Known issues
+
+### Photos backup fails with 421 "Invalid global session" right after signing in
+
+The run stops with
+
+```
+account '…' needs a login: run `homeward login --account …` (Photos service not
+available (Authentication required for Account. (421): {"reason":"Invalid global session","error":2}))
+```
+
+and the error comes back even after *Sign in again* with password and code succeeded.
+
+**Cause:** the sign-in works, but the Apple account does not let web clients read its
+iCloud data. Homeward reads iCloud the way icloud.com does, so it is refused as well.
+This happens when *Advanced Data Protection* is on or *Access iCloud Data on the Web*
+is off. Right after turning Advanced Data Protection off, Apple can take from a few
+minutes to some hours until the data is reachable on the web again.
+
+**Fix:**
+
+1. On an iPhone signed in to that Apple ID, open *Settings › [your name] › iCloud*.
+   Turn off *Advanced Data Protection* and turn on *Access iCloud Data on the Web*.
+2. Sign in at [icloud.com/photos](https://www.icloud.com/photos) in a browser with the
+   same Apple ID. Wait until the photos show there without asking for further approval.
+3. In Homeward, open the Apple ID and choose *Sign in again*, then start the backup.
+   Sync pairs, photo backups and their progress stay as they are.
+
+If icloud.com shows the photos and Homeward still reports 421, open an issue with the
+log excerpt.
 
 When you open an issue, attach the relevant part of `homeward.log` and remove Apple IDs,
 names and paths you do not want to share.

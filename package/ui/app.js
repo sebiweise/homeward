@@ -1148,9 +1148,16 @@ function accountOverview(account) {
         account.state === "needs_2fa"
             ? el("button", { class: "primary", text: t("account:verify"), onclick: () => codeDialog(account.name) })
             : null,
-        account.state === "signed_out"
-            ? el("button", { class: "primary", text: t("account:login"), onclick: () => loginDialog(account) })
-            : null,
+        // Also offered while signed in: a session can look valid here and still fail at
+        // Apple. Signing in again replaces it; pairs, backups and their state stay.
+        account.state === "unavailable"
+            ? null
+            : el("button", {
+                  class: account.state === "signed_out" ? "primary" : null,
+                  text: t("account:login"),
+                  title: t("account:login_hint"),
+                  onclick: () => loginDialog(account),
+              }),
         el("button", {
             class: "danger",
             text: t("common:delete"),
@@ -1199,6 +1206,7 @@ function loginDialog(account) {
             el("input", { name: "password", type: "password", required: true, autocomplete: "off" }),
             t("account:password_hint")
         ),
+        el("p", { class: "muted", text: t("account:login_keeps") }),
     ];
     openDialog(t("account:login_title", account.name), fields, t("account:login"), async (v) => {
         afterLogin(await api("accounts.login", { name: account.name, password: v.password }, true));

@@ -14,7 +14,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import FrameType
 
-from homeward.auth.session import LoginRequired, open_service
+from homeward.auth.session import LoginRequired, open_service, session_rejected
 from homeward.auth.twofa import LoginError, LoginFlow
 from homeward.core.config import (
     DEFAULT_CONFIG_PATH,
@@ -153,9 +153,10 @@ def _events(config_path: Path, source: str) -> Iterator[None]:
         logger.removeHandler(handler)
 
 
-def _reported(run: Callable[[], int]) -> int:
+def _reported(run: Callable[[], int], account: str) -> int:
     """Run one pair or job; an error that ends it becomes a readable event, not only
-    a traceback in the log."""
+    a traceback in the log. When Apple rejects the account's session mid-run, the
+    account is marked as needing a new sign-in."""
     try:
         return run()
     except ConfigError:
@@ -165,7 +166,12 @@ def _reported(run: Callable[[], int]) -> int:
         log.warning("%s", exc, extra={"event": "icloud_indexing"})
         return EXIT_WAITING
     except Exception as exc:
-        log.exception("the run stopped: %s", _describe(exc))
+        if session_rejected(exc):
+            required = LoginRequired(account, _describe(exc))
+            print(f"homeward: {required}", file=sys.stderr)
+            _log_login_required(required, account)
+        else:
+            log.exception("the run stopped: %s", _describe(exc))
         return EXIT_FAILED
 
 
@@ -187,7 +193,8 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for pair in pairs:
         with _events(args.config, f"pair:{pair.name}"):
-            status = _worst(status, _reported(functools.partial(_sync_one, args, config, pair)))
+            run = functools.partial(_sync_one, args, config, pair)
+            status = _worst(status, _reported(run, pair.account))
     return status
 
 
@@ -292,7 +299,8 @@ def _cmd_photos(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for job in jobs:
         with _events(args.config, f"photos:{job.name}"):
-            status = _worst(status, _reported(functools.partial(_photos_one, args, config, job)))
+            run = functools.partial(_photos_one, args, config, job)
+            status = _worst(status, _reported(run, job.account))
     return status
 
 
