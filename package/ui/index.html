@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -41,9 +41,9 @@
   </section>
   <section id="tab-log" class="tab" hidden>
     <div class="toolbar"><button id="log-refresh" data-t="common:refresh"></button></div>
-    <h3 data-t="log:events"></h3>
+    <h3 data-t="log:events">Events</h3>
     <div class="toolbar">
-      <label class="inline"><span data-t="log:level"></span>
+      <label class="inline"><span data-t="log:level">Show</span>
         <select id="event-level">
           <option value="info" data-t="log:level_info"></option>
           <option value="warning" data-t="log:level_warning"></option>
@@ -52,13 +52,13 @@
       </label>
     </div>
     <div id="events-table"></div>
-    <h3 data-t="log:runs"></h3>
+    <h3 data-t="log:runs">Recent runs</h3>
     <div id="runs-table"></div>
-    <h3 data-t="log:lines"></h3>
+    <h3 data-t="log:lines">Service log</h3>
     <pre id="log-lines" class="log"></pre>
   </section>
 </main>
 <dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

@@ -132,8 +132,9 @@ def test_unknown_method(client: Client) -> None:
 
 
 def test_changes_need_post(client: Client, tmp_path: Path) -> None:
+    pair = _pair(tmp_path)
     with pytest.raises(ApiError) as excinfo:
-        client.call("pairs.create", pair=_pair(tmp_path))
+        client.call("pairs.create", pair=pair)
     assert _error(excinfo) == "post_required"
     assert not client.paths.config.exists()
 
@@ -142,7 +143,8 @@ def test_post_body_must_be_a_form(client: Client) -> None:
     environ = {"HTTP_X_SYNO_TOKEN": "token", "REQUEST_METHOD": "POST",
                "CONTENT_TYPE": "application/json", "CONTENT_LENGTH": "2"}  # fmt: skip
     status, body = handle(environ, io.BytesIO(b"{}"), client.auth, client.backend, client.paths)
-    assert status == 400 and body["error"]["code"] == "unsupported_body"
+    assert status == 400
+    assert body["error"]["code"] == "unsupported_body"
 
 
 def test_internal_errors_are_not_leaked(client: Client) -> None:
@@ -172,8 +174,9 @@ def test_pair_lifecycle(client: Client, tmp_path: Path) -> None:
     assert created["max_delete_count"] == 50
     assert [p["name"] for p in client.call("pairs.list")["pairs"]] == ["docs"]
 
+    pair = _pair(tmp_path)
     with pytest.raises(ApiError) as excinfo:
-        client.call("pairs.create", post=True, pair=_pair(tmp_path))
+        client.call("pairs.create", post=True, pair=pair)
     assert _error(excinfo) == "pair_exists"
 
     updated = client.call("pairs.update", post=True, pair=_pair(tmp_path, mode="upload"))
@@ -225,7 +228,9 @@ def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:
     assert status["pairs"][0]["last_run"] is None
 
     (request,) = take_requests(client.paths)
-    assert request.pair == "docs" and request.allow_deletes and not request.dry_run
+    assert request.pair == "docs"
+    assert request.allow_deletes
+    assert not request.dry_run
     assert pending_requests(client.paths) == []
 
     with pytest.raises(ApiError) as excinfo:
@@ -300,7 +305,9 @@ def test_status_shows_last_run_and_daemon(client: Client, tmp_path: Path) -> Non
     status = client.call("status.get")
     assert status["daemon"] == {"running": "docs"}
     last = status["pairs"][0]["last_run"]
-    assert last["started_at"] == 2.0 and last["blocked"] == "too many" and last["dry_run"]
+    assert last["started_at"] == 2.0
+    assert last["blocked"] == "too many"
+    assert last["dry_run"]
 
     runs = client.call("log.runs", limit="1")["runs"]
     assert [run["actions"] for run in runs] == [4]
@@ -399,7 +406,8 @@ def _photos(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
 def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> None:
     client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
     defaults = client.call("photos.defaults")
-    assert defaults["hidden"] is False and defaults["xmp"] is True
+    assert defaults["hidden"] is False
+    assert defaults["xmp"] is True
 
     created = client.call("photos.create", post=True, photos=_photos(tmp_path))
     assert created["libraries"] == ["personal", "shared", "shared_albums"]
@@ -414,12 +422,14 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
         albums_folder="Meine Alben",
     )
     updated = client.call("photos.update", post=True, photos=changed)
-    assert updated["hidden"] is True and updated["videos"] is False
+    assert updated["hidden"] is True
+    assert updated["videos"] is False
     assert updated["libraries"] == ["personal", "shared"]
 
     raw = tomllib.loads(client.paths.config.read_text())
     (job,) = raw["photos"]
-    assert job["apple_id"] == "a@b.de" and job["albums_folder"] == "Meine Alben"
+    assert job["apple_id"] == "a@b.de"
+    assert job["albums_folder"] == "Meine Alben"
     assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]
 
     with pytest.raises(ApiError) as excinfo:
@@ -432,8 +442,9 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
 
 
 def test_photos_validation(client: Client, tmp_path: Path) -> None:
+    photos = _photos(tmp_path)
     with pytest.raises(ApiError) as excinfo:
-        client.call("photos.create", post=True, photos=_photos(tmp_path))
+        client.call("photos.create", post=True, photos=photos)
     assert _error(excinfo) == "account_not_found"
     client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
     cases = {
@@ -446,10 +457,12 @@ def test_photos_validation(client: Client, tmp_path: Path) -> None:
             client.call("photos.create", post=True, photos=job)
         assert _error(excinfo) == code, job
     for bad in ({"hidden": "yes"}, {"albums_folder": "a/b"}, {"folder_scheme": "../{year}"}):
+        invalid = _photos(tmp_path, **bad)
         with pytest.raises(ApiError):
-            client.call("photos.create", post=True, photos=_photos(tmp_path, **bad))
+            client.call("photos.create", post=True, photos=invalid)
+    photos = _photos(tmp_path)
     with pytest.raises(ApiError) as excinfo:
-        client.call("photos.update", post=True, photos=_photos(tmp_path))
+        client.call("photos.update", post=True, photos=photos)
     assert _error(excinfo) == "photos_not_found"
 
 
@@ -503,9 +516,11 @@ def test_photos_run_and_status(client: Client, tmp_path: Path) -> None:
     )
     client.call("photos.run", post=True, name="fotos", dry_run="1")
     (photos,) = client.call("status.get")["photos"]
-    assert photos["pending"] and photos["job"]["result"] == "ok"
+    assert photos["pending"]
+    assert photos["job"]["result"] == "ok"
     (request,) = take_requests(client.paths)
-    assert request.pair == "photos:fotos" and request.dry_run
+    assert request.pair == "photos:fotos"
+    assert request.dry_run
     with pytest.raises(ApiError):
         client.call("photos.run", post=True, name="other")
 

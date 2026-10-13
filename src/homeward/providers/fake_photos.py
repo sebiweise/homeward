@@ -7,12 +7,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import BinaryIO
 
-from homeward.core.photos import Library, PhotoItem
+from homeward.core.photos import Library, PhotoItem, PhotoSource
 
 _tokens = itertools.count(1)
 
 
-class FakePhotoSource:
+class FakePhotoSource(PhotoSource):
     """Photos keyed by ``PhotoItem.key``. ``add``/``remove``/``edit`` simulate changes in
     iCloud; each change moves the cursor like a real library's sync token."""
 

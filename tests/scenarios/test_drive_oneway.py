@@ -39,7 +39,8 @@ class Pair:
             self.api, "Docs", excludes=self.config.exclude, cache=self.cache
         )
         outcome = sync_pair(self.config, nas, icloud, self.state, dry_run=False, **kwargs)
-        assert outcome.result is not None and outcome.result.ok, outcome.result
+        assert outcome.result is not None
+        assert outcome.result.ok, outcome.result
         return outcome
 
     def write(self, path: str, text: str) -> None:
@@ -71,7 +72,8 @@ def test_upload_mode(up: Pair) -> None:
 
     assert _kinds(up.run()) == {"a.txt": ActionKind.UPLOAD, "sub/b.txt": ActionKind.UPLOAD}
     assert up.api.content("Docs/sub/b.txt") == b"b"
-    assert not up.api.exists("Docs/skip.bak") and not up.api.exists("Docs/.DS_Store")
+    assert not up.api.exists("Docs/skip.bak")
+    assert not up.api.exists("Docs/.DS_Store")
     assert up.run().plan.actions == []  # etags are stable: nothing to do
 
     up.write("a.txt", "a2")
@@ -142,5 +144,6 @@ def test_mass_delete_in_icloud_hits_the_brake(down: Pair) -> None:
     nas = NasProvider(down.root)
     icloud = ICloudDriveProvider(down.api, "Docs")
     outcome = sync_pair(down.config, nas, icloud, down.state, dry_run=False)
-    assert outcome.result is not None and outcome.result.blocked
+    assert outcome.result is not None
+    assert outcome.result.blocked
     assert len(list(down.root.glob("*.txt"))) == 10

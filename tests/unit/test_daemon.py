@@ -99,7 +99,8 @@ def test_status_survives_a_restart(tmp_path: Path) -> None:
 
     status = json.loads((tmp_path / "status.json").read_text())
     job = status["jobs"]["pair:docs"]
-    assert job["result"] == "blocked" and job["exit_code"] == 3
+    assert job["result"] == "blocked"
+    assert job["exit_code"] == 3
     assert job["next_due"] == clock.now + 3600
 
     second = _scheduler(tmp_path, runner, clock)
@@ -130,7 +131,8 @@ def test_runner_errors_are_recorded(tmp_path: Path) -> None:
 
     scheduler = Scheduler(tmp_path / "status.json", broken, Clock())
     status = scheduler.run(Job("pair:x", ()))
-    assert status.result == "failed" and status.exit_code == 127
+    assert status.result == "failed"
+    assert status.exit_code == 127
 
 
 def test_interrupted_runs_are_due_again(tmp_path: Path) -> None:
@@ -164,10 +166,12 @@ def test_daemon_waits_for_a_valid_config(tmp_path: Path) -> None:
     daemon = Daemon(config, _scheduler(tmp_path, recorder, Clock()), runner)
 
     daemon.cycle()  # missing file
-    assert not daemon.config_ok and recorder.calls == []
+    assert not daemon.config_ok
+    assert recorder.calls == []
     _config(tmp_path)
     daemon.cycle()
-    assert daemon.config_ok and recorder.calls == ["pair:docs"]
+    assert daemon.config_ok
+    assert recorder.calls == ["pair:docs"]
 
 
 def test_once_runs_a_real_sync(tmp_path: Path) -> None:
