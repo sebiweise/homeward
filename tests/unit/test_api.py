@@ -204,6 +204,49 @@ def test_pair_validation(client: Client, tmp_path: Path) -> None:
     assert not client.paths.config.exists()
 
 
+def test_pair_interval(client: Client, tmp_path: Path) -> None:
+    created = client.call("pairs.create", post=True, pair=_pair(tmp_path, interval_minutes=15))
+    assert created["interval_minutes"] == 15
+    assert tomllib.loads(client.paths.config.read_text())["pair"][0]["interval_minutes"] == 15
+
+    updated = client.call("pairs.update", post=True, pair=_pair(tmp_path, interval_minutes=None))
+    assert updated["interval_minutes"] is None  # back to the global schedule
+    assert "interval_minutes" not in tomllib.loads(client.paths.config.read_text())["pair"][0]
+
+    for bad in (4, "x", True, 10081):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.update", post=True, pair=_pair(tmp_path, interval_minutes=bad))
+        assert _error(excinfo) == "invalid_interval", bad
+
+
+def test_global_schedule(client: Client, tmp_path: Path) -> None:
+    settings = client.call("settings.get")
+    assert settings == {
+        "interval_minutes": 60,
+        "default_interval_minutes": 60,
+        "min_interval_minutes": 5,
+        "max_interval_minutes": 10080,
+    }
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    assert (
+        client.call("settings.update", post=True, interval_minutes="15")["interval_minutes"] == 15
+    )
+    raw = tomllib.loads(client.paths.config.read_text())
+    assert raw["daemon"] == {"interval_minutes": 15}
+    assert [p["name"] for p in raw["pair"]] == ["docs"]  # the rest of the config stays
+    assert client.call("settings.get")["interval_minutes"] == 15
+    assert client.call("status.get")["interval_minutes"] == 15
+
+    for bad in ("4", "abc", "1.5", "99999", ""):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("settings.update", post=True, interval_minutes=bad)
+        assert _error(excinfo) in ("invalid_interval", "missing_param"), bad
+    with pytest.raises(ApiError) as excinfo:
+        client.call("settings.update", interval_minutes="15")
+    assert _error(excinfo) == "post_required"
+    assert client.call("settings.get")["interval_minutes"] == 15
+
+
 def test_changing_a_pairs_folder_resets_its_state(client: Client, tmp_path: Path) -> None:
     client.call("pairs.create", post=True, pair=_pair(tmp_path))
     state_path = client.paths.var_dir / "state" / "me.sqlite3"
@@ -413,6 +456,7 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
 
     created = client.call("photos.create", post=True, photos=_photos(tmp_path))
     assert created["libraries"] == ["personal", "shared", "shared_albums"]
+    assert created["interval_minutes"] is None
     assert created["folder_scheme"] == "{year}/{month}"
 
     changed = _photos(
@@ -422,14 +466,17 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
         libraries=["shared", "personal"],
         folder_scheme="{year}/{month}/{day}",
         albums_folder="Meine Alben",
+        interval_minutes=720,
     )
     updated = client.call("photos.update", post=True, photos=changed)
+    assert updated["interval_minutes"] == 720
     assert updated["hidden"] is True
     assert updated["videos"] is False
     assert updated["libraries"] == ["personal", "shared"]
 
     raw = tomllib.loads(client.paths.config.read_text())
     (job,) = raw["photos"]
+    assert updated["interval_minutes"] == 720
     assert job["apple_id"] == "a@b.de"
     assert job["albums_folder"] == "Meine Alben"
     assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]

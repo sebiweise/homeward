@@ -61,7 +61,9 @@ def _scheduler(tmp_path: Path, runner: Recorder, clock: Clock) -> Scheduler:
 def test_parse_settings() -> None:
     assert parse_settings({}) == Settings(60)
     assert parse_settings({"interval_minutes": 15}).interval_seconds == 900
-    for bad in ({"interval_minutes": 1}, {"interval_minutes": "5"}, {"interval_minutes": True}):
+    assert parse_settings({"interval_minutes": 10080}).interval_minutes == 10080
+    bad_values = (1, 10081, "5", True, 7.5)
+    for bad in ({"interval_minutes": value} for value in bad_values):
         with pytest.raises(ConfigError):
             parse_settings(bad)
     with pytest.raises(ConfigError):
@@ -89,6 +91,38 @@ def test_jobs_run_once_per_interval(tmp_path: Path) -> None:
     clock.now += 60
     scheduler.run_due()
     assert runner.calls == ["pair:docs", "pair:docs"]
+
+
+def test_a_pair_can_have_its_own_interval(tmp_path: Path) -> None:
+    config = _config(tmp_path, "[daemon]\ninterval_minutes = 60", ("docs", "pics"))
+    text = config.read_text().replace('name = "pics"\n', 'name = "pics"\ninterval_minutes = 15\n')
+    config.write_text(text)
+    clock, runner = Clock(), Recorder()
+    scheduler = _scheduler(tmp_path, runner, clock)
+    plan = load_plan(config)
+    assert [job.interval_minutes for job in plan.jobs] == [None, 15]
+    scheduler.update(plan)
+
+    scheduler.run_due()
+    clock.now += 15 * 60
+    scheduler.run_due()
+    assert runner.calls == ["pair:docs", "pair:pics", "pair:pics"]
+
+    jobs = json.loads((tmp_path / "status.json").read_text())["jobs"]
+    assert jobs["pair:docs"]["interval_minutes"] == 60
+    assert jobs["pair:pics"]["interval_minutes"] == 15
+    assert jobs["pair:pics"]["next_due"] == clock.now + 15 * 60
+
+
+def test_a_changed_interval_applies_to_the_next_run(tmp_path: Path) -> None:
+    clock, runner = Clock(), Recorder()
+    scheduler = _scheduler(tmp_path, runner, clock)
+    scheduler.update(load_plan(_config(tmp_path, "[daemon]\ninterval_minutes = 60")))
+    scheduler.run_due()
+    clock.now += 20 * 60
+    assert scheduler.due() == []
+    scheduler.update(load_plan(_config(tmp_path, "[daemon]\ninterval_minutes = 15")))
+    assert [job.name for job in scheduler.due()] == ["pair:docs"]
 
 
 def test_status_survives_a_restart(tmp_path: Path) -> None:

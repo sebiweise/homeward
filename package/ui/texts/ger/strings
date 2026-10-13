@@ -61,6 +61,17 @@ cancel_dequeued="{0} läuft nicht mehr an."
 job_cancelled="Vom Benutzer abgebrochen"
 job_waiting="Wartet auf iCloud"
 
+[schedule]
+title="Zeitplan"
+change="Ändern"
+interval="Intervall in Minuten"
+hint="So oft läuft jedes Sync-Paar und jedes Foto-Backup, außer es hat ein eigenes Intervall. Erlaubt sind {0} bis {1} Minuten. Die Änderung gilt sofort, ohne Neustart."
+saved="Zeitplan gespeichert: alle {0} Minuten."
+every="alle {0} Min."
+job_interval="Eigenes Intervall in Minuten"
+job_hint="Leer lassen für den allgemeinen Zeitplan (alle {0} Minuten). Mindestens {1} Minuten."
+use_default="Standard: {0}"
+
 [pair]
 name="Name"
 account="Konto"
@@ -230,6 +241,7 @@ config_not_writable="Homeward kann seine Konfiguration nicht schreiben. Details 
 folder_not_found="Dieser Ordner existiert nicht oder Homeward kommt nicht heran: {0}"
 folder_denied="Homeward hat keine Berechtigung für diesen Ordner: {0}"
 folder_exists="Ein Ordner mit diesem Namen existiert bereits: {0}"
+invalid_interval="Das Intervall muss eine ganze Zahl von Minuten sein ({0})."
 
 [notify]
 sync_failed="{0}: Der letzte Lauf endete mit Fehlern. Details im Ereignis-Protokoll von Homeward."

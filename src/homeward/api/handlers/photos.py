@@ -10,7 +10,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name
+from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.settings import parse_interval
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 from homeward.runtime import RunRequest, request_run
@@ -44,6 +45,7 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
         "account": entry.get("account", "default"),
         "target": entry.get("target", ""),
         "libraries": list(entry.get("libraries", LIBRARIES)),
+        "interval_minutes": entry.get("interval_minutes"),
     }
     result |= {key: entry.get(key, default) for key, default in SWITCHES.items()}
     result |= {key: entry.get(key, default) for key, default in FOLDERS.items()}
@@ -65,7 +67,7 @@ def create(ctx: Context, request: Request) -> dict[str, Any]:
         jobs = raw.setdefault("photos", [])
         if any(job.get("name") == entry["name"] for job in jobs):
             raise ApiError("photos_exists", entry["name"])
-        jobs.append(entry)
+        jobs.append(without_none(entry))
 
     ctx.store.update(change)
     return to_dict(entry)
@@ -79,7 +81,7 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
         jobs = raw.get("photos", [])
         for index, job in enumerate(jobs):
             if isinstance(job, dict) and job.get("name") == entry["name"]:
-                merged.update(job, **entry)
+                merged.update(without_none({**job, **entry}))
                 jobs[index] = merged
                 return
         raise ApiError("photos_not_found", entry["name"], status=404)
@@ -149,6 +151,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "apple_id": accounts[account].get("apple_id", ""),
         "target": str(target),
         "libraries": _libraries(data),
+        "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
     }
     for key, switch in SWITCHES.items():
         enabled = data.get(key, switch)

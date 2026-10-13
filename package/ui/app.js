@@ -9,6 +9,7 @@ let tokenRequest = null;
 let activeTab = "status";
 let refreshTimer = null;
 let accountsCache = [];
+let settingsCache = null;
 
 // --- strings ---------------------------------------------------------------------------
 
@@ -405,8 +406,11 @@ function jobBadge(item) {
 }
 
 function nextRun(item) {
-    const due = item.job?.next_due;
-    return due ? el("div", { class: "muted", text: t("status:next_run", formatTime(due)) }) : null;
+    const job = item.job ?? {};
+    if (!job.next_due) return null;
+    let text = t("status:next_run", formatTime(job.next_due));
+    if (job.interval_minutes) text += " · " + t("schedule:every", job.interval_minutes);
+    return el("div", { class: "muted", text: text });
 }
 
 // name is a pair name or "photos:<job>", label what the user sees
@@ -461,8 +465,14 @@ async function renderStatus() {
     const daemon = data.daemon || {};
     document.getElementById("daemon").textContent = daemonText(daemon);
     const service = [t("status:api_user", data.api_user || "?")];
-    if (daemon.interval_minutes) service.push(t("status:interval", daemon.interval_minutes));
-    document.getElementById("service").textContent = service.join(" · ");
+    const interval = data.interval_minutes || daemon.interval_minutes;
+    if (interval) service.push(t("status:interval", interval));
+    document
+        .getElementById("service")
+        .replaceChildren(
+            service.join(" · ") + " ",
+            el("button", { class: "link", text: t("schedule:change"), onclick: () => guarded(scheduleDialog) })
+        );
     const notices = data.notices || [];
     document
         .getElementById("notices")
@@ -530,10 +540,54 @@ async function renderStatus() {
         );
 }
 
+// --- schedule --------------------------------------------------------------------------
+
+async function loadSettings() {
+    settingsCache = await api("settings.get");
+    return settingsCache;
+}
+
+function intervalInput(name, value, s, required) {
+    return el("input", {
+        name: name,
+        type: "number",
+        min: s.min_interval_minutes,
+        max: s.max_interval_minutes,
+        step: 1,
+        value: value || "",
+        required: required,
+        placeholder: required ? null : t("schedule:use_default", s.interval_minutes),
+    });
+}
+
+// Interval field of a pair or photos dialog; empty means the global interval.
+function jobIntervalField(value) {
+    const s = settingsCache;
+    return field(t("schedule:job_interval"), intervalInput("interval", value, s, false),
+        t("schedule:job_hint", s.interval_minutes, s.min_interval_minutes));
+}
+
+function jobInterval(value) {
+    return value === "" || value === undefined ? null : Number(value);
+}
+
+async function scheduleDialog() {
+    const s = await loadSettings();
+    const fields = [
+        field(t("schedule:interval"), intervalInput("interval", s.interval_minutes, s, true),
+            t("schedule:hint", s.min_interval_minutes, s.max_interval_minutes)),
+    ];
+    openDialog(t("schedule:title"), fields, t("common:save"), async (v) => {
+        await api("settings.update", { interval_minutes: v.interval }, true);
+        showMessage(t("schedule:saved", v.interval));
+        await renderStatus();
+    });
+}
+
 // --- pairs tab -------------------------------------------------------------------------
 
 async function renderPairs() {
-    const [pairs, accounts] = await Promise.all([api("pairs.list"), api("accounts.list")]);
+    const [pairs, accounts] = await Promise.all([api("pairs.list"), api("accounts.list"), loadSettings()]);
     accountsCache = accounts.accounts;
     const rows = pairs.pairs.map((pair) =>
         el(
@@ -579,6 +633,7 @@ function pairDialog(pair) {
         exclude: [],
         max_delete_ratio: 0.1,
         max_delete_count: 50,
+        interval_minutes: null,
     };
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
     if (p.account && !accountOptions.some(([name]) => name === p.account)) accountOptions.push([p.account, p.account]);
@@ -630,6 +685,7 @@ function pairDialog(pair) {
                 el("input", { name: "count", type: "number", min: 0, step: 1, value: p.max_delete_count })
             )
         ),
+        jobIntervalField(p.interval_minutes),
         editing ? el("p", { class: "hint", text: t("pair:reset_hint") }) : null,
     ];
     openDialog(t(editing ? "pair:edit_title" : "pair:add_title"), fields, t("common:save"), async (v) => {
@@ -643,6 +699,7 @@ function pairDialog(pair) {
             exclude: v.exclude.split("\n").map((s) => s.trim()).filter(Boolean),
             max_delete_ratio: Number(v.ratio) / 100,
             max_delete_count: Number(v.count),
+            interval_minutes: jobInterval(v.interval),
         };
         await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(data) }, true);
         await renderPairs();
@@ -657,7 +714,7 @@ const PHOTO_FOLDERS = ["folder_scheme", "shared_folder", "albums_folder", "favor
 let photoDefaults = null;
 
 async function renderPhotos() {
-    const [jobs, accounts] = await Promise.all([api("photos.list"), api("accounts.list")]);
+    const [jobs, accounts] = await Promise.all([api("photos.list"), api("accounts.list"), loadSettings()]);
     accountsCache = accounts.accounts;
     if (photoDefaults === null) photoDefaults = await api("photos.defaults");
     const rows = jobs.photos.map((job) =>
@@ -711,9 +768,10 @@ function photosDialog(job) {
             PHOTO_FOLDERS.map((key) =>
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
+        jobIntervalField(j.interval_minutes),
     ];
     openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
-        const data = { name: v.name, account: v.account, target: v.target };
+        const data = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
         data.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
         for (const key of PHOTO_SWITCHES) data[key] = v[key] === "on";
         for (const key of PHOTO_FOLDERS) data[key] = v[key];
