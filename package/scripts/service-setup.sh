@@ -40,6 +40,7 @@ service_preinst() {
     if [ ! -x "${PYTHON}" ]; then
         fail "Python 3.12 from SynoCommunity is missing (${PYTHON}). Please install the package \"Python 3.12\" first."
     fi
+    return 0
 }
 
 service_postinst() {
@@ -68,14 +69,15 @@ interval_minutes = 60
 # mode = "upload"
 CONF
     fi
+    return 0
 }
 
 service_preupgrade() {
-    :
+    return 0
 }
 
 service_postupgrade() {
-    :
+    return 0
 }
 
 service_preuninst() {
@@ -87,7 +89,7 @@ service_preuninst() {
 }
 
 service_postuninst() {
-    :
+    return 0
 }
 
 # Copy config and state into the package's share before DSM deletes var/, so a
@@ -103,16 +105,19 @@ backup_var() {
     if [ -d "${PKG_VAR}/state" ]; then
         cp -pR "${PKG_VAR}/state" "${dest}/"
     fi
+    return 0
 }
 
 daemon_running() {
     [ -r "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null
+    return $?
 }
 
 rotate_log() {
     if [ -f "${LOG_FILE}" ] && [ "$(wc -c < "${LOG_FILE}")" -gt "${LOG_MAX_BYTES}" ]; then
         mv -f "${LOG_FILE}" "${LOG_FILE}.1"
     fi
+    return 0
 }
 
 service_start() {

@@ -14,12 +14,12 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import astuple, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO, cast
 
-from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem
+from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem, PhotoSource
 
 log = logging.getLogger(__name__)
 
@@ -77,20 +77,27 @@ class _Origin:
     resource: str
 
 
-class ICloudPhotosSource:
+@dataclass(frozen=True, slots=True)
+class PhotoOptions:
+    """What a photos job downloads besides the originals (see ``PhotosConfig``)."""
+
+    albums: bool = True
+    videos: bool = True
+    live_videos: bool = True
+    raw_alternative: bool = True
+    edited: bool = True
+    favorites: bool = True
+    hidden: bool = False
+    xmp: bool = True
+
+
+class ICloudPhotosSource(PhotoSource):
     def __init__(
         self,
         service: Any,
         libraries: Iterable[Library] = tuple(Library),
+        options: PhotoOptions | None = None,
         *,
-        albums: bool = True,
-        videos: bool = True,
-        live_videos: bool = True,
-        raw_alternative: bool = True,
-        edited: bool = True,
-        favorites: bool = True,
-        hidden: bool = False,
-        xmp: bool = True,
         xmp_builder: XmpBuilder | None = None,
         lookup: Lookup | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -100,14 +107,7 @@ class ICloudPhotosSource:
         self.name = name
         self.service = service
         self.wanted = tuple(libraries)
-        self.albums = albums
-        self.videos = videos
-        self.live_videos = live_videos
-        self.raw_alternative = raw_alternative
-        self.edited = edited
-        self.favorites = favorites
-        self.hidden = hidden
-        self.xmp = xmp
+        self.options = options or PhotoOptions()
         self._xmp_builder = xmp_builder or pyicloud_xmp
         self._lookup = lookup or pyicloud_lookup
         self._clock = clock
@@ -143,11 +143,7 @@ class ICloudPhotosSource:
         return "|".join(parts)
 
     def _options(self) -> str:
-        switches = (
-            self.albums, self.videos, self.live_videos, self.raw_alternative, self.edited,
-            self.favorites, self.hidden, self.xmp,
-        )  # fmt: skip
-        return "".join("1" if on else "0" for on in switches)
+        return "".join("1" if on else "0" for on in astuple(self.options))
 
     def list_items(self) -> Iterator[PhotoItem]:
         self._urls.clear()
@@ -169,7 +165,7 @@ class ICloudPhotosSource:
             log.info("library %s: %d photos read, done", key, count)
         if unmatched:
             log.info("%d album photos were not found in the selected libraries", len(unmatched))
-        if self.hidden and Library.PERSONAL in self.wanted:
+        if self.options.hidden and Library.PERSONAL in self.wanted:
             yield from self._hidden_items(personal, members)
         if Library.SHARED_ALBUMS in self.wanted:
             yield from self._shared_album_items()
@@ -331,7 +327,7 @@ class ICloudPhotosSource:
 
     def _album_members(self, library: Any) -> dict[str, tuple[str, ...]]:
         members: dict[str, set[str]] = defaultdict(set)
-        if self.albums:
+        if self.options.albums:
             albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
             for number, album in enumerate(albums, 1):
                 name = album.fullname
@@ -375,24 +371,13 @@ class ICloudPhotosSource:
         origin: Any = None,
     ) -> Iterator[PhotoItem]:
         is_movie = asset.item_type == "movie"
-        if is_movie and not self.videos:
+        if is_movie and not self.options.videos:
             return
         resources = _resources(asset)
         record = getattr(asset, "asset_record", None)
-        if self.favorites and record is not None and _field(record, "isFavorite") == 1:
+        if self.options.favorites and record is not None and _field(record, "isFavorite") == 1:
             albums = (*albums, FAVORITES_ALBUM)
-        wanted = ["original"]
-        if asset.is_live_photo and self.videos and self.live_videos:
-            wanted.append("original_video")
-        if self.raw_alternative:
-            wanted.append("alternative")
-        if self.edited and record is not None:
-            for key, render in _edited(asset, record).items():
-                if key == "edited_video" and not (is_movie or self.live_videos):
-                    continue  # the edited video part of a Live Photo
-                resources[key] = render
-                wanted.append(key)
-
+        wanted = self._wanted(asset, record, resources, is_movie=is_movie)
         base = PhotoItem(
             asset_id=f"{id_prefix}:{asset.id}" if id_prefix else asset.id,
             resource="original",
@@ -405,45 +390,76 @@ class ICloudPhotosSource:
         )
         original_name: str | None = None
         for key in wanted:
-            resource = resources.get(key)
-            if resource is None or not resource.url:
-                if key == "original":
-                    log.warning("asset %s has no original to download", asset.id)
+            item = self._resource_item(asset, base, key, resources.get(key), origin)
+            if item is None:
                 continue
-            item = replace(
-                base,
-                resource=key,
-                filename=resource.filename or asset.filename,
-                size=resource.size,
-                checksum=resource.checksum,
-            )
             if key == "original":
                 original_name = item.filename
-            self._urls[item.key] = resource.url
-            self._fetched_at[item.key] = self._clock()
-            if origin is not None:
-                master_id = getattr(asset, "master_id", asset.id)
-                self._origins[item.key] = _Origin(origin, asset.id, master_id, key)
             yield item
 
-        if self.xmp and record is not None and original_name is not None:
-            try:
-                data = self._xmp_builder(asset)
-            except Exception as exc:
-                log.warning("no XMP sidecar for %s: %s", asset.id, exc)
-                data = None
-            if data:
-                item = replace(
-                    base,
-                    resource="xmp",
-                    filename=f"{original_name}.xmp",
-                    size=len(data),
-                    checksum=hashlib.sha256(data).hexdigest(),
-                    albums=(),
-                    sidecar_for="original",
-                )
-                self._blobs[item.key] = data
-                yield item
+        if self.options.xmp and record is not None and original_name is not None:
+            sidecar = self._xmp_item(asset, base, original_name)
+            if sidecar is not None:
+                yield sidecar
+
+    def _resource_item(
+        self, asset: Any, base: PhotoItem, key: str, resource: _Resource | None, origin: Any
+    ) -> PhotoItem | None:
+        """One downloadable file of an asset; remembers where to download it from."""
+        if resource is None or not resource.url:
+            if key == "original":
+                log.warning("asset %s has no original to download", asset.id)
+            return None
+        item = replace(
+            base,
+            resource=key,
+            filename=resource.filename or asset.filename,
+            size=resource.size,
+            checksum=resource.checksum,
+        )
+        self._urls[item.key] = resource.url
+        self._fetched_at[item.key] = self._clock()
+        if origin is not None:
+            master_id = getattr(asset, "master_id", asset.id)
+            self._origins[item.key] = _Origin(origin, asset.id, master_id, key)
+        return item
+
+    def _wanted(
+        self, asset: Any, record: Any, resources: dict[str, _Resource], *, is_movie: bool
+    ) -> list[str]:
+        """The resources of an asset to download; adds edited renders to ``resources``."""
+        wanted = ["original"]
+        if asset.is_live_photo and self.options.videos and self.options.live_videos:
+            wanted.append("original_video")
+        if self.options.raw_alternative:
+            wanted.append("alternative")
+        if self.options.edited and record is not None:
+            for key, render in _edited(asset, record).items():
+                if key == "edited_video" and not (is_movie or self.options.live_videos):
+                    continue  # the edited video part of a Live Photo
+                resources[key] = render
+                wanted.append(key)
+        return wanted
+
+    def _xmp_item(self, asset: Any, base: PhotoItem, original_name: str) -> PhotoItem | None:
+        try:
+            data = self._xmp_builder(asset)
+        except Exception as exc:
+            log.warning("no XMP sidecar for %s: %s", asset.id, exc)
+            return None
+        if not data:
+            return None
+        item = replace(
+            base,
+            resource="xmp",
+            filename=f"{original_name}.xmp",
+            size=len(data),
+            checksum=hashlib.sha256(data).hexdigest(),
+            albums=(),
+            sidecar_for="original",
+        )
+        self._blobs[item.key] = data
+        return item
 
 
 def _resources(asset: Any) -> dict[str, _Resource]:

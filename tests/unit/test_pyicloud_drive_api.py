@@ -79,7 +79,8 @@ def test_upload_streams_the_body_and_commits_the_document() -> None:
     slot, content, commit = session.calls
     assert slot[1] == "https://docws/ws/com.apple.CloudDocs/upload/web"
     assert slot[2]["params"] == {"clientId": "c", "dsid": "1", "token": "t"}
-    assert slot[2]["json"]["size"] == 5 and slot[2]["json"]["content_type"] == "text/plain"
+    assert slot[2]["json"]["size"] == 5
+    assert slot[2]["json"]["content_type"] == "text/plain"
     assert drive.params == {"clientId": "c", "dsid": "1"}  # not mutated like pyicloud does
 
     assert content[1] == "https://content/upload"
@@ -126,5 +127,6 @@ def test_download_streams_and_closes() -> None:
 
 def test_errors_raise() -> None:
     session = _Session([_Response(status=503)])
+    api = PyiCloudDriveApi(_Drive(session))
     with pytest.raises(DriveApiError, match="HTTP 503"):
-        PyiCloudDriveApi(_Drive(session)).folders(["A"])
+        api.folders(["A"])

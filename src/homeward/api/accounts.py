@@ -45,7 +45,7 @@ class AccountBackend(Protocol):
         ...
 
 
-class UnavailableBackend:
+class UnavailableBackend(AccountBackend):
     """Used until an iCloud provider with sign-in support is installed."""
 
     def login(self, account: str, apple_id: str, password: str) -> LoginResult:

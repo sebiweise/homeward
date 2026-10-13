@@ -40,8 +40,10 @@ def test_sync_dry_run_then_real(tmp_path: Path, capsys: pytest.CaptureFixture[st
 
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "upload" in out and "a.txt" in out
-    assert "download" in out and "b.txt" in out
+    assert "upload" in out
+    assert "a.txt" in out
+    assert "download" in out
+    assert "b.txt" in out
     assert "Dry run" in out
     assert not (tmp_path / "cloud" / "a.txt").exists()
 
@@ -167,7 +169,8 @@ def test_photos_dry_run_then_real(
 
     assert main(["photos", "--config", str(config), "--dry-run"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "download  2024/05/a.jpg" in out and "Dry run" in out
+    assert "download  2024/05/a.jpg" in out
+    assert "Dry run" in out
     assert not (tmp_path / "photos").exists()
 
     assert main(["photos", "--config", str(config), "--job", "seb"]) == EXIT_OK

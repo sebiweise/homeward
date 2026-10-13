@@ -14,7 +14,8 @@ def nas(tmp_path: Path) -> NasProvider:
 
 def test_write_list_read(nas: NasProvider, tmp_path: Path) -> None:
     meta = nas.write("a/b.txt", io.BytesIO(b"hello"), mtime=1_700_000_000.0)
-    assert meta.size == 5 and meta.mtime == 1_700_000_000.0
+    assert meta.size == 5
+    assert meta.mtime == 1_700_000_000.0
     assert nas.list_files() == {"a/b.txt": meta}
     with nas.open_read("a/b.txt") as fh:
         assert fh.read() == b"hello"
@@ -26,8 +27,9 @@ def test_write_list_read(nas: NasProvider, tmp_path: Path) -> None:
 
 def test_write_never_clobbers(nas: NasProvider) -> None:
     nas.write("a.txt", io.BytesIO(b"one"), mtime=1.0)
+    data = io.BytesIO(b"two")
     with pytest.raises(FileExistsError):
-        nas.write("a.txt", io.BytesIO(b"two"), mtime=1.0)
+        nas.write("a.txt", data, mtime=1.0)
     with nas.open_read("a.txt") as fh:
         assert fh.read() == b"one"
 
