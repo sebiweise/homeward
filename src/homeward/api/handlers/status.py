@@ -13,6 +13,7 @@ from homeward.api.handlers.common import check_name, existing_state, package_ver
 from homeward.api.server import Context, Request
 from homeward.runtime import (
     CancelRequest,
+    Event,
     Level,
     drop_request,
     pending_requests,
@@ -106,23 +107,16 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
     """
     now = time.time()
     since = max(now - NOTICE_HOURS * 3600, _cleared_at(ctx))
-    existing = _existing_sources(ctx)
-    finished: set[str] = set()  # a later run of this source finished fine
-    settled: set[str] = set()  # older events of this source are dealt with
+    shown = _ShownSources(_existing_sources(ctx))
     seen: set[tuple[str, str]] = set()
     result = []
     for event in read_events(ctx.paths, limit=2000):
         if event.time <= since:
             break
-        source = event.source
-        if source in settled or (_is_job(source) and source not in existing):
+        if not shown.keeps(event):
             continue
-        if event.code == "sync_finished":
-            finished.add(source)
-        elif event.code == "sync_started" and source in finished:
-            settled.add(source)  # everything before this good run is resolved
         waiting = event.until is not None and event.until > now
-        key = (source, event.code)
+        key = (event.source, event.code)
         if key in seen:
             continue
         seen.add(key)  # only the newest event per source and code counts
@@ -132,6 +126,25 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
         if len(result) >= MAX_NOTICES:
             break
     return result
+
+
+class _ShownSources:
+    """Decides, newest event first, which events still need the user's attention."""
+
+    def __init__(self, existing: set[str]) -> None:
+        self.existing = existing
+        self.finished: set[str] = set()  # a later run of this source finished fine
+        self.settled: set[str] = set()  # older events of this source are dealt with
+
+    def keeps(self, event: Event) -> bool:
+        source = event.source
+        if source in self.settled or (_is_job(source) and source not in self.existing):
+            return False
+        if event.code == "sync_finished":
+            self.finished.add(source)
+        elif event.code == "sync_started" and source in self.finished:
+            self.settled.add(source)  # everything before this good run is resolved
+        return True
 
 
 def _is_job(source: str) -> bool:
