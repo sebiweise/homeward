@@ -6,6 +6,7 @@
 - ``status.json``: what the daemon is doing right now, written by the daemon
 - ``homeward.log``: the daemon's log, shown in the UI
 - ``events.jsonl``: the event log (waits, retries, errors) shown in the UI
+- ``notices.json``: when the user last cleared the notices on the status page
 """
 
 import json
@@ -55,6 +56,10 @@ class Paths:
     @property
     def events_file(self) -> Path:
         return self.var_dir / "events.jsonl"
+
+    @property
+    def notices_file(self) -> Path:
+        return self.var_dir / "notices.json"
 
     @property
     def backup_dir(self) -> Path:
@@ -186,6 +191,7 @@ EVENT_CODES = (
     "file_failed",
     "config_error",  # the config file is invalid; nothing runs until it is fixed
     "already_running",  # another run for the same account still holds the lock
+    "notices_cleared",  # the user cleared the notices on the status page
 )
 
 

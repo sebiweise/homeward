@@ -433,6 +433,14 @@ function cancelRun(name, label) {
     });
 }
 
+// Hides the notices on the status page; the event log on the log tab keeps them.
+function clearNotices() {
+    return guarded(async () => {
+        await api("status.clear_notices", {}, true);
+        await renderStatus();
+    });
+}
+
 function runPhotos(job, options) {
     return guarded(async () => {
         await api("photos.run", { name: job.name, ...options }, true);
@@ -476,7 +484,21 @@ async function renderStatus() {
     const notices = data.notices || [];
     document
         .getElementById("notices")
-        .replaceChildren(notices.length ? el("div", {}, el("h3", { text: t("status:notices") }), eventTable(notices)) : "");
+        .replaceChildren(
+            notices.length
+                ? el(
+                      "div",
+                      {},
+                      el(
+                          "div",
+                          { class: "notices-head" },
+                          el("h3", { text: t("status:notices") }),
+                          el("button", { text: t("status:clear_notices"), title: t("status:clear_notices_hint"), onclick: clearNotices })
+                      ),
+                      eventTable(notices)
+                  )
+                : ""
+        );
     const rows = data.pairs.map((pair) => {
         const run = pair.last_run;
         const running = daemon.running === pair.name;

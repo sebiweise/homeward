@@ -11,6 +11,7 @@ def build_api(paths: Paths, backend: AccountBackend) -> Api:
     api = Api(Context(paths=paths, store=ConfigStore(paths), accounts=backend))
     api.add("status.get", status.get)
     api.add("status.cancel", status.cancel, write=True)
+    api.add("status.clear_notices", status.clear_notices, write=True)
     api.add("settings.get", settings.get)
     api.add("settings.update", settings.update, write=True)
     api.add("log.tail", log.tail)

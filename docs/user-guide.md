@@ -45,7 +45,7 @@ can use it.
 
 | Tab | What you do there |
 | --- | --- |
-| Status | See every pair and photos backup with its last result and next run; *Sync now*, *Test run* (changes nothing), *Approve deletions* after the delete brake stopped a run. Waits and errors of the last 24 hours are listed as notices. |
+| Status | See every pair and photos backup with its last result and next run; *Sync now*, *Test run* (changes nothing), *Approve deletions* after the delete brake stopped a run. Waits and errors of the last 24 hours are listed as notices, without deleted pairs and without anything a later successful run settled; *Clear notices* hides them (the event log keeps them). |
 | Sync pairs | Add, edit and delete iCloud Drive pairs. |
 | Photos | Add, edit and delete photos backups with every option listed below. |
 | Accounts | Add an Apple ID and sign in with password and 2FA code; sign in again when Apple ends the session. |

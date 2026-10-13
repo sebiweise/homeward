@@ -3,6 +3,15 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
+## [Unreleased]
+
+### Changed
+
+- The notices on the status page leave out pairs and photo backups that were
+  deleted, and anything a later successful run of the same job has settled.
+- *Clear notices* hides the current notices on the status page. The event log on
+  the Log tab keeps every event.
+
 ## [0.1.0] - 2026-10-13
 
 First public release. Homeward is still beta: keep an independent backup of

@@ -80,7 +80,8 @@ fieldset { border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px 
 legend { color: var(--muted); padding: 0 4px; }
 dialog label.check { flex-direction: row; align-items: center; gap: 8px; }
 label.inline { display: flex; align-items: center; gap: 8px; }
-#notices h3 { margin-top: 0; }
+#notices h3 { margin: 0; }
+.notices-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 #notices { margin-bottom: 16px; }
 .folder-input { display: flex; gap: 6px; }
 .folder-input[hidden] { display: none; }

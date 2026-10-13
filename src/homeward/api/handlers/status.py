@@ -1,6 +1,7 @@
-"""Overview for the status page: version, daemon state and each pair's last run,
-and cancelling a queued or running sync."""
+"""Overview for the status page: version, daemon state, each pair's last run and
+notices, cancelling a queued or running sync and clearing the notices."""
 
+import json
 import os
 import pwd
 import time
@@ -19,6 +20,7 @@ from homeward.runtime import (
     read_status,
     record_event,
     request_cancel,
+    write_json_atomic,
 )
 
 NOTICE_HOURS = 24
@@ -66,6 +68,15 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
     }
 
 
+def clear_notices(ctx: Context, _request: Request) -> dict[str, Any]:
+    """Hide the current notices on the status page; the event log keeps them."""
+    cleared_at = time.time()
+    write_json_atomic(ctx.paths.notices_file, {"cleared_at": cleared_at})
+    record_event(Level.INFO, "service", "notices_cleared",
+                 "notices cleared on the status page", paths=ctx.paths)  # fmt: skip
+    return {"cleared_at": cleared_at}
+
+
 def cancel(ctx: Context, request: Request) -> dict[str, Any]:
     """Stop a sync: a queued one is dropped, a running one is asked to stop.
 
@@ -86,15 +97,32 @@ def cancel(ctx: Context, request: Request) -> dict[str, Any]:
 
 
 def notices(ctx: Context) -> list[dict[str, Any]]:
-    """Running waits and recent warnings or errors, the newest per source and code."""
+    """Running waits and recent warnings or errors, the newest per source and code.
+
+    Left out: events from before the user last cleared the notices, events of
+    pairs and photo backups that no longer exist, and events from
+    before the last run of the same job that finished fine. The event log
+    keeps all of them.
+    """
     now = time.time()
+    since = max(now - NOTICE_HOURS * 3600, _cleared_at(ctx))
+    existing = _existing_sources(ctx)
+    finished: set[str] = set()  # a later run of this source finished fine
+    settled: set[str] = set()  # older events of this source are dealt with
     seen: set[tuple[str, str]] = set()
     result = []
     for event in read_events(ctx.paths, limit=2000):
-        if event.time < now - NOTICE_HOURS * 3600:
+        if event.time <= since:
             break
+        source = event.source
+        if source in settled or (_is_job(source) and source not in existing):
+            continue
+        if event.code == "sync_finished":
+            finished.add(source)
+        elif event.code == "sync_started" and source in finished:
+            settled.add(source)  # everything before this good run is resolved
         waiting = event.until is not None and event.until > now
-        key = (event.source, event.code)
+        key = (source, event.code)
         if key in seen:
             continue
         seen.add(key)  # only the newest event per source and code counts
@@ -104,6 +132,25 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
         if len(result) >= MAX_NOTICES:
             break
     return result
+
+
+def _is_job(source: str) -> bool:
+    return source.startswith(("pair:", "photos:"))
+
+
+def _existing_sources(ctx: Context) -> set[str]:
+    config = ctx.store.load()
+    return {f"pair:{pair.name}" for pair in config.pairs} | {
+        f"photos:{job.name}" for job in config.photos
+    }
+
+
+def _cleared_at(ctx: Context) -> float:
+    try:
+        data = json.loads(ctx.paths.notices_file.read_text(encoding="utf-8"))
+        return float(data["cleared_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0.0
 
 
 def _user() -> str:
