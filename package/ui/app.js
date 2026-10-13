@@ -377,9 +377,15 @@ function eventTable(events) {
 
 // --- status tab ------------------------------------------------------------------------
 
-function resultBadge(pair) {
+function resultBadge(pair, running) {
     const run = pair.last_run;
+    const job = pair.job;
     if (pair.pending) return el("span", { class: "badge idle", text: t("status:queued") });
+    if (running && job && job.started_at)
+        return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
+    // A cancelled or interrupted run leaves no entry in the run history.
+    if (job && JOB_UNFINISHED.includes(job.result) && (!run || job.finished_at > run.finished_at))
+        return el("span", { class: "badge " + JOB_BADGE[job.result], text: t("status:job_" + job.result) });
     if (!run) return el("span", { class: "muted", text: t("common:never") });
     if (run.blocked) return el("span", { class: "badge warn", text: t("status:result_blocked") });
     if (run.errors) return el("span", { class: "badge bad", text: t("status:result_errors", run.errors) });
@@ -387,7 +393,8 @@ function resultBadge(pair) {
     return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle" };
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn" };
+const JOB_UNFINISHED = ["killed", "cancelled"];
 
 function jobBadge(item) {
     if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
@@ -404,6 +411,26 @@ function nextRun(item) {
     let text = t("status:next_run", formatTime(job.next_due));
     if (job.interval_minutes) text += " · " + t("schedule:every", job.interval_minutes);
     return el("div", { class: "muted", text: text });
+}
+
+// name is a pair name or "photos:<job>", label what the user sees
+function cancelButton(name, label, running) {
+    return el("button", {
+        class: "danger",
+        text: t("status:cancel"),
+        onclick: () =>
+            running
+                ? confirmDialog(t("status:cancel_confirm", label), t("status:cancel"), () => cancelRun(name, label))
+                : cancelRun(name, label),
+    });
+}
+
+function cancelRun(name, label) {
+    return guarded(async () => {
+        const result = await api("status.cancel", { name: name }, true);
+        showMessage(t(result.cancelled === "queued" ? "status:cancel_dequeued" : "status:cancel_requested", label));
+        await renderStatus();
+    });
 }
 
 function runPhotos(job, options) {
@@ -452,14 +479,16 @@ async function renderStatus() {
         .replaceChildren(notices.length ? el("div", {}, el("h3", { text: t("status:notices") }), eventTable(notices)) : "");
     const rows = data.pairs.map((pair) => {
         const run = pair.last_run;
-        const blocked = run?.blocked && !pair.pending;
+        const running = daemon.running === pair.name;
+        const busy = running || pair.pending;
+        const blocked = run?.blocked && !busy;
         return el(
             "tr",
             {},
             el("td", { text: pair.name }),
             el("td", { text: t("mode:" + pair.mode) }),
             el("td", {}, run ? formatTime(run.finished_at) : t("common:never"), nextRun(pair)),
-            el("td", {}, resultBadge(pair), blocked ? el("div", { class: "muted", text: run.blocked }) : null),
+            el("td", {}, resultBadge(pair, running), blocked ? el("div", { class: "muted", text: run.blocked }) : null),
             el(
                 "td",
                 { class: "actions" },
@@ -475,13 +504,17 @@ async function renderStatus() {
                               ),
                       })
                     : null,
-                el("button", { text: t("status:dry_run"), onclick: () => runPair(pair, { dry_run: "true" }) }),
-                el("button", { class: "primary", text: t("status:run_now"), onclick: () => runPair(pair, {}) })
+                busy ? cancelButton(pair.name, pair.name, running) : null,
+                busy ? null : el("button", { text: t("status:dry_run"), onclick: () => runPair(pair, { dry_run: "true" }) }),
+                busy ? null : el("button", { class: "primary", text: t("status:run_now"), onclick: () => runPair(pair, {}) })
             )
         );
     });
     for (const job of data.photos || []) {
         const finished = job.job?.finished_at;
+        const name = "photos:" + job.name;
+        const running = daemon.running === name;
+        const busy = running || job.pending;
         rows.push(
             el(
                 "tr",
@@ -493,8 +526,9 @@ async function renderStatus() {
                 el(
                     "td",
                     { class: "actions" },
-                    el("button", { text: t("status:dry_run"), onclick: () => runPhotos(job, { dry_run: "true" }) }),
-                    el("button", { class: "primary", text: t("status:backup_now"), onclick: () => runPhotos(job, {}) })
+                    busy ? cancelButton(name, t("event:src_photos", job.name), running) : null,
+                    busy ? null : el("button", { text: t("status:dry_run"), onclick: () => runPhotos(job, { dry_run: "true" }) }),
+                    busy ? null : el("button", { class: "primary", text: t("status:backup_now"), onclick: () => runPhotos(job, {}) })
                 )
             )
         );

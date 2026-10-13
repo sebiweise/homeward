@@ -10,6 +10,11 @@ Signals: SIGTERM/SIGINT stop the daemon (a running sync is terminated; the
 executor records every finished step, so the next run picks up the rest),
 SIGUSR1 runs every job now. The config file is re-read before every cycle.
 
+"Cancel" requests from the DSM UI are files ``cancel/<name>.json``: a watcher
+thread stops the running sync of that pair the same way (SIGTERM, the sync ends
+cleanly after removing its temporary files), or drops it from the queue. A
+cancelled job keeps its normal schedule and sends no notification.
+
 "Sync now" requests from the DSM UI are files ``requests/<name>.json`` next to the
 config (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``, where ``pair`` is a
 pair name or ``photos:<job>``); the daemon removes each one and runs it.
@@ -40,7 +45,7 @@ from homeward.core.config import (
     load_config,
 )
 from homeward.dsm.notify import Event, notify
-from homeward.runtime import Level, Paths, record_event
+from homeward.runtime import Level, Paths, record_event, take_cancels
 
 log = logging.getLogger("homeward.daemon")
 
@@ -48,20 +53,23 @@ log = logging.getLogger("homeward.daemon")
 # without a signal.
 MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
+CANCEL_POLL_SECONDS = 1.0
 
-# Exit codes of `homeward sync` (see homeward.cli).
-_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting"}
+# Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
+_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed"}
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
     "ok": (Level.INFO, "sync_finished"),
     "blocked": (Level.WARNING, "delete_brake"),
     "config_error": (Level.ERROR, "config_error"),
     "killed": (Level.WARNING, "sync_stopped"),
+    "cancelled": (Level.WARNING, "sync_cancelled"),
     "waiting": (Level.INFO, "sync_postponed"),
 }
 _MESSAGES = {
     "killed": "stopped, runs again shortly",
     "waiting": "iCloud is not ready yet, the next run tries again",
+    "cancelled": "cancelled by the user, finished steps are kept",
 }
 # results that send a DSM notification when they first occur
 _NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
@@ -180,6 +188,8 @@ class Scheduler:
         self.status: dict[str, JobStatus] = self._load_status()
         self._forced: set[str] = set()
         self.running: str | None = None
+        # The running job (in the format of ``running``) the user asked to stop.
+        self.cancelled: str | None = None
 
     def update(self, plan: Plan) -> None:
         self.settings = plan.settings
@@ -216,6 +226,7 @@ class Scheduler:
             self._forced.discard(job.name)
             self.status[job.name] = status
         self.running = job.name.removeprefix("pair:")
+        self.cancelled = None
         self.save()
         log.info("starting %s", job.name)
         try:
@@ -226,6 +237,8 @@ class Scheduler:
         status.finished_at = self._clock()
         status.exit_code = code
         status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
+        if status.result == "killed" and self.cancelled == self.running:
+            status.result = "cancelled"
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
         message = _MESSAGES.get(status.result or "", f"exit code {code}")
@@ -234,6 +247,7 @@ class Scheduler:
         if status.result in _NOTIFY and status.result != previous and not dry_run:
             self._notify(_NOTIFY[status.result], job.name.split(":", 1)[-1])
         self.running = None
+        self.cancelled = None
         self.save()
         return status
 
@@ -338,6 +352,10 @@ class Daemon:
         self._wake = threading.Event()
         self._run_now = False
         self._config_error: str | None = None
+        self.paths = scheduler.events
+        # Queued "sync now" requests the user cancelled before they started.
+        self._dropped: set[str] = set()
+        self._cancel_lock = threading.Lock()
 
     @property
     def config_ok(self) -> bool:
@@ -358,6 +376,27 @@ class Daemon:
     def _on_run_now(self, signum: int, frame: FrameType | None) -> None:
         self._run_now = True
         self._wake.set()
+
+    def check_cancels(self) -> None:
+        """Act on cancel requests: stop the running sync, or drop a queued request."""
+        with self._cancel_lock:
+            for request in take_cancels(self.paths):
+                running = self.scheduler.running
+                if request.pair == running:
+                    if self.scheduler.cancelled == running:
+                        continue  # already stopping
+                    log.info("cancel requested for %s, stopping it", running)
+                    self.scheduler.cancelled = running
+                    self.runner.terminate()
+                else:
+                    self._dropped.add(request.pair)
+
+    def _watch_cancels(self) -> None:
+        while not self.stop.wait(CANCEL_POLL_SECONDS):
+            try:
+                self.check_cancels()
+            except Exception:  # the watcher must keep running
+                log.exception("checking cancel requests failed")
 
     def reload(self) -> bool:
         try:
@@ -387,11 +426,21 @@ class Daemon:
 
     def run_requests(self) -> None:
         jobs = {job.name: job for job in self.scheduler.jobs}
+        self.check_cancels()
+        self._dropped.clear()  # cancels from before these requests were taken
         for request in take_requests(self.requests_dir):
             if self.stop.is_set():
                 break
             # Requests name a pair, or a photos job as "photos:<name>".
             name = request.pair if ":" in request.pair else f"pair:{request.pair}"
+            self.check_cancels()
+            if request.pair in self._dropped:
+                self._dropped.discard(request.pair)
+                log.info("run request for %s cancelled before it started", name)
+                record_event(Level.WARNING, name, "sync_cancelled",
+                             "cancelled by the user before it started",
+                             paths=self.paths)  # fmt: skip
+                continue
             job = jobs.get(name)
             if job is None:
                 log.warning("run request for unknown job %r ignored", request.pair)
@@ -404,6 +453,7 @@ class Daemon:
 
     def run_forever(self) -> None:
         log.info("daemon started (pid %d), config %s", os.getpid(), self.config_path)
+        threading.Thread(target=self._watch_cancels, name="cancel-watcher", daemon=True).start()
         while not self.stop.is_set():
             self.cycle()
             if self.stop.is_set():

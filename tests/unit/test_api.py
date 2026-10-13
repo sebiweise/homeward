@@ -590,6 +590,32 @@ def test_version_comes_from_the_dsm_package(tmp_path: Path) -> None:
     assert package_version(tmp_path / "missing")  # falls back to the wheel's version
 
 
+def test_cancel_a_queued_or_running_sync(client: Client, tmp_path: Path) -> None:
+    from homeward.runtime import read_events, take_cancels
+
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    client.call("pairs.run", post=True, name="docs")
+    assert client.call("status.cancel", post=True, name="docs")["cancelled"] == "queued"
+    assert pending_requests(client.paths) == []
+    assert take_cancels(client.paths) == []  # nothing for the daemon to stop
+    assert read_events(client.paths)[0].code == "sync_cancelled"
+
+    with pytest.raises(ApiError) as excinfo:
+        client.call("status.cancel", post=True, name="docs")
+    assert _error(excinfo) == "not_running"
+
+    client.paths.status_file.write_text('{"running": "photos:me"}')
+    assert client.call("status.cancel", post=True, name="photos:me")["cancelled"] == "running"
+    assert [c.pair for c in take_cancels(client.paths)] == ["photos:me"]
+
+    with pytest.raises(ApiError) as excinfo:
+        client.call("status.cancel", post=True, name="../config")
+    assert _error(excinfo) == "invalid_name"
+    with pytest.raises(ApiError) as excinfo:
+        client.call("status.cancel", name="docs")
+    assert _error(excinfo) == "post_required"
+
+
 # --- folder picker -------------------------------------------------------------------
 
 
