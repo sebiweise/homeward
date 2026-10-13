@@ -37,7 +37,8 @@ class Pair:
             self.config, nas, self.icloud(), self.state, dry_run=dry_run, today=TODAY
         )
         if not dry_run:
-            assert outcome.result is not None and outcome.result.ok, outcome.result
+            assert outcome.result is not None, outcome.result
+            assert outcome.result.ok, outcome.result
         return outcome
 
     def write(self, path: str, text: str) -> None:
@@ -130,7 +131,8 @@ def test_rename_on_the_nas(pair: Pair) -> None:
 
     outcome = pair.run()
 
-    assert outcome.plan.renames == 1 and outcome.plan.deletes == 0
+    assert outcome.plan.renames == 1
+    assert outcome.plan.deletes == 0
     assert pair.api.content("Docs/Bericht.txt") == b"v1"
     assert ("report.txt", b"v1") in pair.api.trashed
     pair.assert_in_sync()
@@ -144,7 +146,8 @@ def test_rename_and_move_in_icloud(pair: Pair) -> None:
     outcome = pair.run()
 
     # iCloud gives the moved file a new etag but keeps its docwsid.
-    assert outcome.plan.renames == 1 and outcome.plan.blocked is None
+    assert outcome.plan.renames == 1
+    assert outcome.plan.blocked is None
     assert pair.read("Archiv/report-2026.txt") == "v1"
     assert pair.nas_trash() == {"report.txt": "v1"}
     pair.assert_in_sync()
@@ -158,7 +161,8 @@ def test_folder_rename_in_icloud_passes_the_brake(pair: Pair) -> None:
 
     outcome = pair.run()
 
-    assert outcome.plan.renames == 20 and outcome.plan.blocked is None
+    assert outcome.plan.renames == 20
+    assert outcome.plan.blocked is None
     assert pair.read("kept/7.txt") == "7"
     assert not (pair.root / "keep" / "7.txt").exists()
     pair.assert_in_sync()

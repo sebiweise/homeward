@@ -177,24 +177,39 @@ def _match_renames(
         record = records.get(action.path)
         if action.kind in DELETE_KINDS and record is not None:
             local_side = action.kind is ActionKind.DELETE_REMOTE
-            for new in new_local if local_side else new_remote:
-                meta = new.local if local_side else new.remote
-                version = record.local_version if local_side else record.remote_version
-                identity = None if local_side else remote_identity
-                if (
-                    new.path not in used
-                    and meta
-                    and _content_matches(meta, record, version, identity)
-                ):
-                    used.add(new.path)
-                    action = replace(
-                        action,
-                        renamed_to=new.path,
-                        reason=f"{action.reason}, renamed to {new.path}",
-                    )
-                    break
+            target = _rename_target(
+                record,
+                new_local if local_side else new_remote,
+                local_side=local_side,
+                identity=None if local_side else remote_identity,
+                used=used,
+            )
+            if target is not None:
+                used.add(target)
+                action = replace(
+                    action, renamed_to=target, reason=f"{action.reason}, renamed to {target}"
+                )
         result.append(action)
     return result
+
+
+def _rename_target(
+    record: FileRecord,
+    candidates: list[Action],
+    *,
+    local_side: bool,
+    identity: Identity | None,
+    used: set[str],
+) -> str | None:
+    """The first unused new file on that side whose content matches ``record``."""
+    version = record.local_version if local_side else record.remote_version
+    for new in candidates:
+        meta = new.local if local_side else new.remote
+        if new.path in used or meta is None:
+            continue
+        if _content_matches(meta, record, version, identity):
+            return new.path
+    return None
 
 
 def _prefixes(path: str) -> list[str]:
@@ -214,23 +229,23 @@ def _guard_case(actions: list[Action], remote_files: Mapping[str, FileMeta]) -> 
     for path in remote_files:
         if path not in deleted:
             seen.update((prefix.casefold(), prefix) for prefix in _prefixes(path))
-    result = []
-    for action in actions:
-        if action.kind is ActionKind.UPLOAD and action.remote is None:
-            prefixes = _prefixes(action.path)
-            clash = next(
-                (seen[p.casefold()] for p in prefixes if seen.get(p.casefold(), p) != p), None
-            )
-            if clash is not None:
-                action = replace(
-                    action,
-                    kind=ActionKind.SKIP,
-                    reason=f"iCloud already has {clash}, which differs only in upper/lower case",
-                )
-            else:
-                seen.update((p.casefold(), p) for p in prefixes)
-        result.append(action)
-    return result
+    return [_case_checked(action, seen) for action in actions]
+
+
+def _case_checked(action: Action, seen: dict[str, str]) -> Action:
+    """Skip a new upload that clashes by case with ``seen``, else add it to ``seen``."""
+    if action.kind is not ActionKind.UPLOAD or action.remote is not None:
+        return action
+    prefixes = _prefixes(action.path)
+    clash = next((seen[p.casefold()] for p in prefixes if seen.get(p.casefold(), p) != p), None)
+    if clash is None:
+        seen.update((p.casefold(), p) for p in prefixes)
+        return action
+    return replace(
+        action,
+        kind=ActionKind.SKIP,
+        reason=f"iCloud already has {clash}, which differs only in upper/lower case",
+    )
 
 
 def _order(actions: list[Action]) -> list[Action]:

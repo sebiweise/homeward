@@ -78,7 +78,8 @@ def test_icloud_move_into_folder(state: StateDB, nas: FakeProvider, icloud: Fake
 
     outcome = _run(state, nas, icloud)
 
-    assert outcome.plan.renames == 1 and outcome.plan.blocked is None
+    assert outcome.plan.renames == 1
+    assert outcome.plan.blocked is None
     assert _tree(nas) == _tree(icloud)
     assert nas.trashed("a.txt") == [b"a.txt"]
 
@@ -124,7 +125,8 @@ def test_rename_with_edit_counts_as_delete(
 
     outcome = _run(state, nas, icloud)
 
-    assert outcome.plan.renames == 0 and outcome.plan.deletes == 1
+    assert outcome.plan.renames == 0
+    assert outcome.plan.deletes == 1
     assert _tree(icloud) == _tree(nas)
 
 
@@ -309,7 +311,8 @@ def test_a_week_of_random_edits_on_both_sides(seed: int) -> None:
 
         outcome = sync_pair(pair, nas, icloud, state, dry_run=False, today=today)
 
-        assert outcome.result is not None and outcome.result.ok, (run, outcome.result)
+        assert outcome.result is not None, (run, outcome.result)
+        assert outcome.result.ok, (run, outcome.result)
         assert before <= _everything(nas, icloud), f"content lost in run {run}"
         if outcome.plan.first_run:
             continue
