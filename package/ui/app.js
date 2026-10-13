@@ -36,7 +36,7 @@ function parseStrings(text) {
             continue;
         }
         const entry = line.match(/^\s*([\w.-]+)\s*=\s*"(.*)"\s*$/);
-        if (entry) strings[section + ":" + entry[1]] = entry[2].replaceAll('\\"', '"');
+        if (entry) strings[section + ":" + entry[1]] = entry[2].replaceAll(String.raw`\"`, '"');
     }
 }
 

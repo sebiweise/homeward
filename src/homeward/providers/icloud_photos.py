@@ -14,7 +14,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import astuple, dataclass, replace
+from dataclasses import astuple, dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO, cast
@@ -410,12 +410,8 @@ class ICloudPhotosSource(PhotoSource):
             if key == "original":
                 log.warning("asset %s has no original to download", asset.id)
             return None
-        item = replace(
-            base,
-            resource=key,
-            filename=resource.filename or asset.filename,
-            size=resource.size,
-            checksum=resource.checksum,
+        item = base.variant(
+            key, resource.filename or asset.filename, resource.size, resource.checksum
         )
         self._urls[item.key] = resource.url
         self._fetched_at[item.key] = self._clock()
@@ -449,13 +445,11 @@ class ICloudPhotosSource(PhotoSource):
             return None
         if not data:
             return None
-        item = replace(
-            base,
-            resource="xmp",
-            filename=f"{original_name}.xmp",
-            size=len(data),
-            checksum=hashlib.sha256(data).hexdigest(),
-            albums=(),
+        item = base.variant(
+            "xmp",
+            f"{original_name}.xmp",
+            len(data),
+            hashlib.sha256(data).hexdigest(),
             sidecar_for="original",
         )
         self._blobs[item.key] = data

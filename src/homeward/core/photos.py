@@ -68,6 +68,30 @@ class PhotoItem:
     def key(self) -> str:
         return f"{self.library}/{self.asset_id}/{self.resource}"
 
+    def variant(
+        self,
+        resource: str,
+        filename: str,
+        size: int | None,
+        checksum: str | None,
+        *,
+        sidecar_for: str | None = None,
+    ) -> "PhotoItem":
+        """Another file of the same photo; a sidecar is never linked into albums."""
+        return PhotoItem(
+            asset_id=self.asset_id,
+            resource=resource,
+            library=self.library,
+            filename=filename,
+            created=self.created,
+            size=size,
+            checksum=checksum,
+            albums=() if sidecar_for else self.albums,
+            hidden=self.hidden,
+            collection=self.collection,
+            sidecar_for=sidecar_for,
+        )
+
 
 class PhotoSource(Protocol):
     """The iCloud side of a photos job, implemented in ``homeward.providers``."""
