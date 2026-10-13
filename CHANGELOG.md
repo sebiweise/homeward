@@ -16,6 +16,9 @@ anything you point it at.
   keywords, location, favorite), each optional.
 - Album and favorites folders as hard links that take no extra space.
 - Never deletes: photos removed in iCloud stay on the NAS.
+- Expired download links of shared albums are renewed automatically; a run that ends
+  because iCloud is still preparing the library shows as "Waiting for iCloud" and is
+  retried on the next run, without a failure notification.
 
 ### iCloud Drive sync
 
