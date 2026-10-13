@@ -22,6 +22,8 @@ All notable changes to Homeward are listed here. Versions follow
   their state stay; nothing has to be deleted.
 - When Apple rejects a stored session during a run (for example 421 "Invalid global
   session"), the Apple ID now shows *Sign-in required* instead of a generic error.
+  If it comes back right after signing in again, the message and the new *Known
+  issues* section of the user guide explain the Apple account settings to check.
 
 ## [0.1.0] - 2026-10-13
 
