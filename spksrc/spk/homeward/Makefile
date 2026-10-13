@@ -11,6 +11,8 @@ DEPENDS = cross/homeward
 
 # The DSM app uses DSM 7.2 web APIs.
 REQUIRED_MIN_DSM = 7.2
+# Same exclusions as other spksrc packages that cross-compile cryptography.
+UNSUPPORTED_ARCHS = $(ARMv5_ARCHS) $(ARMv7L_ARCHS) $(OLD_PPC_ARCHS)
 
 MAINTAINER = sebiweise
 DESCRIPTION = Backs up iCloud Photos to the NAS and syncs iCloud Drive folders \(upload, download or bidirectional\). With a DSM app for accounts, sync pairs, status and log.
