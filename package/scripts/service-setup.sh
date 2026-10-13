@@ -77,6 +77,7 @@ service_preupgrade() {
 service_postupgrade() {
     HOMEWARD_VAR="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" "${VENV}/bin/python" -m homeward.api.migrate \
         || echo "Could not update ${CONFIG}; check it in the Homeward app."
+    return 0
 }
 
 service_preuninst() {
