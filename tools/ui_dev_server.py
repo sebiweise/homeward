@@ -2,7 +2,8 @@
 
 Usage: python tools/ui_dev_server.py [port]   then open http://localhost:8765/
 Data lives in a temporary folder; the demo sign-in accepts any password and the
-two-factor code 123456. Never run this on the NAS.
+two-factor code 123456. The folder picker browses demo shares in that folder.
+Never run this on the NAS.
 """
 
 import io
@@ -16,6 +17,7 @@ from homeward.api.accounts import AccountBackend, LoginResult, SessionState
 from homeward.api.auth import Authenticator
 from homeward.api.cgi import handle, write_response
 from homeward.api.errors import ApiError
+from homeward.api.handlers import folders
 from homeward.runtime import Paths
 
 UI_DIR = Path(__file__).resolve().parent.parent / "package" / "ui"
@@ -51,6 +53,9 @@ def serve(port: int) -> None:
     var_dir = Path(tempfile.mkdtemp(prefix="homeward-ui-"))
     paths = Paths(var_dir=var_dir, config=var_dir / "config.toml")
     backend = DemoBackend()
+    folders.ROOT = var_dir / "nas"
+    for demo in ("volume1/photo/Alice", "volume1/homes/alice/Documents", "volume1/homeward"):
+        (folders.ROOT / demo).mkdir(parents=True)
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:

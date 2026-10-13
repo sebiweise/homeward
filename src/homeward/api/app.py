@@ -1,7 +1,7 @@
 """Wires the handlers into an :class:`~homeward.api.server.Api`."""
 
 from homeward.api.accounts import AccountBackend
-from homeward.api.handlers import accounts, log, pairs, photos, status
+from homeward.api.handlers import accounts, folders, log, pairs, photos, status
 from homeward.api.server import Api, Context
 from homeward.api.store import ConfigStore
 from homeward.runtime import Paths
@@ -24,6 +24,8 @@ def build_api(paths: Paths, backend: AccountBackend) -> Api:
     api.add("photos.update", photos.update, write=True)
     api.add("photos.delete", photos.delete, write=True)
     api.add("photos.run", photos.run, write=True)
+    api.add("folders.list", folders.list_folders)
+    api.add("folders.create", folders.create, write=True)
     api.add("accounts.list", accounts.list_accounts)
     api.add("accounts.add", accounts.add, write=True)
     api.add("accounts.login", accounts.login, write=True)

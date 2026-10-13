@@ -26,6 +26,8 @@ backend once and never written anywhere.
 | `photos.defaults`, `photos.list` | | |
 | `photos.create`, `photos.update` | yes | `photos` (JSON object with every `[[photos]]` option) |
 | `photos.delete` | yes | `name` |
+| `folders.list` | | `path` (empty: the shared folders) |
+| `folders.create` | yes | `path`, `name` |
 | `accounts.list` | | |
 | `accounts.add` | yes | `name`, `apple_id`, `password` |
 | `accounts.login` | yes | `name`, `password` |
@@ -34,6 +36,13 @@ backend once and never written anywhere.
 | `log.runs` | | `limit` |
 | `log.tail` | | `lines` |
 | `log.events` | | `limit`, `level` (`info`, `warning`, `error`) |
+
+`folders.*` back the folder picker. They run as the package user, so they only show
+shared folders (`/volumeN/<share>`) and subfolders that `homeward` may open; DSM's
+`@` folders, `#recycle`, `#snapshot`, `.homeward-papierkorb`, dot folders and links
+leading off the volumes are never listed or browsed. DSM's own folder dialog is not
+used: it would list what the signed-in administrator sees, not what `homeward` can
+reach, and it needs DSM's widget library inside the page.
 
 Answers: `{"success": true, "data": ...}` or
 `{"success": false, "error": {"code": "...", "message": "..."}}`; each code has a
