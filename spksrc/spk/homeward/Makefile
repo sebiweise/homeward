@@ -35,7 +35,9 @@ SERVICE_WIZARD_SHARENAME = wizard_shared_folder_name
 DSM_UI_DIR = ui
 DSM_APP_NAME = SYNO.SDS.Homeward.Instance
 
-SPK_USR_LOCAL_LINKS = bin:env/bin/homeward
+# /usr/local/bin/homeward for the command line. SPK_COMMANDS rather than
+# SPK_USR_LOCAL_LINKS: the latter breaks spksrc's conf/resource when it is used alone.
+SPK_COMMANDS = env/bin/homeward
 
 USE_ALTERNATE_TMPDIR = 1
 

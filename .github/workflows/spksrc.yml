@@ -50,8 +50,17 @@ jobs:
               make -C spk/homeward arch-${{ matrix.arch }}
             '
 
+      - name: Check the package resources
+        # The shared folder permission and the command link come from conf/resource;
+        # spksrc only warns when it cannot write them.
+        run: |
+          tar -xOf spksrc/packages/homeward_*.spk conf/resource | jq -e '
+            ."data-share".shares[0].name == "{{wizard_shared_folder_name}}"
+            and ."data-share".shares[0].permission.rw == ["sc-homeward"]
+            and ."usr-local-linker".bin == ["env/bin/homeward"]'
+
       - uses: actions/upload-artifact@v7
         with:
           name: homeward-synocommunity-${{ matrix.arch }}
-          path: spksrc/packages/*.spk
+          path: spksrc/packages/homeward_*.spk
           if-no-files-found: error
