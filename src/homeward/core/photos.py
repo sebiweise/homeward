@@ -525,26 +525,37 @@ class PhotoExecutor:
         # Downloads run in parallel (each request waits mostly on Apple, not on bandwidth);
         # the state database and everything else stay on this thread.
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            for start in range(0, len(files), PREPARE_BATCH):
-                batch = files[start : start + PREPARE_BATCH]
-                self._prepare([_need(a.item) for a in batch])
-                fetches = {
-                    pool.submit(self._fetch, action): action
-                    for action in batch
-                    if action.kind is not PhotoActionKind.REPLACE
-                }
-                for future in as_completed(fetches):
-                    action = fetches[future]
-                    self._step(result, action, partial(self._collect, action, future))
-                for action in batch:
-                    if action.kind is PhotoActionKind.REPLACE:
-                        self._step(result, action, partial(self._apply, action))
+            try:
+                self._run_files(result, files, pool)
+            except BaseException:
+                # Cancelled: let the downloads already running finish (each one
+                # writes a temporary file first), drop the queued ones.
+                pool.shutdown(cancel_futures=True)
+                raise
         for action in actions:
             if action.kind not in _FILE_KINDS:
                 self._step(result, action, partial(self._apply, action))
         if result.ok and not plan.unchanged:
             self.state.set_cursor(self.job, plan.cursor)
         return result
+
+    def _run_files(
+        self, result: PhotoRunResult, files: list[PhotoAction], pool: ThreadPoolExecutor
+    ) -> None:
+        for start in range(0, len(files), PREPARE_BATCH):
+            batch = files[start : start + PREPARE_BATCH]
+            self._prepare([_need(a.item) for a in batch])
+            fetches = {
+                pool.submit(self._fetch, action): action
+                for action in batch
+                if action.kind is not PhotoActionKind.REPLACE
+            }
+            for future in as_completed(fetches):
+                action = fetches[future]
+                self._step(result, action, partial(self._collect, action, future))
+            for action in batch:
+                if action.kind is PhotoActionKind.REPLACE:
+                    self._step(result, action, partial(self._apply, action))
 
     def _step(self, result: PhotoRunResult, action: PhotoAction, apply: Callable[[], None]) -> None:
         try:

@@ -108,10 +108,13 @@ class Executor:
         uploaded = self._transfer(self.local, self.remote, moved, overwrite=False)
         self.state.record(self.pair, moved, uploaded)
 
-    @staticmethod
-    def _transfer(src: Provider, dst: Provider, meta: FileMeta, overwrite: bool) -> FileMeta:
+    def _transfer(self, src: Provider, dst: Provider, meta: FileMeta, overwrite: bool) -> FileMeta:
         if overwrite:
-            dst.delete(meta.path)
+            dst.delete(meta.path)  # into the trash, so it stays recoverable
+            # If the write does not finish (an error, a cancelled run), the next run
+            # must not read the now missing file as a delete to pass on: without a
+            # record it copies the file again.
+            self.state.forget(self.pair, meta.path)
         with src.open_read(meta.path) as stream:
             return dst.write(meta.path, stream, meta.mtime)
 

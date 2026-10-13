@@ -7,10 +7,12 @@ import functools
 import getpass
 import logging
 import os
+import signal
 import sys
 from collections.abc import Callable, Iterator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from types import FrameType
 
 from homeward.auth.session import LoginRequired, open_service
 from homeward.auth.twofa import LoginError, LoginFlow
@@ -43,12 +45,29 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_BLOCKED = 3
 EXIT_WAITING = 4  # iCloud is not ready yet (e.g. still indexing); the next run tries again
+EXIT_CANCELLED = 5  # ended on SIGTERM (cancelled, or the service stops)
 # how bad an exit code is, to report the worst one when a command runs several jobs
 _SEVERITY = {EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_BLOCKED: 3, EXIT_USAGE: 4}
 
 
 def _worst(a: int, b: int) -> int:
     return max(a, b, key=lambda code: _SEVERITY.get(code, 5))
+
+
+class Cancelled(BaseException):
+    """SIGTERM arrived (the user cancelled the run, or the service stops).
+
+    A BaseException, so the ``except Exception`` of a single step does not swallow it:
+    the run ends at once, and every ``finally`` and ``with`` on the way out still runs
+    (temporary files are removed, locks and databases closed). Each finished step is
+    already in the state database, so the next run continues from there.
+    """
+
+
+def _on_sigterm(signum: int, frame: FrameType | None) -> None:
+    # Only the first signal ends the run; a second one must not cut the cleanup short.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise Cancelled
 
 
 def _version() -> str:
@@ -378,11 +397,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command not in commands:
         parser.print_help()
         return EXIT_OK
+    previous = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         return commands[args.command](args)
     except ConfigError as exc:
         print(f"homeward: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except Cancelled:
+        print("homeward: cancelled, finished steps are kept", file=sys.stderr)
+        return EXIT_CANCELLED
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

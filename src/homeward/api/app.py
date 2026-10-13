@@ -10,6 +10,7 @@ from homeward.runtime import Paths
 def build_api(paths: Paths, backend: AccountBackend) -> Api:
     api = Api(Context(paths=paths, store=ConfigStore(paths), accounts=backend))
     api.add("status.get", status.get)
+    api.add("status.cancel", status.cancel, write=True)
     api.add("log.tail", log.tail)
     api.add("log.runs", log.runs)
     api.add("log.events", log.events)
