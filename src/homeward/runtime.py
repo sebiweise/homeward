@@ -136,6 +136,7 @@ EVENT_CODES = (
     "sync_finished",
     "sync_failed",
     "sync_stopped",  # the service stopped (e.g. package update); the run is repeated
+    "sync_postponed",  # iCloud was not ready (e.g. indexing); the next scheduled run retries
     "delete_brake",
     "conflict",
     "file_failed",

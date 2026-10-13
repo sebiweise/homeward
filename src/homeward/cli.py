@@ -42,6 +42,13 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_BLOCKED = 3
+EXIT_WAITING = 4  # iCloud is not ready yet (e.g. still indexing); the next run tries again
+# how bad an exit code is, to report the worst one when a command runs several jobs
+_SEVERITY = {EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_BLOCKED: 3, EXIT_USAGE: 4}
+
+
+def _worst(a: int, b: int) -> int:
+    return max(a, b, key=lambda code: _SEVERITY.get(code, 5))
 
 
 def _version() -> str:
@@ -137,7 +144,7 @@ def _reported(run: Callable[[], int]) -> int:
     except PhotosNotReady as exc:
         print(f"homeward: {exc}", file=sys.stderr)
         log.warning("%s", exc, extra={"event": "icloud_indexing"})
-        return EXIT_FAILED
+        return EXIT_WAITING
     except Exception as exc:
         log.exception("the run stopped: %s", _describe(exc))
         return EXIT_FAILED
@@ -161,7 +168,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for pair in pairs:
         with _events(args.config, f"pair:{pair.name}"):
-            status = max(status, _reported(functools.partial(_sync_one, args, config, pair)))
+            status = _worst(status, _reported(functools.partial(_sync_one, args, config, pair)))
     return status
 
 
@@ -263,7 +270,7 @@ def _cmd_photos(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for job in jobs:
         with _events(args.config, f"photos:{job.name}"):
-            status = max(status, _reported(functools.partial(_photos_one, args, config, job)))
+            status = _worst(status, _reported(functools.partial(_photos_one, args, config, job)))
     return status
 
 
