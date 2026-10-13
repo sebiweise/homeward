@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -174,3 +175,26 @@ def test_photos_relative_target_and_duplicates() -> None:
         parse_config({"photos": [{"name": "p", "target": "rel"}]})
     with pytest.raises(ConfigError, match="duplicate photos"):
         parse_config({"photos": [{"name": "p", "target": "/a"}, {"name": "p", "target": "/b"}]})
+
+
+def test_intervals() -> None:
+    config = parse_config({"pair": [], "photos": []})
+    assert config.interval_minutes == 60
+    text = VALID.replace("trash_days = 7\n", "trash_days = 7\ninterval_minutes = 15\n")
+    config = parse_config({**tomllib.loads(text), "daemon": {"interval_minutes": 30}})
+    assert config.interval_minutes == 30
+    assert [pair.interval_minutes for pair in config.pairs] == [15, None]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"daemon": {"interval_minutes": 4}},
+        {"daemon": {"interval_minutes": 10081}},
+        {"daemon": []},
+        {"photos": [{"name": "p", "target": "/volume1/p", "interval_minutes": "15"}]},
+    ],
+)
+def test_invalid_intervals(data: dict[str, object]) -> None:
+    with pytest.raises(ConfigError, match=r"interval_minutes|daemon"):
+        parse_config(data)

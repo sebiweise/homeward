@@ -1,6 +1,7 @@
 """Interval-based sync scheduler.
 
-The daemon runs every sync pair and photos job once per interval. Each run is its
+The daemon runs every sync pair and photos job once per interval: ``[daemon]
+interval_minutes`` for all jobs, unless a pair or photos job sets its own. Each run is its
 own ``homeward sync --pair NAME`` (or ``homeward photos --job NAME``) process: a
 crash, or the memory a large transfer needs, ends with the run, and the
 long-running daemon itself stays small.
@@ -8,6 +9,11 @@ long-running daemon itself stays small.
 Signals: SIGTERM/SIGINT stop the daemon (a running sync is terminated; the
 executor records every finished step, so the next run picks up the rest),
 SIGUSR1 runs every job now. The config file is re-read before every cycle.
+
+"Cancel" requests from the DSM UI are files ``cancel/<name>.json``: a watcher
+thread stops the running sync of that pair the same way (SIGTERM, the sync ends
+cleanly after removing its temporary files), or drops it from the queue. A
+cancelled job keeps its normal schedule and sends no notification.
 
 "Sync now" requests from the DSM UI are files ``requests/<name>.json`` next to the
 config (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``, where ``pair`` is a
@@ -25,39 +31,45 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from homeward.core.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from homeward.core.config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_INTERVAL_MINUTES,
+    ConfigError,
+    check_interval,
+    load_config,
+)
 from homeward.dsm.notify import Event, notify
-from homeward.runtime import Level, Paths, record_event
+from homeward.runtime import Level, Paths, record_event, take_cancels
 
 log = logging.getLogger("homeward.daemon")
 
-DEFAULT_INTERVAL_MINUTES = 60
-MIN_INTERVAL_MINUTES = 5
 # Upper bound for one sleep, so config changes and run requests are picked up
 # without a signal.
 MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
+CANCEL_POLL_SECONDS = 1.0
 
-# Exit codes of `homeward sync` (see homeward.cli).
-_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting"}
+# Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
+_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed"}
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
     "ok": (Level.INFO, "sync_finished"),
     "blocked": (Level.WARNING, "delete_brake"),
     "config_error": (Level.ERROR, "config_error"),
     "killed": (Level.WARNING, "sync_stopped"),
+    "cancelled": (Level.WARNING, "sync_cancelled"),
     "waiting": (Level.INFO, "sync_postponed"),
 }
 _MESSAGES = {
     "killed": "stopped, runs again shortly",
     "waiting": "iCloud is not ready yet, the next run tries again",
+    "cancelled": "cancelled by the user, finished steps are kept",
 }
 # results that send a DSM notification when they first occur
 _NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
@@ -69,6 +81,7 @@ class Job:
 
     name: str
     argv: tuple[str, ...]
+    interval_minutes: int | None = None  # None: the global interval
 
 
 @dataclass(slots=True)
@@ -125,17 +138,23 @@ class Plan:
 
 
 def load_plan(config_path: Path) -> Plan:
-    """Read the ``[daemon]`` table and turn every sync pair and photos job into a job."""
+    """Read the interval and turn every sync pair and photos job into a job."""
     config = load_config(config_path)
-    with config_path.open("rb") as fh:
-        data = tomllib.load(fh)
-    settings = parse_settings(data.get("daemon", {}))
+    settings = Settings(interval_minutes=config.interval_minutes)
     jobs = [
-        Job(f"pair:{pair.name}", ("sync", "--config", str(config_path), "--pair", pair.name))
+        Job(
+            f"pair:{pair.name}",
+            ("sync", "--config", str(config_path), "--pair", pair.name),
+            pair.interval_minutes,
+        )
         for pair in config.pairs
     ]
     jobs += [
-        Job(f"photos:{photos.name}", ("photos", "--config", str(config_path), "--job", photos.name))
+        Job(
+            f"photos:{photos.name}",
+            ("photos", "--config", str(config_path), "--job", photos.name),
+            photos.interval_minutes,
+        )
         for photos in config.photos
     ]
     return Plan(settings, jobs)
@@ -145,11 +164,7 @@ def parse_settings(table: object) -> Settings:
     if not isinstance(table, dict):
         raise ConfigError("'daemon' must be a table")
     interval = table.get("interval_minutes", DEFAULT_INTERVAL_MINUTES)
-    if not isinstance(interval, int) or isinstance(interval, bool):
-        raise ConfigError("daemon: 'interval_minutes' must be an integer")
-    if interval < MIN_INTERVAL_MINUTES:
-        raise ConfigError(f"daemon: 'interval_minutes' must be at least {MIN_INTERVAL_MINUTES}")
-    return Settings(interval_minutes=interval)
+    return Settings(interval_minutes=check_interval(interval, "daemon"))
 
 
 class Scheduler:
@@ -173,10 +188,15 @@ class Scheduler:
         self.status: dict[str, JobStatus] = self._load_status()
         self._forced: set[str] = set()
         self.running: str | None = None
+        # The running job (in the format of ``running``) the user asked to stop.
+        self.cancelled: str | None = None
 
     def update(self, plan: Plan) -> None:
         self.settings = plan.settings
         self.jobs = list(plan.jobs)
+
+    def interval_minutes(self, job: Job) -> int:
+        return job.interval_minutes or self.settings.interval_minutes
 
     def next_due(self, job: Job) -> float:
         if job.name in self._forced:
@@ -184,7 +204,7 @@ class Scheduler:
         status = self.status.get(job.name, JobStatus())
         if status.started_at is None or status.finished_at is None or status.result == "killed":
             return 0.0  # never ran, or a stop or crash interrupted the last run
-        return status.started_at + self.settings.interval_seconds
+        return status.started_at + self.interval_minutes(job) * 60.0
 
     def due(self) -> list[Job]:
         now = self._clock()
@@ -206,6 +226,7 @@ class Scheduler:
             self._forced.discard(job.name)
             self.status[job.name] = status
         self.running = job.name.removeprefix("pair:")
+        self.cancelled = None
         self.save()
         log.info("starting %s", job.name)
         try:
@@ -216,6 +237,8 @@ class Scheduler:
         status.finished_at = self._clock()
         status.exit_code = code
         status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
+        if status.result == "killed" and self.cancelled == self.running:
+            status.result = "cancelled"
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
         message = _MESSAGES.get(status.result or "", f"exit code {code}")
@@ -224,6 +247,7 @@ class Scheduler:
         if status.result in _NOTIFY and status.result != previous and not dry_run:
             self._notify(_NOTIFY[status.result], job.name.split(":", 1)[-1])
         self.running = None
+        self.cancelled = None
         self.save()
         return status
 
@@ -241,16 +265,20 @@ class Scheduler:
         self._forced.update(job.name for job in self.jobs)
 
     def save(self) -> None:
-        names = {job.name for job in self.jobs}
+        jobs = {job.name: job for job in self.jobs}
         data: dict[str, Any] = {
             "updated_at": self._clock(),
             "pid": os.getpid(),
             "interval_minutes": self.settings.interval_minutes,
             "running": self.running,
             "jobs": {
-                name: {**asdict(status), "next_due": self._next_due_by_name(name)}
+                name: {
+                    **asdict(status),
+                    "next_due": self._next_due_in_status(jobs[name]),
+                    "interval_minutes": self.interval_minutes(jobs[name]),
+                }
                 for name, status in self.status.items()
-                if name in names
+                if name in jobs
             },
         }
         self.status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -258,11 +286,11 @@ class Scheduler:
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         tmp.replace(self.status_path)
 
-    def _next_due_by_name(self, name: str) -> float | None:
-        started = self.status[name].started_at
-        if name in self._forced or started is None:
+    def _next_due_in_status(self, job: Job) -> float | None:
+        started = self.status[job.name].started_at
+        if job.name in self._forced or started is None:
             return None
-        return started + self.settings.interval_seconds
+        return started + self.interval_minutes(job) * 60.0
 
     def _load_status(self) -> dict[str, JobStatus]:
         try:
@@ -324,6 +352,10 @@ class Daemon:
         self._wake = threading.Event()
         self._run_now = False
         self._config_error: str | None = None
+        self.paths = scheduler.events
+        # Queued "sync now" requests the user cancelled before they started.
+        self._dropped: set[str] = set()
+        self._cancel_lock = threading.Lock()
 
     @property
     def config_ok(self) -> bool:
@@ -344,6 +376,27 @@ class Daemon:
     def _on_run_now(self, signum: int, frame: FrameType | None) -> None:
         self._run_now = True
         self._wake.set()
+
+    def check_cancels(self) -> None:
+        """Act on cancel requests: stop the running sync, or drop a queued request."""
+        with self._cancel_lock:
+            for request in take_cancels(self.paths):
+                running = self.scheduler.running
+                if request.pair == running:
+                    if self.scheduler.cancelled == running:
+                        continue  # already stopping
+                    log.info("cancel requested for %s, stopping it", running)
+                    self.scheduler.cancelled = running
+                    self.runner.terminate()
+                else:
+                    self._dropped.add(request.pair)
+
+    def _watch_cancels(self) -> None:
+        while not self.stop.wait(CANCEL_POLL_SECONDS):
+            try:
+                self.check_cancels()
+            except Exception:  # the watcher must keep running
+                log.exception("checking cancel requests failed")
 
     def reload(self) -> bool:
         try:
@@ -373,11 +426,21 @@ class Daemon:
 
     def run_requests(self) -> None:
         jobs = {job.name: job for job in self.scheduler.jobs}
+        self.check_cancels()
+        self._dropped.clear()  # cancels from before these requests were taken
         for request in take_requests(self.requests_dir):
             if self.stop.is_set():
                 break
             # Requests name a pair, or a photos job as "photos:<name>".
             name = request.pair if ":" in request.pair else f"pair:{request.pair}"
+            self.check_cancels()
+            if request.pair in self._dropped:
+                self._dropped.discard(request.pair)
+                log.info("run request for %s cancelled before it started", name)
+                record_event(Level.WARNING, name, "sync_cancelled",
+                             "cancelled by the user before it started",
+                             paths=self.paths)  # fmt: skip
+                continue
             job = jobs.get(name)
             if job is None:
                 log.warning("run request for unknown job %r ignored", request.pair)
@@ -386,10 +449,11 @@ class Daemon:
             if request.allow_deletes and name.startswith("pair:"):
                 extra += ("--allow-deletes",)
             log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
-            self.scheduler.run(Job(job.name, job.argv + extra), record=not request.dry_run)
+            self.scheduler.run(replace(job, argv=job.argv + extra), record=not request.dry_run)
 
     def run_forever(self) -> None:
         log.info("daemon started (pid %d), config %s", os.getpid(), self.config_path)
+        threading.Thread(target=self._watch_cancels, name="cancel-watcher", daemon=True).start()
         while not self.stop.is_set():
             self.cycle()
             if self.stop.is_set():

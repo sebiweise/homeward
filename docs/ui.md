@@ -26,6 +26,8 @@ backend once and never written anywhere.
 | `photos.defaults`, `photos.list` | | |
 | `photos.create`, `photos.update` | yes | `photos` (JSON object with every `[[photos]]` option) |
 | `photos.delete` | yes | `name` |
+| `folders.list` | | `path` (empty: the shared folders) |
+| `folders.create` | yes | `path`, `name` |
 | `accounts.list` | | |
 | `accounts.add` | yes | `name`, `apple_id`, `password` |
 | `accounts.login` | yes | `name`, `password` |
@@ -34,6 +36,13 @@ backend once and never written anywhere.
 | `log.runs` | | `limit` |
 | `log.tail` | | `lines` |
 | `log.events` | | `limit`, `level` (`info`, `warning`, `error`) |
+
+`folders.*` back the folder picker. They run as the package user, so they only show
+shared folders (`/volumeN/<share>`) and subfolders that `homeward` may open; DSM's
+`@` folders, `#recycle`, `#snapshot`, `.homeward-papierkorb`, dot folders and links
+leading off the volumes are never listed or browsed. DSM's own folder dialog is not
+used: it would list what the signed-in administrator sees, not what `homeward` can
+reach, and it needs DSM's widget library inside the page.
 
 Answers: `{"success": true, "data": ...}` or
 `{"success": false, "error": {"code": "...", "message": "..."}}`; each code has a
@@ -47,6 +56,11 @@ text in the `[error]` section of the strings.
 - Changing a pair's folders or account resets its sync state, so the next run is a
   first run (no deletes, no overwrites).
 - The delete brake is approved per run from the status page ("Approve deletions").
+- "Cancel" on the status page (`status.cancel`) drops a queued run, or stops the
+  running one: the daemon sends the sync process SIGTERM, which ends it cleanly
+  (temporary files removed, every finished step kept in the state database). It is
+  logged as a warning (`sync_cancelled`), sends no notification, and the job keeps
+  its normal schedule.
 
 ## Files shared with the daemon (`homeward/runtime.py`)
 
@@ -54,6 +68,8 @@ Below `/var/packages/homeward/var` (`$HOMEWARD_VAR`):
 
 - `config.toml`: accounts (`[[account]]` with `name`, `apple_id`) and pairs.
 - `requests/<pair>.json`: "sync now" requests; the daemon calls `take_requests()`.
+- `cancel/<pair>.json`: "cancel" requests for the running sync (pair name or
+  `photos:<job>`); a watcher thread in the daemon calls `take_cancels()` every second.
 - `status.json`: written by the daemon, e.g. `{"running": "<pair>"}` or `{}` when idle.
 - `homeward.log`: the daemon's log, shown on the log page.
 - `events.jsonl`: the event log. Anything that runs in the background calls

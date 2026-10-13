@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -60,7 +61,9 @@ def _scheduler(tmp_path: Path, runner: Recorder, clock: Clock) -> Scheduler:
 def test_parse_settings() -> None:
     assert parse_settings({}) == Settings(60)
     assert parse_settings({"interval_minutes": 15}).interval_seconds == 900
-    for bad in ({"interval_minutes": 1}, {"interval_minutes": "5"}, {"interval_minutes": True}):
+    assert parse_settings({"interval_minutes": 10080}).interval_minutes == 10080
+    bad_values = (1, 10081, "5", True, 7.5)
+    for bad in ({"interval_minutes": value} for value in bad_values):
         with pytest.raises(ConfigError):
             parse_settings(bad)
     with pytest.raises(ConfigError):
@@ -88,6 +91,38 @@ def test_jobs_run_once_per_interval(tmp_path: Path) -> None:
     clock.now += 60
     scheduler.run_due()
     assert runner.calls == ["pair:docs", "pair:docs"]
+
+
+def test_a_pair_can_have_its_own_interval(tmp_path: Path) -> None:
+    config = _config(tmp_path, "[daemon]\ninterval_minutes = 60", ("docs", "pics"))
+    text = config.read_text().replace('name = "pics"\n', 'name = "pics"\ninterval_minutes = 15\n')
+    config.write_text(text)
+    clock, runner = Clock(), Recorder()
+    scheduler = _scheduler(tmp_path, runner, clock)
+    plan = load_plan(config)
+    assert [job.interval_minutes for job in plan.jobs] == [None, 15]
+    scheduler.update(plan)
+
+    scheduler.run_due()
+    clock.now += 15 * 60
+    scheduler.run_due()
+    assert runner.calls == ["pair:docs", "pair:pics", "pair:pics"]
+
+    jobs = json.loads((tmp_path / "status.json").read_text())["jobs"]
+    assert jobs["pair:docs"]["interval_minutes"] == 60
+    assert jobs["pair:pics"]["interval_minutes"] == 15
+    assert jobs["pair:pics"]["next_due"] == clock.now + 15 * 60
+
+
+def test_a_changed_interval_applies_to_the_next_run(tmp_path: Path) -> None:
+    clock, runner = Clock(), Recorder()
+    scheduler = _scheduler(tmp_path, runner, clock)
+    scheduler.update(load_plan(_config(tmp_path, "[daemon]\ninterval_minutes = 60")))
+    scheduler.run_due()
+    clock.now += 20 * 60
+    assert scheduler.due() == []
+    scheduler.update(load_plan(_config(tmp_path, "[daemon]\ninterval_minutes = 15")))
+    assert [job.name for job in scheduler.due()] == ["pair:docs"]
 
 
 def test_status_survives_a_restart(tmp_path: Path) -> None:
@@ -310,6 +345,84 @@ def test_a_stopped_run_is_a_warning_not_an_error(tmp_path: Path) -> None:
     (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
     assert (event.level, event.code) == ("warning", "sync_stopped")
     assert sent == []
+
+
+class StoppableRunner(SubprocessRunner):
+    """Stands in for the sync process; ``terminate`` makes it end like one on SIGTERM."""
+
+    def __init__(self, during: Callable[[], None] = lambda: None) -> None:
+        super().__init__()
+        self.during = during
+        self.terminated = 0
+        self.calls: list[str] = []
+
+    def __call__(self, job: Job) -> int:
+        self.calls.append(job.name)
+        self.during()
+        return 5 if self.terminated else 0
+
+    def terminate(self, timeout: float = 0.0) -> None:
+        self.terminated += 1
+
+
+def test_cancelling_the_running_sync(tmp_path: Path) -> None:
+    from homeward.runtime import CancelRequest, Paths, read_events, request_cancel
+
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    config = _config(tmp_path, pairs=("a",))
+    sent: list[str] = []
+    clock = Clock()
+
+    def cancel_while_running() -> None:
+        request_cancel(paths, CancelRequest("other"))  # not running: ignored
+        request_cancel(paths, CancelRequest("a"))
+        daemon.check_cancels()
+        request_cancel(paths, CancelRequest("a"))  # a second click changes nothing
+        daemon.check_cancels()
+
+    runner = StoppableRunner(cancel_while_running)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append(e)
+    )
+    daemon = Daemon(config, scheduler, runner)
+    daemon.cycle()
+
+    assert runner.terminated == 1
+    status = scheduler.status["pair:a"]
+    assert (status.result, status.exit_code) == ("cancelled", 5)
+    assert scheduler.running is None and scheduler.cancelled is None
+    assert not list((tmp_path / "cancel").glob("*.json"))
+    (event, _started) = read_events(paths)
+    assert (event.level, event.code, event.source) == ("warning", "sync_cancelled", "pair:a")
+    assert sent == []  # cancelling is not an error worth a notification
+    # Unlike an interrupted run, a cancelled one waits for its next scheduled time.
+    assert scheduler.next_due(Job("pair:a", ())) == clock.now + scheduler.settings.interval_seconds
+
+
+def test_sigterm_without_a_cancel_is_an_interrupted_run(tmp_path: Path) -> None:
+    scheduler = Scheduler(tmp_path / "status.json", Recorder(code=5), Clock())
+    assert scheduler.run(Job("pair:a", ())).result == "killed"
+
+
+def test_cancelling_a_request_the_daemon_already_took(tmp_path: Path) -> None:
+    from homeward.runtime import CancelRequest, Paths, read_events, request_cancel
+
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    config = _config(tmp_path, pairs=("a", "b"))
+    clock = Clock()
+    runner = StoppableRunner(lambda: request_cancel(paths, CancelRequest("b")))
+    daemon = Daemon(config, Scheduler(tmp_path / "status.json", runner, clock), runner)
+    daemon.cycle()  # the scheduled runs of a and b
+    runner.calls.clear()
+    clock.now += 60
+    request_cancel(paths, CancelRequest("a"))  # stale: from before the requests below
+
+    _request(tmp_path, "a", '{"pair": "a"}')
+    _request(tmp_path, "b", '{"pair": "b"}')
+    daemon.cycle()  # a runs and, while it does, the user cancels the queued b
+    assert runner.calls == ["pair:a"]
+    assert runner.terminated == 0
+    assert read_events(paths)[0].code == "sync_cancelled"
 
 
 def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> None:

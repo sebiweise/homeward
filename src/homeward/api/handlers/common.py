@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Any
 
 from homeward.api.errors import ApiError
 from homeward.core.config import Config
@@ -19,6 +20,11 @@ def check_name(value: str, what: str) -> str:
     if not _NAME.match(value):
         raise ApiError("invalid_name", f"invalid {what} name: {value!r}")
     return value
+
+
+def without_none(table: dict[str, Any]) -> dict[str, Any]:
+    """Drop unset optional keys (TOML has no null), e.g. an interval left to the default."""
+    return {key: value for key, value in table.items() if value is not None}
 
 
 DSM_INFO = Path("/var/packages/homeward/INFO")

@@ -56,6 +56,11 @@ Homeward keeps only the trusted session Apple hands out after the 2FA step (in
 When Apple expires the session, the affected jobs fail and the Accounts tab asks you to
 sign in again. A failed sync also sends a DSM notification.
 
+NAS folders are picked with *Browse...*: it lists the shared folders the user
+`homeward` can open, and *New folder* creates one in place. A share missing there
+needs read/write permission for `homeward` (see above). Typing the full path still
+works.
+
 Every change in the app is checked before it is saved; the previous configuration is
 kept in `var/config-backups/` (the last 20). Removing a pair, a photos backup or an
 account never touches any files.
@@ -85,8 +90,12 @@ needed. The options below are the same ones the app offers.
 state_dir = "/var/packages/homeward/var/state"
 
 [daemon]
-interval_minutes = 60     # every job runs once per interval (minimum 5)
+interval_minutes = 60     # every job runs once per interval (5 to 10080 minutes)
 ```
+
+The Status tab sets this interval under "Change" next to the schedule. A sync pair or
+photos backup can also have its own `interval_minutes` (same range, field "Own
+interval" in its dialog); without one it follows the global schedule.
 
 ### Photos backup
 
@@ -183,7 +192,7 @@ hw login --account NAME [--apple-id ID]               # sign in with 2FA
 `--dry-run` prints what would happen and changes nothing. All commands accept
 `--config PATH` (default: `$HOMEWARD_CONFIG` or the package's `config.toml`).
 
-The daemon runs every job once per interval. To run all jobs now:
+The daemon runs every job once per interval (its own, or the global one). To run all jobs now:
 
 ```sh
 sudo kill -USR1 "$(sudo cat /var/packages/homeward/var/homeward.pid)"

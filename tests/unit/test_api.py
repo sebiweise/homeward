@@ -204,6 +204,49 @@ def test_pair_validation(client: Client, tmp_path: Path) -> None:
     assert not client.paths.config.exists()
 
 
+def test_pair_interval(client: Client, tmp_path: Path) -> None:
+    created = client.call("pairs.create", post=True, pair=_pair(tmp_path, interval_minutes=15))
+    assert created["interval_minutes"] == 15
+    assert tomllib.loads(client.paths.config.read_text())["pair"][0]["interval_minutes"] == 15
+
+    updated = client.call("pairs.update", post=True, pair=_pair(tmp_path, interval_minutes=None))
+    assert updated["interval_minutes"] is None  # back to the global schedule
+    assert "interval_minutes" not in tomllib.loads(client.paths.config.read_text())["pair"][0]
+
+    for bad in (4, "x", True, 10081):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.update", post=True, pair=_pair(tmp_path, interval_minutes=bad))
+        assert _error(excinfo) == "invalid_interval", bad
+
+
+def test_global_schedule(client: Client, tmp_path: Path) -> None:
+    settings = client.call("settings.get")
+    assert settings == {
+        "interval_minutes": 60,
+        "default_interval_minutes": 60,
+        "min_interval_minutes": 5,
+        "max_interval_minutes": 10080,
+    }
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    assert (
+        client.call("settings.update", post=True, interval_minutes="15")["interval_minutes"] == 15
+    )
+    raw = tomllib.loads(client.paths.config.read_text())
+    assert raw["daemon"] == {"interval_minutes": 15}
+    assert [p["name"] for p in raw["pair"]] == ["docs"]  # the rest of the config stays
+    assert client.call("settings.get")["interval_minutes"] == 15
+    assert client.call("status.get")["interval_minutes"] == 15
+
+    for bad in ("4", "abc", "1.5", "99999", ""):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("settings.update", post=True, interval_minutes=bad)
+        assert _error(excinfo) in ("invalid_interval", "missing_param"), bad
+    with pytest.raises(ApiError) as excinfo:
+        client.call("settings.update", interval_minutes="15")
+    assert _error(excinfo) == "post_required"
+    assert client.call("settings.get")["interval_minutes"] == 15
+
+
 def test_changing_a_pairs_folder_resets_its_state(client: Client, tmp_path: Path) -> None:
     client.call("pairs.create", post=True, pair=_pair(tmp_path))
     state_path = client.paths.var_dir / "state" / "me.sqlite3"
@@ -413,6 +456,7 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
 
     created = client.call("photos.create", post=True, photos=_photos(tmp_path))
     assert created["libraries"] == ["personal", "shared", "shared_albums"]
+    assert created["interval_minutes"] is None
     assert created["folder_scheme"] == "{year}/{month}"
 
     changed = _photos(
@@ -422,14 +466,17 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
         libraries=["shared", "personal"],
         folder_scheme="{year}/{month}/{day}",
         albums_folder="Meine Alben",
+        interval_minutes=720,
     )
     updated = client.call("photos.update", post=True, photos=changed)
+    assert updated["interval_minutes"] == 720
     assert updated["hidden"] is True
     assert updated["videos"] is False
     assert updated["libraries"] == ["personal", "shared"]
 
     raw = tomllib.loads(client.paths.config.read_text())
     (job,) = raw["photos"]
+    assert updated["interval_minutes"] == 720
     assert job["apple_id"] == "a@b.de"
     assert job["albums_folder"] == "Meine Alben"
     assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]
@@ -541,3 +588,145 @@ def test_version_comes_from_the_dsm_package(tmp_path: Path) -> None:
     info.write_text('package="homeward"\nversion="0.1.0-2"\n')
     assert package_version(info) == "0.1.0-2"
     assert package_version(tmp_path / "missing")  # falls back to the wheel's version
+
+
+def test_cancel_a_queued_or_running_sync(client: Client, tmp_path: Path) -> None:
+    from homeward.runtime import read_events, take_cancels
+
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    client.call("pairs.run", post=True, name="docs")
+    assert client.call("status.cancel", post=True, name="docs")["cancelled"] == "queued"
+    assert pending_requests(client.paths) == []
+    assert take_cancels(client.paths) == []  # nothing for the daemon to stop
+    assert read_events(client.paths)[0].code == "sync_cancelled"
+
+    with pytest.raises(ApiError) as excinfo:
+        client.call("status.cancel", post=True, name="docs")
+    assert _error(excinfo) == "not_running"
+
+    client.paths.status_file.write_text('{"running": "photos:me"}')
+    assert client.call("status.cancel", post=True, name="photos:me")["cancelled"] == "running"
+    assert [c.pair for c in take_cancels(client.paths)] == ["photos:me"]
+
+    with pytest.raises(ApiError) as excinfo:
+        client.call("status.cancel", post=True, name="../config")
+    assert _error(excinfo) == "invalid_name"
+    with pytest.raises(ApiError) as excinfo:
+        client.call("status.cancel", name="docs")
+    assert _error(excinfo) == "post_required"
+
+
+# --- folder picker -------------------------------------------------------------------
+
+
+@pytest.fixture
+def volumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from homeward.api.handlers import folders
+
+    root = tmp_path / "root"
+    for folder in (
+        "volume1/photo/2024",
+        "volume1/photo/@eaDir",
+        "volume1/photo/#recycle",
+        "volume1/photo/.hidden",
+        "volume1/homes/alice",
+        "volume1/@appstore",
+        "volumeUSB1/usbshare",
+        "elsewhere/secret",
+    ):
+        (root / folder).mkdir(parents=True)
+    (root / "volume1" / "photo" / "notes.txt").write_text("not a folder")
+    (root / "volume1" / "photo" / "outside").symlink_to(root / "elsewhere")
+    (root / "volume1" / "photo" / "alias").symlink_to(root / "volume1" / "homes")
+    monkeypatch.setattr(folders, "ROOT", root)
+    return root
+
+
+def _names(listing: dict[str, Any]) -> list[str]:
+    return [folder["name"] for folder in listing["folders"]]
+
+
+def test_folders_lists_shares_then_subfolders(client: Client, volumes: Path) -> None:
+    shares = client.call("folders.list")
+    assert shares["path"] is None
+    assert [f["path"] for f in shares["folders"]] == [
+        str(volumes / "volume1" / "homes"),
+        str(volumes / "volume1" / "photo"),
+        str(volumes / "volumeUSB1" / "usbshare"),
+    ]
+    photo = client.call("folders.list", path=str(volumes / "volume1" / "photo"))
+    # files, DSM folders, the recycle bin, dot folders and links off the volumes are hidden
+    assert _names(photo) == ["2024", "alias"]
+    assert photo["parent"] is None
+    assert photo["writable"]
+    year = client.call("folders.list", path=str(volumes / "volume1" / "photo" / "2024"))
+    assert year["parent"] == str(volumes / "volume1" / "photo")
+    assert year["folders"] == []
+
+
+def test_folders_stay_inside_the_shares(client: Client, volumes: Path) -> None:
+    photo = volumes / "volume1" / "photo"
+    cases = {
+        "invalid_param": ["relative/path", f"{photo}/../homes"],
+        "folder_not_found": [
+            str(volumes / "volume1"),
+            str(volumes / "elsewhere"),
+            str(volumes / "volume1" / "@appstore"),
+            str(photo / "@eaDir"),
+            str(photo / "outside"),
+            str(photo / "missing"),
+            str(photo / "notes.txt"),
+        ],
+    }
+    for code, paths in cases.items():
+        for path in paths:
+            with pytest.raises(ApiError) as excinfo:
+                client.call("folders.list", path=path)
+            assert _error(excinfo) == code, path
+    assert _names(client.call("folders.list", path=str(photo / "alias"))) == ["alice"]
+
+
+def test_folders_only_shows_what_homeward_may_open(
+    client: Client, volumes: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    homes = volumes / "volume1" / "homes"
+    photo = volumes / "volume1" / "photo"
+    real_access = os.access
+
+    def access(path: Any, mode: int, **kwargs: Any) -> bool:
+        if Path(path) == homes:
+            return False
+        if Path(path) == photo and mode & os.W_OK:
+            return False
+        return real_access(path, mode, **kwargs)
+
+    monkeypatch.setattr(os, "access", access)
+    shares = client.call("folders.list")["folders"]
+    assert [(f["name"], f["writable"]) for f in shares] == [("photo", False), ("usbshare", True)]
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.list", path=str(homes))
+    assert _error(excinfo) == "folder_denied"
+    assert client.call("folders.list", path=str(photo))["writable"] is False
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.create", post=True, path=str(photo), name="new")
+    assert _error(excinfo) == "folder_denied"
+    assert not (photo / "new").exists()
+
+
+def test_folders_create(client: Client, volumes: Path) -> None:
+    photo = volumes / "volume1" / "photo"
+    created = client.call("folders.create", post=True, path=str(photo), name=" Alice ")
+    assert created == {"name": "Alice", "path": str(photo / "Alice"), "writable": True}
+    assert (photo / "Alice").is_dir()
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.create", post=True, path=str(photo), name="Alice")
+    assert _error(excinfo) == "folder_exists"
+    for name in ("", "a/b", "..", "@eaDir", ".x", "#recycle", "x" * 256):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("folders.create", post=True, path=str(photo), name=name)
+        assert _error(excinfo) in ("invalid_param", "missing_param"), name
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.create", path=str(photo), name="get")
+    assert _error(excinfo) == "post_required"

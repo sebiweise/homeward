@@ -9,6 +9,7 @@ let tokenRequest = null;
 let activeTab = "status";
 let refreshTimer = null;
 let accountsCache = [];
+let settingsCache = null;
 
 // --- strings ---------------------------------------------------------------------------
 
@@ -216,6 +217,131 @@ function select(name, options, value) {
     );
 }
 
+// --- folder picker ---------------------------------------------------------------------
+
+const PICKER_MAX = 2000;
+
+// A text field for a NAS folder with a "Browse..." button that opens the picker.
+function folderField(label, name, value, hint) {
+    const input = el("input", { name: name, value: value, required: true });
+    const browse = el("button", {
+        type: "button",
+        text: t("picker:browse"),
+        onclick: () => pickFolder(input.value.trim(), (path) => (input.value = path)),
+    });
+    return el(
+        "label",
+        {},
+        label,
+        el("div", { class: "folder-input" }, input, browse),
+        hint ? el("span", { class: "hint", text: hint }) : null
+    );
+}
+
+// Lets the user browse the shared folders Homeward can open; `onPick` gets the path.
+// It runs on top of the open form dialog, which keeps its values.
+function pickFolder(start, onPick) {
+    const dialog = document.getElementById("picker");
+    const where = el("div", { class: "where" });
+    const list = el("ul", { class: "folders" });
+    const note = el("p", { class: "hint", hidden: true });
+    const error = el("p", { class: "error", hidden: true });
+    const up = el("button", { type: "button", text: t("picker:up") });
+    const newName = el("input", { placeholder: t("picker:folder_name"), "aria-label": t("picker:folder_name") });
+    const create = el("button", { type: "button", text: t("picker:create") });
+    const newRow = el("div", { class: "folder-input", hidden: true }, newName, create);
+    const newFolder = el("button", { type: "button", text: t("picker:new_folder") });
+    const cancel = el("button", { type: "button", text: t("common:cancel") });
+    const choose = el("button", { type: "button", class: "primary", text: t("picker:select") });
+    let current = { path: null, parent: null, folders: [] };
+
+    function fail(e) {
+        error.textContent = errorText(e);
+        error.hidden = false;
+    }
+
+    async function load(path, fallback) {
+        let data;
+        try {
+            data = await api("folders.list", path ? { path: path } : {});
+        } catch (e) {
+            if (fallback) return load(null, false);
+            fail(e);
+            return;
+        }
+        error.hidden = true;
+        current = data;
+        where.textContent = data.path || t("picker:shares");
+        up.disabled = !data.path;
+        choose.disabled = !data.path;
+        newFolder.disabled = !data.path || !data.writable;
+        newRow.hidden = true;
+        const notes = [];
+        if (data.path && !data.writable) notes.push(t("picker:read_only_hint"));
+        if (data.truncated) notes.push(t("picker:truncated", PICKER_MAX));
+        note.textContent = notes.join(" ");
+        note.hidden = !notes.length;
+        list.replaceChildren(
+            ...data.folders.map((folder) =>
+                el(
+                    "li",
+                    {},
+                    el(
+                        "button",
+                        { type: "button", class: "folder", title: folder.path, onclick: () => void load(folder.path, false) },
+                        el("span", { class: "name", text: folder.name }),
+                        data.path ? null : el("span", { class: "muted", text: folder.path }),
+                        folder.writable ? null : el("span", { class: "muted", text: t("picker:read_only") })
+                    )
+                )
+            )
+        );
+        if (!data.folders.length)
+            list.append(el("li", { class: "muted", text: t(data.path ? "picker:empty" : "picker:no_shares") }));
+    }
+
+    up.addEventListener("click", () => {
+        void load(current.parent, false);
+    });
+    newFolder.addEventListener("click", () => {
+        newRow.hidden = false;
+        newName.value = "";
+        newName.focus();
+    });
+    async function createFolder() {
+        try {
+            const folder = await api("folders.create", { path: current.path, name: newName.value.trim() }, true);
+            await load(folder.path, false);
+        } catch (e) {
+            fail(e);
+        }
+    }
+
+    create.addEventListener("click", () => {
+        if (current.path && newName.value.trim()) void createFolder();
+    });
+    newName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            create.click();
+        }
+    });
+    cancel.addEventListener("click", () => dialog.close());
+    choose.addEventListener("click", () => {
+        if (!current.path) return;
+        onPick(current.path);
+        dialog.close();
+    });
+
+    dialog.replaceChildren(
+        el("h2", { text: t("picker:title") }),
+        el("div", { class: "body" }, el("div", { class: "nav" }, up, where), list, newRow, note, error),
+        el("div", { class: "foot" }, newFolder, el("span", { class: "spacer" }), cancel, choose)
+    );
+    dialog.showModal();
+    void load(start, true);
+}
+
 // --- events ----------------------------------------------------------------------------
 
 const LEVEL_BADGE = { info: "idle", warning: "warn", error: "bad" };
@@ -251,9 +377,15 @@ function eventTable(events) {
 
 // --- status tab ------------------------------------------------------------------------
 
-function resultBadge(pair) {
+function resultBadge(pair, running) {
     const run = pair.last_run;
+    const job = pair.job;
     if (pair.pending) return el("span", { class: "badge idle", text: t("status:queued") });
+    if (running && job && job.started_at)
+        return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
+    // A cancelled or interrupted run leaves no entry in the run history.
+    if (job && JOB_UNFINISHED.includes(job.result) && (!run || job.finished_at > run.finished_at))
+        return el("span", { class: "badge " + JOB_BADGE[job.result], text: t("status:job_" + job.result) });
     if (!run) return el("span", { class: "muted", text: t("common:never") });
     if (run.blocked) return el("span", { class: "badge warn", text: t("status:result_blocked") });
     if (run.errors) return el("span", { class: "badge bad", text: t("status:result_errors", run.errors) });
@@ -261,7 +393,8 @@ function resultBadge(pair) {
     return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle" };
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn" };
+const JOB_UNFINISHED = ["killed", "cancelled"];
 
 function jobBadge(item) {
     if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
@@ -273,8 +406,31 @@ function jobBadge(item) {
 }
 
 function nextRun(item) {
-    const due = item.job?.next_due;
-    return due ? el("div", { class: "muted", text: t("status:next_run", formatTime(due)) }) : null;
+    const job = item.job ?? {};
+    if (!job.next_due) return null;
+    let text = t("status:next_run", formatTime(job.next_due));
+    if (job.interval_minutes) text += " · " + t("schedule:every", job.interval_minutes);
+    return el("div", { class: "muted", text: text });
+}
+
+// name is a pair name or "photos:<job>", label what the user sees
+function cancelButton(name, label, running) {
+    return el("button", {
+        class: "danger",
+        text: t("status:cancel"),
+        onclick: () =>
+            running
+                ? confirmDialog(t("status:cancel_confirm", label), t("status:cancel"), () => cancelRun(name, label))
+                : cancelRun(name, label),
+    });
+}
+
+function cancelRun(name, label) {
+    return guarded(async () => {
+        const result = await api("status.cancel", { name: name }, true);
+        showMessage(t(result.cancelled === "queued" ? "status:cancel_dequeued" : "status:cancel_requested", label));
+        await renderStatus();
+    });
 }
 
 function runPhotos(job, options) {
@@ -309,22 +465,30 @@ async function renderStatus() {
     const daemon = data.daemon || {};
     document.getElementById("daemon").textContent = daemonText(daemon);
     const service = [t("status:api_user", data.api_user || "?")];
-    if (daemon.interval_minutes) service.push(t("status:interval", daemon.interval_minutes));
-    document.getElementById("service").textContent = service.join(" · ");
+    const interval = data.interval_minutes || daemon.interval_minutes;
+    if (interval) service.push(t("status:interval", interval));
+    document
+        .getElementById("service")
+        .replaceChildren(
+            service.join(" · ") + " ",
+            el("button", { class: "link", text: t("schedule:change"), onclick: () => guarded(scheduleDialog) })
+        );
     const notices = data.notices || [];
     document
         .getElementById("notices")
         .replaceChildren(notices.length ? el("div", {}, el("h3", { text: t("status:notices") }), eventTable(notices)) : "");
     const rows = data.pairs.map((pair) => {
         const run = pair.last_run;
-        const blocked = run?.blocked && !pair.pending;
+        const running = daemon.running === pair.name;
+        const busy = running || pair.pending;
+        const blocked = run?.blocked && !busy;
         return el(
             "tr",
             {},
             el("td", { text: pair.name }),
             el("td", { text: t("mode:" + pair.mode) }),
             el("td", {}, run ? formatTime(run.finished_at) : t("common:never"), nextRun(pair)),
-            el("td", {}, resultBadge(pair), blocked ? el("div", { class: "muted", text: run.blocked }) : null),
+            el("td", {}, resultBadge(pair, running), blocked ? el("div", { class: "muted", text: run.blocked }) : null),
             el(
                 "td",
                 { class: "actions" },
@@ -340,13 +504,17 @@ async function renderStatus() {
                               ),
                       })
                     : null,
-                el("button", { text: t("status:dry_run"), onclick: () => runPair(pair, { dry_run: "true" }) }),
-                el("button", { class: "primary", text: t("status:run_now"), onclick: () => runPair(pair, {}) })
+                busy ? cancelButton(pair.name, pair.name, running) : null,
+                busy ? null : el("button", { text: t("status:dry_run"), onclick: () => runPair(pair, { dry_run: "true" }) }),
+                busy ? null : el("button", { class: "primary", text: t("status:run_now"), onclick: () => runPair(pair, {}) })
             )
         );
     });
     for (const job of data.photos || []) {
         const finished = job.job?.finished_at;
+        const name = "photos:" + job.name;
+        const running = daemon.running === name;
+        const busy = running || job.pending;
         rows.push(
             el(
                 "tr",
@@ -358,8 +526,9 @@ async function renderStatus() {
                 el(
                     "td",
                     { class: "actions" },
-                    el("button", { text: t("status:dry_run"), onclick: () => runPhotos(job, { dry_run: "true" }) }),
-                    el("button", { class: "primary", text: t("status:backup_now"), onclick: () => runPhotos(job, {}) })
+                    busy ? cancelButton(name, t("event:src_photos", job.name), running) : null,
+                    busy ? null : el("button", { text: t("status:dry_run"), onclick: () => runPhotos(job, { dry_run: "true" }) }),
+                    busy ? null : el("button", { class: "primary", text: t("status:backup_now"), onclick: () => runPhotos(job, {}) })
                 )
             )
         );
@@ -371,10 +540,54 @@ async function renderStatus() {
         );
 }
 
+// --- schedule --------------------------------------------------------------------------
+
+async function loadSettings() {
+    settingsCache = await api("settings.get");
+    return settingsCache;
+}
+
+function intervalInput(name, value, s, required) {
+    return el("input", {
+        name: name,
+        type: "number",
+        min: s.min_interval_minutes,
+        max: s.max_interval_minutes,
+        step: 1,
+        value: value || "",
+        required: required,
+        placeholder: required ? null : t("schedule:use_default", s.interval_minutes),
+    });
+}
+
+// Interval field of a pair or photos dialog; empty means the global interval.
+function jobIntervalField(value) {
+    const s = settingsCache;
+    return field(t("schedule:job_interval"), intervalInput("interval", value, s, false),
+        t("schedule:job_hint", s.interval_minutes, s.min_interval_minutes));
+}
+
+function jobInterval(value) {
+    return value === "" || value === undefined ? null : Number(value);
+}
+
+async function scheduleDialog() {
+    const s = await loadSettings();
+    const fields = [
+        field(t("schedule:interval"), intervalInput("interval", s.interval_minutes, s, true),
+            t("schedule:hint", s.min_interval_minutes, s.max_interval_minutes)),
+    ];
+    openDialog(t("schedule:title"), fields, t("common:save"), async (v) => {
+        await api("settings.update", { interval_minutes: v.interval }, true);
+        showMessage(t("schedule:saved", v.interval));
+        await renderStatus();
+    });
+}
+
 // --- pairs tab -------------------------------------------------------------------------
 
 async function renderPairs() {
-    const [pairs, accounts] = await Promise.all([api("pairs.list"), api("accounts.list")]);
+    const [pairs, accounts] = await Promise.all([api("pairs.list"), api("accounts.list"), loadSettings()]);
     accountsCache = accounts.accounts;
     const rows = pairs.pairs.map((pair) =>
         el(
@@ -420,6 +633,7 @@ function pairDialog(pair) {
         exclude: [],
         max_delete_ratio: 0.1,
         max_delete_count: 50,
+        interval_minutes: null,
     };
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
     if (p.account && !accountOptions.some(([name]) => name === p.account)) accountOptions.push([p.account, p.account]);
@@ -437,7 +651,7 @@ function pairDialog(pair) {
             )
         ),
         field(t("pair:account"), select("account", accountOptions, p.account)),
-        field(t("pair:local"), el("input", { name: "local", value: p.local, required: true }), t("pair:local_hint")),
+        folderField(t("pair:local"), "local", p.local, t("pair:local_hint")),
         field(t("pair:remote"), el("input", { name: "remote", value: p.remote, required: true }), t("pair:remote_hint")),
         field(
             t("pair:mode"),
@@ -471,6 +685,7 @@ function pairDialog(pair) {
                 el("input", { name: "count", type: "number", min: 0, step: 1, value: p.max_delete_count })
             )
         ),
+        jobIntervalField(p.interval_minutes),
         editing ? el("p", { class: "hint", text: t("pair:reset_hint") }) : null,
     ];
     openDialog(t(editing ? "pair:edit_title" : "pair:add_title"), fields, t("common:save"), async (v) => {
@@ -484,6 +699,7 @@ function pairDialog(pair) {
             exclude: v.exclude.split("\n").map((s) => s.trim()).filter(Boolean),
             max_delete_ratio: Number(v.ratio) / 100,
             max_delete_count: Number(v.count),
+            interval_minutes: jobInterval(v.interval),
         };
         await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(data) }, true);
         await renderPairs();
@@ -498,7 +714,7 @@ const PHOTO_FOLDERS = ["folder_scheme", "shared_folder", "albums_folder", "favor
 let photoDefaults = null;
 
 async function renderPhotos() {
-    const [jobs, accounts] = await Promise.all([api("photos.list"), api("accounts.list")]);
+    const [jobs, accounts] = await Promise.all([api("photos.list"), api("accounts.list"), loadSettings()]);
     accountsCache = accounts.accounts;
     if (photoDefaults === null) photoDefaults = await api("photos.defaults");
     const rows = jobs.photos.map((job) =>
@@ -543,7 +759,7 @@ function photosDialog(job) {
     const fields = [
         field(t("photos:name"), el("input", { name: "name", value: j.name, required: true, readonly: editing })),
         field(t("photos:account"), select("account", accountOptions, j.account)),
-        field(t("photos:target"), el("input", { name: "target", value: j.target, required: true }), t("photos:target_hint")),
+        folderField(t("photos:target"), "target", j.target, t("photos:target_hint")),
         el("fieldset", {}, el("legend", { text: t("photos:libraries") }),
             LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
@@ -552,9 +768,10 @@ function photosDialog(job) {
             PHOTO_FOLDERS.map((key) =>
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
+        jobIntervalField(j.interval_minutes),
     ];
     openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
-        const data = { name: v.name, account: v.account, target: v.target };
+        const data = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
         data.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
         for (const key of PHOTO_SWITCHES) data[key] = v[key] === "on";
         for (const key of PHOTO_FOLDERS) data[key] = v[key];
@@ -716,7 +933,7 @@ function selectTab(name) {
     clearInterval(refreshTimer);
     if (name === "status") {
         refreshTimer = setInterval(() => {
-            if (!document.getElementById("dialog").open) void guarded(renderStatus);
+            if (!document.querySelector("dialog[open]")) void guarded(renderStatus);
         }, REFRESH_MS);
     }
 }
