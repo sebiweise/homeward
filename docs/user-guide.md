@@ -57,8 +57,8 @@ When Apple expires the session, the affected jobs fail and the Accounts tab asks
 sign in again. A failed sync also sends a DSM notification.
 
 NAS folders are picked with *Browse...*: it lists the shared folders the user
-`homeward` can open, and *New folder* creates one in place. A share missing there
-needs read/write permission for `homeward` (see above). Typing the full path still
+`sc-homeward` can open, and *New folder* creates one in place. A share missing there
+needs read/write permission for `sc-homeward` (see above). Typing the full path still
 works.
 
 Every change in the app is checked before it is saved; the previous configuration is

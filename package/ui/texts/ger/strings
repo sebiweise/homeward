@@ -135,7 +135,7 @@ create="Anlegen"
 folder_name="Name des neuen Ordners"
 read_only="nur lesen"
 empty="Dieser Ordner hat keine Unterordner."
-no_shares="Homeward kann keinen freigegebenen Ordner öffnen. Gib dem Benutzer homeward in Systemsteuerung > Freigegebener Ordner Lese-/Schreibrechte."
+no_shares="Homeward kann keinen freigegebenen Ordner öffnen. Gib dem Benutzer sc-homeward in Systemsteuerung > Freigegebener Ordner Lese-/Schreibrechte."
 truncated="Es werden nur die ersten {0} Ordner angezeigt."
 read_only_hint="Homeward kann diesen Ordner nur lesen und deshalb nicht hineinladen."
 

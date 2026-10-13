@@ -41,7 +41,7 @@ backend once and never written anywhere.
 shared folders (`/volumeN/<share>`) and subfolders that `homeward` may open; DSM's
 `@` folders, `#recycle`, `#snapshot`, `.homeward-papierkorb`, dot folders and links
 leading off the volumes are never listed or browsed. DSM's own folder dialog is not
-used: it would list what the signed-in administrator sees, not what `homeward` can
+used: it would list what the signed-in administrator sees, not what `sc-homeward` can
 reach, and it needs DSM's widget library inside the page.
 
 Answers: `{"success": true, "data": ...}` or

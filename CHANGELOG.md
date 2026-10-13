@@ -39,6 +39,12 @@ anything you point it at.
 - DSM app in English and German: accounts with two-factor sign-in, photos backups,
   sync pairs, status with "sync now", test run and delete approval, and a log of every
   run, wait and error. DSM notifications when a sync fails.
+- Folder picker for NAS folders: browse the shared folders Homeward can open and
+  create a new folder in place.
+- Cancel a queued or running sync from the status page; the run stops cleanly and
+  keeps every finished step.
+- Configurable schedule: a global sync interval on the status page, and an optional
+  own interval per sync pair and photos backup.
 - Command-line interface (`homeward sync`, `homeward photos`, `homeward login`) and an
   interval scheduler service.
 
