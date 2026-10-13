@@ -2,8 +2,8 @@
 
 Date: 2026-10-11 · Status: accepted
 
-Measured with `spikes/m0_spike.py` on the maintainer's NAS (x86_64, DSM 7.4.1, 11.8 GB RAM),
-Python 3.12.13 from SynoCommunity, pyicloud 2.7.0.
+Measured with a throwaway spike script (not kept in the repository) on the maintainer's
+NAS (x86_64, DSM 7.4.1, 11.8 GB RAM), Python 3.12.13 from SynoCommunity, pyicloud 2.7.0.
 
 ## Findings
 

@@ -206,7 +206,7 @@ class Scheduler:
         try:
             code = self._runner(job)
         except OSError as exc:
-            log.error("%s could not start: %s", job.name, exc)
+            log.exception("%s could not start: %s", job.name, exc)
             code = 127
         status.finished_at = self._clock()
         status.exit_code = code

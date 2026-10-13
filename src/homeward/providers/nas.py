@@ -11,6 +11,7 @@ from typing import BinaryIO
 
 from homeward.core.models import FileMeta
 from homeward.core.rules import TEMP_SUFFIX, TRASH_DIR, is_excluded
+from homeward.providers.base import Provider
 
 _CHUNK = 1024 * 1024
 RECYCLE_DIR = "#recycle"
@@ -20,7 +21,7 @@ def find_recycle_bin(root: Path) -> Path | None:
     """Return the Synology recycle bin (``#recycle``) that covers ``root``, if enabled.
 
     DSM keeps it at the top of a shared folder (``/volume1/docs/#recycle``) and, for
-    the homes share, in each home folder (``/volume1/homes/sebastian/#recycle``). It
+    the homes share, in each home folder (``/volume1/homes/alice/#recycle``). It
     only exists while the recycle bin is enabled for that share.
     """
     for folder in (root, *root.parents):
@@ -32,7 +33,7 @@ def find_recycle_bin(root: Path) -> Path | None:
     return None
 
 
-class NasProvider:
+class NasProvider(Provider):
     """Files below ``root``.
 
     Deleted files move to the share's Synology recycle bin when ``recycle_bin`` is

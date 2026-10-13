@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns: ["pytest*", "ruff", "mypy"]
+    ignore:
+      # pyicloud is pinned to 2.7.x on purpose: Homeward uses its private API
+      # (see docs/adr/0002-drive-provider.md). Raise the pin by hand after testing.
+      - dependency-name: pyicloud
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

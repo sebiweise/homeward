@@ -38,7 +38,7 @@ def to_dict(pair: PairConfig) -> dict[str, Any]:
     }
 
 
-def list_pairs(ctx: Context, request: Request) -> dict[str, Any]:
+def list_pairs(ctx: Context, _request: Request) -> dict[str, Any]:
     return {"pairs": [to_dict(pair) for pair in ctx.store.load().pairs]}
 
 
@@ -146,16 +146,8 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     accounts = _accounts(ctx)
     if provider == "icloud_drive" and account not in accounts:
         raise ApiError("account_not_found", account)
-    exclude = data.get("exclude", [])
-    if not isinstance(exclude, list) or not all(isinstance(p, str) for p in exclude):
-        raise ApiError("invalid_param", "exclude")
-    defaults = DeleteBrake()
-    ratio = data.get("max_delete_ratio", defaults.max_ratio)
-    count = data.get("max_delete_count", defaults.max_count)
-    if not isinstance(ratio, int | float) or isinstance(ratio, bool) or not 0 <= ratio <= 1:
-        raise ApiError("invalid_param", "max_delete_ratio")
-    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
-        raise ApiError("invalid_param", "max_delete_count")
+    exclude = _exclude(data)
+    ratio, count = _delete_brake(data)
     return {
         "name": check_name(text("name"), "pair"),
         "account": account,
@@ -166,10 +158,28 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         # Choosing "Both directions (beta)" in the UI is the opt-in the config asks for.
         "beta": mode == SyncMode.BIDIRECTIONAL,
         "remote_provider": provider,
-        "exclude": [p.strip() for p in exclude if p.strip()],
-        "max_delete_ratio": float(ratio),
+        "exclude": exclude,
+        "max_delete_ratio": ratio,
         "max_delete_count": count,
     }
+
+
+def _exclude(data: dict[str, Any]) -> list[str]:
+    exclude = data.get("exclude", [])
+    if not isinstance(exclude, list) or not all(isinstance(p, str) for p in exclude):
+        raise ApiError("invalid_param", "exclude")
+    return [p.strip() for p in exclude if p.strip()]
+
+
+def _delete_brake(data: dict[str, Any]) -> tuple[float, int]:
+    defaults = DeleteBrake()
+    ratio = data.get("max_delete_ratio", defaults.max_ratio)
+    count = data.get("max_delete_count", defaults.max_count)
+    if not isinstance(ratio, int | float) or isinstance(ratio, bool) or not 0 <= ratio <= 1:
+        raise ApiError("invalid_param", "max_delete_ratio")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise ApiError("invalid_param", "max_delete_count")
+    return float(ratio), count
 
 
 def _accounts(ctx: Context) -> dict[str, str]:

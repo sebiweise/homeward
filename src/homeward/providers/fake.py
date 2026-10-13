@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from homeward.core.models import FileMeta
+from homeward.providers.base import Provider
 
 _versions = itertools.count(1)
 
@@ -18,7 +19,7 @@ class _Entry:
     version: str
 
 
-class FakeProvider:
+class FakeProvider(Provider):
     """A provider backed by a dict. Deleted files go to ``trash`` so tests can check them.
 
     ``put``/``remove`` simulate a user changing files outside Homeward; the ``Provider``

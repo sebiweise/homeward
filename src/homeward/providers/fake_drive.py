@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import BinaryIO
 
-from homeward.providers.drive_api import ROOT_ID, ZONE, DriveApiError, Item
+from homeward.providers.drive_api import ROOT_ID, ZONE, DriveApi, DriveApiError, Item
 
 _ids = itertools.count(1)
 
@@ -26,7 +26,7 @@ class _Node:
     children: list[str] = field(default_factory=list)
 
 
-class FakeDriveApi:
+class FakeDriveApi(DriveApi):
     """Folders and files keyed by drivewsid, with etags like iCloud's.
 
     A change to a folder's direct children bumps that folder's etag; with

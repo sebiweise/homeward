@@ -84,8 +84,9 @@ def test_missing_file(tmp_path: Path) -> None:
 
 
 def test_unknown_pair() -> None:
+    config = parse_config({})
     with pytest.raises(ConfigError, match="no sync pair"):
-        parse_config({}).pair("x")
+        config.pair("x")
 
 
 PHOTOS = """
@@ -95,7 +96,7 @@ state_dir = "/state"
 name = "seb"
 account = "seb"
 apple_id = "seb@example.com"
-target = "/volume1/photo/Sebastian"
+target = "/volume1/photo/Alice"
 
 [[photos]]
 name = "anna"
@@ -121,16 +122,26 @@ def test_photos_jobs() -> None:
     seb = config.photos_job("seb")
     assert seb.apple_id == "seb@example.com"
     assert seb.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
-    assert seb.albums and seb.videos and seb.live_videos
-    assert seb.raw_alternative and seb.edited and seb.favorites and seb.xmp
-    assert not seb.hidden and seb.workers == 4
+    assert seb.albums
+    assert seb.videos
+    assert seb.live_videos
+    assert seb.raw_alternative
+    assert seb.edited
+    assert seb.favorites
+    assert seb.xmp
+    assert not seb.hidden
+    assert seb.workers == 4
     assert seb.layout.favorites_folder == "Favoriten"
     assert seb.layout.scheme == "{year}/{month}"
     anna = config.photos_job("anna")
-    assert anna.apple_id is None and not anna.albums
+    assert anna.apple_id is None
+    assert not anna.albums
     assert anna.libraries == (Library.PERSONAL,)
-    assert anna.layout.scheme == "{year}" and anna.layout.shared_folder == "Familie"
-    assert anna.hidden and not anna.xmp and anna.layout.hidden_folder == "Privat"
+    assert anna.layout.scheme == "{year}"
+    assert anna.layout.shared_folder == "Familie"
+    assert anna.hidden
+    assert not anna.xmp
+    assert anna.layout.hidden_folder == "Privat"
     assert anna.workers == 1
     assert config.photo_state_path("anna") == Path("/state/anna.photos.sqlite3")
     with pytest.raises(ConfigError, match="no photos job"):
@@ -153,8 +164,9 @@ def test_photos_invalid(extra: str, message: str) -> None:
     import tomllib
 
     text = f'[[photos]]\nname = "p"\ntarget = "/t"\n{extra}\n'
+    raw = tomllib.loads(text)
     with pytest.raises(ConfigError, match=message):
-        parse_config(tomllib.loads(text))
+        parse_config(raw)
 
 
 def test_photos_relative_target_and_duplicates() -> None:

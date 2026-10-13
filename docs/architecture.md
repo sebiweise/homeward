@@ -113,9 +113,9 @@ state_dir = "/var/packages/homeward/var/state"
 
 [[pair]]
 name = "docs"
-account = "sebastian"
-apple_id = "sebastian@example.com"  # optional if account is the Apple ID
-local = "/volume1/homes/sebastian/Documents"
+account = "alice"
+apple_id = "alice@example.com"  # optional if account is the Apple ID
+local = "/volume1/homes/alice/Documents"
 remote = "Documents"
 mode = "bidirectional"            # upload | download | bidirectional
 beta = true                       # required for bidirectional while it is in beta
@@ -162,10 +162,10 @@ several Apple IDs, each with its own login session and state file
 
 ```toml
 [[photos]]
-name = "sebastian"
-account = "sebastian"                # session + state file name
-apple_id = "sebastian@example.com"
-target = "/volume1/photo/iCloud Sebastian"
+name = "alice"
+account = "alice"                # session + state file name
+apple_id = "alice@example.com"
+target = "/volume1/photo/iCloud Alice"
 libraries = ["personal", "shared", "shared_albums"]   # default: all three
 folder_scheme = "{year}/{month}"     # {year}, {month}, {day}
 albums = true                        # album folders with hard links
@@ -187,7 +187,7 @@ shared_albums_folder = "Geteilte Alben"
 Every switch is meant to become an option in the DSM UI (M6). Switching a feature off
 later keeps the files it already produced (their keys are marked `gone`).
 
-Login: `homeward login --account sebastian` asks for the password and the 2FA code once
+Login: `homeward login --account alice` asks for the password and the 2FA code once
 and keeps the trusted session in `<state_dir>/sessions/<account>/` (mode 0700).
 `homeward photos [--job NAME] [--dry-run]` runs the backup and never prompts; an expired
 session ends the job with a hint to log in again.

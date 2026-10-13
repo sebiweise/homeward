@@ -87,6 +87,7 @@ class Executor:
             case ActionKind.CONFLICT:
                 self._conflict(action)
             case ActionKind.SKIP:
+                # Skipped actions are only reported, never executed.
                 pass
 
     def _record_if_same(self, action: Action) -> bool:

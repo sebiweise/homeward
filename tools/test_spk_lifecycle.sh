@@ -29,18 +29,23 @@ unpack() {
     tar -xOf "${SPK}" package.tgz | tar -xzf - -C "${ROOT}/target"
 }
 
-script() { sh "${ROOT}/scripts/$1" ${2:+"$2"}; }
+script() {
+    script_name=$1
+    script_arg=${2:-}
+    sh "${ROOT}/scripts/${script_name}" ${script_arg:+"${script_arg}"}
+}
 
 wait_for_result() {
+    wanted_result=$1
     i=0
     while [ "${i}" -lt 60 ]; do
-        if grep -q "\"result\": \"$1\"" "${SYNOPKG_PKGVAR}/status.json" 2>/dev/null; then
+        if grep -q "\"result\": \"${wanted_result}\"" "${SYNOPKG_PKGVAR}/status.json" 2>/dev/null; then
             return 0
         fi
         i=$((i + 1))
         sleep 1
     done
-    fail "no job with result $1 in status.json"
+    fail "no job with result ${wanted_result} in status.json"
 }
 
 step "install"
