@@ -99,7 +99,8 @@ def test_status_survives_a_restart(tmp_path: Path) -> None:
 
     status = json.loads((tmp_path / "status.json").read_text())
     job = status["jobs"]["pair:docs"]
-    assert job["result"] == "blocked" and job["exit_code"] == 3
+    assert job["result"] == "blocked"
+    assert job["exit_code"] == 3
     assert job["next_due"] == clock.now + 3600
 
     second = _scheduler(tmp_path, runner, clock)
@@ -130,7 +131,8 @@ def test_runner_errors_are_recorded(tmp_path: Path) -> None:
 
     scheduler = Scheduler(tmp_path / "status.json", broken, Clock())
     status = scheduler.run(Job("pair:x", ()))
-    assert status.result == "failed" and status.exit_code == 127
+    assert status.result == "failed"
+    assert status.exit_code == 127
 
 
 def test_interrupted_runs_are_due_again(tmp_path: Path) -> None:
@@ -164,10 +166,12 @@ def test_daemon_waits_for_a_valid_config(tmp_path: Path) -> None:
     daemon = Daemon(config, _scheduler(tmp_path, recorder, Clock()), runner)
 
     daemon.cycle()  # missing file
-    assert not daemon.config_ok and recorder.calls == []
+    assert not daemon.config_ok
+    assert recorder.calls == []
     _config(tmp_path)
     daemon.cycle()
-    assert daemon.config_ok and recorder.calls == ["pair:docs"]
+    assert daemon.config_ok
+    assert recorder.calls == ["pair:docs"]
 
 
 def test_once_runs_a_real_sync(tmp_path: Path) -> None:
@@ -305,4 +309,18 @@ def test_a_stopped_run_is_a_warning_not_an_error(tmp_path: Path) -> None:
     scheduler.run(Job("photos:me", ("photos",)))
     (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
     assert (event.level, event.code) == ("warning", "sync_stopped")
+    assert sent == []
+
+
+def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    sent: list[str] = []
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=4), Clock(), notifier=lambda e, *a: sent.append(e)
+    )
+    status = scheduler.run(Job("photos:me", ("photos",)))
+    assert status.result == "waiting"
+    (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    assert (event.level, event.code) == ("info", "sync_postponed")
     assert sent == []

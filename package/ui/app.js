@@ -22,7 +22,7 @@ function dsmSession() {
 
 function language() {
     const session = dsmSession();
-    const lang = (session && session.lang) || "";
+    const lang = session?.lang || "";
     if (lang && lang !== "def") return lang === "ger" ? "ger" : "enu";
     return (navigator.language || "").toLowerCase().startsWith("de") ? "ger" : "enu";
 }
@@ -36,15 +36,19 @@ function parseStrings(text) {
             continue;
         }
         const entry = line.match(/^\s*([\w.-]+)\s*=\s*"(.*)"\s*$/);
-        if (entry) strings[section + ":" + entry[1]] = entry[2].replace(/\\"/g, '"');
+        if (entry) strings[section + ":" + entry[1]] = entry[2].replaceAll(String.raw`\"`, '"');
     }
 }
 
 async function loadStrings() {
-    for (const lang of ["enu", language()]) {
-        const response = await fetch("texts/" + lang + "/strings", { cache: "no-cache" });
-        if (response.ok) parseStrings(await response.text());
-    }
+    // English first, so a string missing in the user's language falls back to it.
+    const texts = await Promise.all(
+        ["enu", language()].map(async (lang) => {
+            const response = await fetch("texts/" + lang + "/strings", { cache: "no-cache" });
+            return response.ok ? response.text() : "";
+        })
+    );
+    texts.forEach(parseStrings);
 }
 
 function t(key, ...args) {
@@ -109,13 +113,14 @@ class ApiError extends Error {
 
 async function synoToken() {
     const session = dsmSession();
-    if (session && session.SynoToken) return session.SynoToken;
+    if (session?.SynoToken) return session.SynoToken;
     // Opened outside the DSM desktop: ask DSM for the session's token.
     try {
         const response = await fetch("/webman/login.cgi", { credentials: "same-origin" });
         const data = await response.json();
         return data.SynoToken || "";
-    } catch (e) {
+    } catch {
+        // No DSM session here: the API call that follows reports "not signed in".
         return "";
     }
 }
@@ -123,7 +128,7 @@ async function synoToken() {
 async function api(method, params, write) {
     if (tokenRequest === null) tokenRequest = synoToken();
     const token = await tokenRequest;
-    const body = new URLSearchParams(Object.assign({ method: method }, params || {}));
+    const body = new URLSearchParams({ method: method, ...params });
     let response;
     try {
         response = await fetch(write ? API : API + "?" + body, {
@@ -282,7 +287,7 @@ function pickFolder(start, onPick) {
                     {},
                     el(
                         "button",
-                        { type: "button", class: "folder", title: folder.path, onclick: () => { load(folder.path, false); } },
+                        { type: "button", class: "folder", title: folder.path, onclick: () => void load(folder.path, false) },
                         el("span", { class: "name", text: folder.name }),
                         data.path ? null : el("span", { class: "muted", text: folder.path }),
                         folder.writable ? null : el("span", { class: "muted", text: t("picker:read_only") })
@@ -295,7 +300,7 @@ function pickFolder(start, onPick) {
     }
 
     up.addEventListener("click", () => {
-        load(current.parent, false);
+        void load(current.parent, false);
     });
     newFolder.addEventListener("click", () => {
         newRow.hidden = false;
@@ -312,7 +317,7 @@ function pickFolder(start, onPick) {
     }
 
     create.addEventListener("click", () => {
-        if (current.path && newName.value.trim()) createFolder();
+        if (current.path && newName.value.trim()) void createFolder();
     });
     newName.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -333,7 +338,7 @@ function pickFolder(start, onPick) {
         el("div", { class: "foot" }, newFolder, el("span", { class: "spacer" }), cancel, choose)
     );
     dialog.showModal();
-    load(start, true);
+    void load(start, true);
 }
 
 // --- events ----------------------------------------------------------------------------
@@ -381,25 +386,25 @@ function resultBadge(pair) {
     return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle" };
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle" };
 
 function jobBadge(item) {
     if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
     const job = item.job;
-    if (job && job.started_at && !job.finished_at)
+    if (job?.started_at && !job.finished_at)
         return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
-    if (!job || !job.result) return el("span", { class: "muted", text: t("common:never") });
+    if (!job?.result) return el("span", { class: "muted", text: t("common:never") });
     return el("span", { class: "badge " + (JOB_BADGE[job.result] || "bad"), text: t("status:job_" + job.result) });
 }
 
 function nextRun(item) {
-    const due = item.job && item.job.next_due;
+    const due = item.job?.next_due;
     return due ? el("div", { class: "muted", text: t("status:next_run", formatTime(due)) }) : null;
 }
 
 function runPhotos(job, options) {
     return guarded(async () => {
-        await api("photos.run", Object.assign({ name: job.name }, options), true);
+        await api("photos.run", { name: job.name, ...options }, true);
         showMessage(t("status:run_queued", job.name));
         await renderStatus();
     });
@@ -407,20 +412,27 @@ function runPhotos(job, options) {
 
 function runPair(pair, options) {
     return guarded(async () => {
-        await api("pairs.run", Object.assign({ name: pair.name }, options), true);
+        await api("pairs.run", { name: pair.name, ...options }, true);
         showMessage(t("status:run_queued", pair.name));
         await renderStatus();
     });
+}
+
+function daemonText(daemon) {
+    if (daemon.running) {
+        const job = daemon.running.startsWith("photos:")
+            ? t("event:src_photos", daemon.running.slice(7))
+            : daemon.running;
+        return t("status:daemon_running", job);
+    }
+    return Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
 }
 
 async function renderStatus() {
     const data = await api("status.get");
     document.getElementById("version").textContent = t("common:version", data.version);
     const daemon = data.daemon || {};
-    document.getElementById("daemon").textContent = daemon.running
-        ? t("status:daemon_running", daemon.running.startsWith("photos:")
-            ? t("event:src_photos", daemon.running.slice(7)) : daemon.running)
-        : Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
+    document.getElementById("daemon").textContent = daemonText(daemon);
     const service = [t("status:api_user", data.api_user || "?")];
     if (daemon.interval_minutes) service.push(t("status:interval", daemon.interval_minutes));
     document.getElementById("service").textContent = service.join(" · ");
@@ -430,7 +442,7 @@ async function renderStatus() {
         .replaceChildren(notices.length ? el("div", {}, el("h3", { text: t("status:notices") }), eventTable(notices)) : "");
     const rows = data.pairs.map((pair) => {
         const run = pair.last_run;
-        const blocked = run && run.blocked && !pair.pending;
+        const blocked = run?.blocked && !pair.pending;
         return el(
             "tr",
             {},
@@ -459,7 +471,7 @@ async function renderStatus() {
         );
     });
     for (const job of data.photos || []) {
-        const finished = job.job && job.job.finished_at;
+        const finished = job.job?.finished_at;
         rows.push(
             el(
                 "tr",
@@ -651,7 +663,7 @@ function checkbox(name, label, checked) {
 
 function photosDialog(job) {
     const editing = Boolean(job);
-    const j = job || Object.assign({ name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "" }, photoDefaults);
+    const j = job || { name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "", ...photoDefaults };
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
     const fields = [
         field(t("photos:name"), el("input", { name: "name", value: j.name, required: true, readonly: editing })),
@@ -722,7 +734,7 @@ async function renderAccounts() {
 function afterLogin(result) {
     // The dialog closes after this returns; open the code dialog on the next tick.
     if (result.state === "needs_2fa") setTimeout(() => codeDialog(result.name), 0);
-    guarded(renderAccounts);
+    void guarded(renderAccounts);
 }
 
 function accountDialog() {
@@ -825,16 +837,17 @@ function selectTab(name) {
     for (const section of document.querySelectorAll(".tab")) {
         section.hidden = section.id !== "tab-" + name;
     }
-    guarded(RENDER[name]);
+    void guarded(RENDER[name]);
     clearInterval(refreshTimer);
     if (name === "status") {
         refreshTimer = setInterval(() => {
-            if (!document.querySelector("dialog[open]")) guarded(renderStatus);
+            if (!document.querySelector("dialog[open]")) void guarded(renderStatus);
         }, REFRESH_MS);
     }
 }
 
 async function start() {
+    document.documentElement.lang = language() === "ger" ? "de" : "en";
     await loadStrings();
     for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
     for (const button of document.querySelectorAll("[data-tab]")) {
@@ -848,4 +861,4 @@ async function start() {
     selectTab(activeTab);
 }
 
-start();
+await start();

@@ -22,7 +22,7 @@ from homeward.core.config import (
     PhotosConfig,
     load_config,
 )
-from homeward.core.models import ActionKind
+from homeward.core.models import ActionKind, SyncMode
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import PhotoOutcome, PhotoSource, backup_photos
 from homeward.core.provider import Provider
@@ -30,7 +30,7 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
-from homeward.providers.icloud_photos import ICloudPhotosSource, PhotosNotReady
+from homeward.providers.icloud_photos import ICloudPhotosSource, PhotoOptions, PhotosNotReady
 from homeward.providers.nas import NasProvider, find_recycle_bin
 from homeward.runtime import EventLogHandler, Paths
 
@@ -42,6 +42,13 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_BLOCKED = 3
+EXIT_WAITING = 4  # iCloud is not ready yet (e.g. still indexing); the next run tries again
+# how bad an exit code is, to report the worst one when a command runs several jobs
+_SEVERITY = {EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_BLOCKED: 3, EXIT_USAGE: 4}
+
+
+def _worst(a: int, b: int) -> int:
+    return max(a, b, key=lambda code: _SEVERITY.get(code, 5))
 
 
 def _version() -> str:
@@ -56,9 +63,14 @@ def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
     try:
         service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
     except LoginRequired as exc:
-        log.error("%s", exc, extra={"event": "login_required", "account": pair.account})
+        _log_login_required(exc, pair.account)
         raise ConfigError(f"pair {pair.name!r}: {exc}") from exc
     return PyiCloudDriveApi(service.drive)
+
+
+def _log_login_required(exc: LoginRequired, account: str) -> None:
+    """An expected state, not a crash: the event log gets the message, no traceback."""
+    log.error("%s", exc, extra={"event": "login_required", "account": account})
 
 
 def _pair_apple_id(pair: PairConfig) -> str:
@@ -84,7 +96,8 @@ def _remote_provider(pair: PairConfig, config: Config) -> Provider:
 
 def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
     plan = outcome.plan
-    title = f"Pair {plan.pair} ({plan.mode})"
+    beta = ", beta" if plan.mode is SyncMode.BIDIRECTIONAL else ""
+    title = f"Pair {plan.pair} ({plan.mode}{beta})"
     if plan.first_run:
         title += ", first run: no deletes, no overwrites"
     print(title)
@@ -92,9 +105,13 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
         line = f"  {action.kind:<14} {action.path}"
         if action.conflict_path:
             line += f" -> {action.conflict_path}"
+        if action.renamed_to:
+            line += f" -> {action.renamed_to}"
         print(f"{line}  [{action.reason}]")
     counts = plan.counts()
     summary = ", ".join(f"{counts[kind]} {kind}" for kind in ActionKind if kind in counts)
+    if plan.renames:
+        summary += f"; {plan.renames} of the deletes are renames, the delete brake skips them"
     print(f"  {summary or 'nothing to do'}")
     if plan.blocked and (outcome.result is None or outcome.result.blocked):
         print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
@@ -127,7 +144,7 @@ def _reported(run: Callable[[], int]) -> int:
     except PhotosNotReady as exc:
         print(f"homeward: {exc}", file=sys.stderr)
         log.warning("%s", exc, extra={"event": "icloud_indexing"})
-        return EXIT_FAILED
+        return EXIT_WAITING
     except Exception as exc:
         log.exception("the run stopped: %s", _describe(exc))
         return EXIT_FAILED
@@ -151,7 +168,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for pair in pairs:
         with _events(args.config, f"pair:{pair.name}"):
-            status = max(status, _reported(functools.partial(_sync_one, args, config, pair)))
+            status = _worst(status, _reported(functools.partial(_sync_one, args, config, pair)))
     return status
 
 
@@ -167,7 +184,7 @@ def _sync_one(args: argparse.Namespace, config: Config, pair: PairConfig) -> int
             )  # fmt: skip
     except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
         print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
-        log.error("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
+        log.exception("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
         return EXIT_FAILED
     _print_outcome(outcome, args.dry_run)
     if not args.dry_run:
@@ -211,14 +228,16 @@ def _photo_source(config: Config, job: PhotosConfig) -> PhotoSource:
     return ICloudPhotosSource(
         service,
         job.libraries,
-        albums=job.albums,
-        videos=job.videos,
-        live_videos=job.live_videos,
-        raw_alternative=job.raw_alternative,
-        edited=job.edited,
-        favorites=job.favorites,
-        hidden=job.hidden,
-        xmp=job.xmp,
+        PhotoOptions(
+            albums=job.albums,
+            videos=job.videos,
+            live_videos=job.live_videos,
+            raw_alternative=job.raw_alternative,
+            edited=job.edited,
+            favorites=job.favorites,
+            hidden=job.hidden,
+            xmp=job.xmp,
+        ),
     )
 
 
@@ -251,7 +270,7 @@ def _cmd_photos(args: argparse.Namespace) -> int:
     status = EXIT_OK
     for job in jobs:
         with _events(args.config, f"photos:{job.name}"):
-            status = max(status, _reported(functools.partial(_photos_one, args, config, job)))
+            status = _worst(status, _reported(functools.partial(_photos_one, args, config, job)))
     return status
 
 
@@ -268,7 +287,7 @@ def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> 
             source = _photo_source(config, job)
         except LoginRequired as exc:
             print(f"homeward: {exc}", file=sys.stderr)
-            log.error("%s", exc, extra={"event": "login_required", "account": job.account})
+            _log_login_required(exc, job.account)
             return EXIT_FAILED
         with PhotoStateDB(state_path) as state:
             outcome = backup_photos(

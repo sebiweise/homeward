@@ -13,7 +13,8 @@ from collections.abc import Mapping
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from homeward.api.accounts import LoginResult, SessionState
+from homeward.api.accounts import AccountBackend, LoginResult, SessionState
+from homeward.api.auth import Authenticator
 from homeward.api.cgi import handle, write_response
 from homeward.api.errors import ApiError
 from homeward.api.handlers import folders
@@ -22,12 +23,12 @@ from homeward.runtime import Paths
 UI_DIR = Path(__file__).resolve().parent.parent / "package" / "ui"
 
 
-class DemoAuth:
+class DemoAuth(Authenticator):
     def authenticate(self, environ: Mapping[str, str]) -> str:
         return "admin"
 
 
-class DemoBackend:
+class DemoBackend(AccountBackend):
     def __init__(self) -> None:
         self.sessions: dict[str, SessionState] = {}
 

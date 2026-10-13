@@ -11,6 +11,7 @@ from typing import BinaryIO
 
 from homeward.core.models import FileMeta
 from homeward.core.rules import TEMP_SUFFIX, TRASH_DIR, is_excluded
+from homeward.providers.base import Provider
 
 _CHUNK = 1024 * 1024
 RECYCLE_DIR = "#recycle"
@@ -32,7 +33,7 @@ def find_recycle_bin(root: Path) -> Path | None:
     return None
 
 
-class NasProvider:
+class NasProvider(Provider):
     """Files below ``root``.
 
     Deleted files move to the share's Synology recycle bin when ``recycle_bin`` is

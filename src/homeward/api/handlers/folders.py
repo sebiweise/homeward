@@ -19,7 +19,7 @@ MAX_ENTRIES = 2000
 _HIDDEN = {"#recycle", "#snapshot", ".homeward-papierkorb"}
 
 
-def list_folders(ctx: Context, request: Request) -> dict[str, Any]:
+def list_folders(_ctx: Context, request: Request) -> dict[str, Any]:
     """Without ``path`` the shared folders, else the subfolders of ``path``."""
     path = request.params.get("path", "").strip()
     if not path:
@@ -37,7 +37,7 @@ def list_folders(ctx: Context, request: Request) -> dict[str, Any]:
     }
 
 
-def create(ctx: Context, request: Request) -> dict[str, Any]:
+def create(_ctx: Context, request: Request) -> dict[str, Any]:
     """Create one new folder ``name`` inside ``path``; existing folders stay as they are."""
     parent = _checked(request.get("path"))
     name = request.get("name").strip()

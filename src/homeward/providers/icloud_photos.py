@@ -14,12 +14,12 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import astuple, dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO, cast
 
-from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem
+from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem, PhotoSource
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ TIMEOUT = 60
 # a first backup's listing alone can take); Apple then answers 410. So every batch of
 # downloads gets fresh URLs first, unless they were renewed a moment ago.
 EXPIRED_STATUS = 410
+UNAUTHORIZED_STATUS = (401, 403)
 RENEW_AFTER = 5 * 60
 LOOKUP_BATCH = 100  # photos per lookup request (two records each)
 TRANSIENT_STATUS = (500, 502, 503, 504)
@@ -77,20 +78,27 @@ class _Origin:
     resource: str
 
 
-class ICloudPhotosSource:
+@dataclass(frozen=True, slots=True)
+class PhotoOptions:
+    """What a photos job downloads besides the originals (see ``PhotosConfig``)."""
+
+    albums: bool = True
+    videos: bool = True
+    live_videos: bool = True
+    raw_alternative: bool = True
+    edited: bool = True
+    favorites: bool = True
+    hidden: bool = False
+    xmp: bool = True
+
+
+class ICloudPhotosSource(PhotoSource):
     def __init__(
         self,
         service: Any,
         libraries: Iterable[Library] = tuple(Library),
+        options: PhotoOptions | None = None,
         *,
-        albums: bool = True,
-        videos: bool = True,
-        live_videos: bool = True,
-        raw_alternative: bool = True,
-        edited: bool = True,
-        favorites: bool = True,
-        hidden: bool = False,
-        xmp: bool = True,
         xmp_builder: XmpBuilder | None = None,
         lookup: Lookup | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -100,14 +108,7 @@ class ICloudPhotosSource:
         self.name = name
         self.service = service
         self.wanted = tuple(libraries)
-        self.albums = albums
-        self.videos = videos
-        self.live_videos = live_videos
-        self.raw_alternative = raw_alternative
-        self.edited = edited
-        self.favorites = favorites
-        self.hidden = hidden
-        self.xmp = xmp
+        self.options = options or PhotoOptions()
         self._xmp_builder = xmp_builder or pyicloud_xmp
         self._lookup = lookup or pyicloud_lookup
         self._clock = clock
@@ -120,6 +121,9 @@ class ICloudPhotosSource:
         self._urls: dict[str, str] = {}
         self._blobs: dict[str, bytes] = {}
         self._origins: dict[str, _Origin] = {}
+        # shared album items -> their album, which is listed again for fresh links
+        self._stream_albums: dict[str, Any] = {}
+        self._albums_relisted: dict[str, float] = {}
         self._fetched_at: dict[str, float] = {}
 
     # PhotoSource interface
@@ -143,11 +147,7 @@ class ICloudPhotosSource:
         return "|".join(parts)
 
     def _options(self) -> str:
-        switches = (
-            self.albums, self.videos, self.live_videos, self.raw_alternative, self.edited,
-            self.favorites, self.hidden, self.xmp,
-        )  # fmt: skip
-        return "".join("1" if on else "0" for on in switches)
+        return "".join("1" if on else "0" for on in astuple(self.options))
 
     def list_items(self) -> Iterator[PhotoItem]:
         self._urls.clear()
@@ -169,7 +169,7 @@ class ICloudPhotosSource:
             log.info("library %s: %d photos read, done", key, count)
         if unmatched:
             log.info("%d album photos were not found in the selected libraries", len(unmatched))
-        if self.hidden and Library.PERSONAL in self.wanted:
+        if self.options.hidden and Library.PERSONAL in self.wanted:
             yield from self._hidden_items(personal, members)
         if Library.SHARED_ALBUMS in self.wanted:
             yield from self._shared_album_items()
@@ -213,7 +213,7 @@ class ICloudPhotosSource:
 
     def _get(self, url: str) -> Any:
         response = self._download_session().get(url, stream=True, timeout=TIMEOUT)
-        if getattr(response, "status_code", 200) in (401, 403):  # wants iCloud's own session
+        if getattr(response, "status_code", 200) in UNAUTHORIZED_STATUS:  # wants iCloud's session
             response.close()
             with self._api_lock:
                 response = self.service.session.get(url, stream=True, timeout=TIMEOUT)
@@ -246,6 +246,14 @@ class ICloudPhotosSource:
         if due:
             total = sum(len(e) for e in due.values())
             log.info("renewed %d of %d expiring download links", renewed, total)
+        stale_albums = {
+            id(album): album
+            for item in items
+            if (album := self._stream_albums.get(item.key)) is not None
+            and now - self._fetched_at.get(item.key, now) >= RENEW_AFTER
+        }
+        for album in stale_albums.values():
+            self._relist_shared_album(album, "")
 
     def _renew(self, groups: list[list[tuple[str, _Origin]]], now: float) -> int:
         origins = [group[0][1] for group in groups]
@@ -276,6 +284,9 @@ class ICloudPhotosSource:
 
         (pyicloud's ``album.get`` scans the whole library when its query misses.)
         """
+        album = self._stream_albums.get(key)
+        if album is not None:
+            return self._relist_shared_album(album, key)
         origin = self._origins.get(key)
         if origin is None:
             return None
@@ -331,7 +342,7 @@ class ICloudPhotosSource:
 
     def _album_members(self, library: Any) -> dict[str, tuple[str, ...]]:
         members: dict[str, set[str]] = defaultdict(set)
-        if self.albums:
+        if self.options.albums:
             albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
             for number, album in enumerate(albums, 1):
                 name = album.fullname
@@ -357,11 +368,32 @@ class ICloudPhotosSource:
     def _shared_album_items(self) -> Iterator[PhotoItem]:
         for album in self._shared_albums():
             count = 0
-            for count, asset in enumerate(album.photos, 1):  # noqa: B007
-                yield from self._items(
-                    asset, Library.SHARED_ALBUMS, (), collection=album.fullname, id_prefix=album.id
-                )
-            log.info("shared album %s: %d photos read", album.fullname, count)
+            for count, item in enumerate(self._shared_album_photos(album), 1):  # noqa: B007
+                yield item
+            log.info("shared album %s: %d files read", album.fullname, count)
+
+    def _shared_album_photos(self, album: Any) -> Iterator[PhotoItem]:
+        for asset in album.photos:
+            for item in self._items(
+                asset, Library.SHARED_ALBUMS, (), collection=album.fullname, id_prefix=album.id
+            ):
+                self._stream_albums[item.key] = album
+                yield item
+
+    def _relist_shared_album(self, album: Any, key: str) -> str | None:
+        """Shared album links expire too (Apple then answers 401); listing the album
+        again renews the links of all its files, at most once per RENEW_AFTER."""
+        now = self._clock()
+        if now - self._albums_relisted.get(album.id, -RENEW_AFTER) >= RENEW_AFTER:
+            self._albums_relisted[album.id] = now
+            try:
+                with self._api_lock:
+                    for _item in self._shared_album_photos(album):
+                        pass
+            except Exception as exc:
+                log.warning("could not list shared album %s again: %s", album.fullname, exc)
+                return None
+        return self._urls.get(key)
 
     def _items(
         self,
@@ -375,24 +407,13 @@ class ICloudPhotosSource:
         origin: Any = None,
     ) -> Iterator[PhotoItem]:
         is_movie = asset.item_type == "movie"
-        if is_movie and not self.videos:
+        if is_movie and not self.options.videos:
             return
         resources = _resources(asset)
         record = getattr(asset, "asset_record", None)
-        if self.favorites and record is not None and _field(record, "isFavorite") == 1:
+        if self.options.favorites and record is not None and _field(record, "isFavorite") == 1:
             albums = (*albums, FAVORITES_ALBUM)
-        wanted = ["original"]
-        if asset.is_live_photo and self.videos and self.live_videos:
-            wanted.append("original_video")
-        if self.raw_alternative:
-            wanted.append("alternative")
-        if self.edited and record is not None:
-            for key, render in _edited(asset, record).items():
-                if key == "edited_video" and not (is_movie or self.live_videos):
-                    continue  # the edited video part of a Live Photo
-                resources[key] = render
-                wanted.append(key)
-
+        wanted = self._wanted(asset, record, resources, is_movie=is_movie)
         base = PhotoItem(
             asset_id=f"{id_prefix}:{asset.id}" if id_prefix else asset.id,
             resource="original",
@@ -405,45 +426,70 @@ class ICloudPhotosSource:
         )
         original_name: str | None = None
         for key in wanted:
-            resource = resources.get(key)
-            if resource is None or not resource.url:
-                if key == "original":
-                    log.warning("asset %s has no original to download", asset.id)
+            item = self._resource_item(asset, base, key, resources.get(key), origin)
+            if item is None:
                 continue
-            item = replace(
-                base,
-                resource=key,
-                filename=resource.filename or asset.filename,
-                size=resource.size,
-                checksum=resource.checksum,
-            )
             if key == "original":
                 original_name = item.filename
-            self._urls[item.key] = resource.url
-            self._fetched_at[item.key] = self._clock()
-            if origin is not None:
-                master_id = getattr(asset, "master_id", asset.id)
-                self._origins[item.key] = _Origin(origin, asset.id, master_id, key)
             yield item
 
-        if self.xmp and record is not None and original_name is not None:
-            try:
-                data = self._xmp_builder(asset)
-            except Exception as exc:
-                log.warning("no XMP sidecar for %s: %s", asset.id, exc)
-                data = None
-            if data:
-                item = replace(
-                    base,
-                    resource="xmp",
-                    filename=f"{original_name}.xmp",
-                    size=len(data),
-                    checksum=hashlib.sha256(data).hexdigest(),
-                    albums=(),
-                    sidecar_for="original",
-                )
-                self._blobs[item.key] = data
-                yield item
+        if self.options.xmp and record is not None and original_name is not None:
+            sidecar = self._xmp_item(asset, base, original_name)
+            if sidecar is not None:
+                yield sidecar
+
+    def _resource_item(
+        self, asset: Any, base: PhotoItem, key: str, resource: _Resource | None, origin: Any
+    ) -> PhotoItem | None:
+        """One downloadable file of an asset; remembers where to download it from."""
+        if resource is None or not resource.url:
+            if key == "original":
+                log.warning("asset %s has no original to download", asset.id)
+            return None
+        item = base.variant(
+            key, resource.filename or asset.filename, resource.size, resource.checksum
+        )
+        self._urls[item.key] = resource.url
+        self._fetched_at[item.key] = self._clock()
+        if origin is not None:
+            master_id = getattr(asset, "master_id", asset.id)
+            self._origins[item.key] = _Origin(origin, asset.id, master_id, key)
+        return item
+
+    def _wanted(
+        self, asset: Any, record: Any, resources: dict[str, _Resource], *, is_movie: bool
+    ) -> list[str]:
+        """The resources of an asset to download; adds edited renders to ``resources``."""
+        wanted = ["original"]
+        if asset.is_live_photo and self.options.videos and self.options.live_videos:
+            wanted.append("original_video")
+        if self.options.raw_alternative:
+            wanted.append("alternative")
+        if self.options.edited and record is not None:
+            for key, render in _edited(asset, record).items():
+                if key == "edited_video" and not (is_movie or self.options.live_videos):
+                    continue  # the edited video part of a Live Photo
+                resources[key] = render
+                wanted.append(key)
+        return wanted
+
+    def _xmp_item(self, asset: Any, base: PhotoItem, original_name: str) -> PhotoItem | None:
+        try:
+            data = self._xmp_builder(asset)
+        except Exception as exc:
+            log.warning("no XMP sidecar for %s: %s", asset.id, exc)
+            return None
+        if not data:
+            return None
+        item = base.variant(
+            "xmp",
+            f"{original_name}.xmp",
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+            sidecar_for="original",
+        )
+        self._blobs[item.key] = data
+        return item
 
 
 def _resources(asset: Any) -> dict[str, _Resource]:
@@ -526,8 +572,12 @@ def _size(value: object) -> int | None:
 
 
 def _expired(exc: Exception) -> bool:
-    """An expired download URL: pyicloud reports Apple's 410 as a withdrawn endpoint."""
-    return _status(exc) == EXPIRED_STATUS or type(exc).__name__ == "PyiCloudEndpointGoneException"
+    """An expired download URL: pyicloud reports Apple's 410 as a withdrawn endpoint;
+    shared album links answer 401 or 403 once they expire."""
+    return (
+        _status(exc) in (*UNAUTHORIZED_STATUS, EXPIRED_STATUS)
+        or type(exc).__name__ == "PyiCloudEndpointGoneException"
+    )
 
 
 def _field(record: Any, name: str) -> Any:
