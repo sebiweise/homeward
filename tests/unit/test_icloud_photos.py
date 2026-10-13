@@ -88,6 +88,12 @@ class Gone(Exception):
     code = 410
 
 
+class Unauthorized(Exception):
+    """How requests reports Apple's 401 for an expired shared album link."""
+
+    code = 401
+
+
 class Response:
     def __init__(self, data: bytes) -> None:
         self.raw = io.BytesIO(data)
@@ -100,11 +106,14 @@ class Session:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.expired: set[str] = set()
+        self.unauthorized: set[str] = set()
 
     def get(self, url: str, **kwargs: Any) -> Response:
         self.requests.append((url, kwargs))
         if url in self.expired:
             raise Gone("Apple no longer serves cvws.icloud-content.com/B/x/${f}")
+        if url in self.unauthorized:
+            raise Unauthorized("401 Client Error: Unauthorized")
         return Response(url.encode())
 
 
@@ -654,3 +663,27 @@ def test_shared_album_files_with_size_zero_have_no_expected_size() -> None:
     )
     [item] = ICloudPhotosSource(service, [Library.SHARED_ALBUMS]).list_items()
     assert item.size is None
+
+
+def test_expired_shared_album_link_lists_the_album_again() -> None:
+    service = rich_service()
+    clock = [1000.0]
+    source = ICloudPhotosSource(
+        service, [Library.SHARED_ALBUMS], options=PhotoOptions(), clock=lambda: clock[0]
+    )
+    item = next(i for i in source.list_items() if i.library is Library.SHARED_ALBUMS)
+    service.session.unauthorized.add("https://cdn/x")
+    album = service.photos.streams[0]  # type: ignore[index]
+    album.photos[0].versions["original"]["url"] = "https://cdn/x2"
+
+    clock[0] += RENEW_AFTER  # renewed before the download batch
+    source.prepare([item])
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/x2"
+
+    # A link that expires mid-batch is renewed on its 401.
+    service.session.unauthorized.add("https://cdn/x2")
+    album.photos[0].versions["original"]["url"] = "https://cdn/x3"
+    clock[0] += RENEW_AFTER
+    with source.open_read(item) as stream:
+        assert stream.read() == b"https://cdn/x3"

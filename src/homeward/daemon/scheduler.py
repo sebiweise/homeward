@@ -46,13 +46,18 @@ MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
 
 # Exit codes of `homeward sync` (see homeward.cli).
-_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked"}
+_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting"}
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
     "ok": (Level.INFO, "sync_finished"),
     "blocked": (Level.WARNING, "delete_brake"),
     "config_error": (Level.ERROR, "config_error"),
     "killed": (Level.WARNING, "sync_stopped"),
+    "waiting": (Level.INFO, "sync_postponed"),
+}
+_MESSAGES = {
+    "killed": "stopped, runs again shortly",
+    "waiting": "iCloud is not ready yet, the next run tries again",
 }
 # results that send a DSM notification when they first occur
 _NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
@@ -213,9 +218,7 @@ class Scheduler:
         status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
-        message = (
-            "stopped, runs again shortly" if status.result == "killed" else f"exit code {code}"
-        )
+        message = _MESSAGES.get(status.result or "", f"exit code {code}")
         record_event(level, job.name, event, message, paths=self.events,
                      dry_run=dry_run, exit_code=code)  # fmt: skip
         if status.result in _NOTIFY and status.result != previous and not dry_run:
