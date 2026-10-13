@@ -73,6 +73,8 @@ class Action:
     ``overwrite`` means the target already holds a file that must be moved to the
     trash first. ``verify_content`` means neither side knew a checksum at planning
     time: the executor compares contents first and only records the file if they match.
+    ``renamed_to`` marks a delete whose content reappears under that new path on the
+    same side, i.e. one half of a rename or move (the other half is a transfer).
     """
 
     kind: ActionKind
@@ -83,6 +85,7 @@ class Action:
     overwrite: bool = False
     verify_content: bool = False
     conflict_path: str | None = None
+    renamed_to: str | None = None
 
 
 @dataclass(slots=True)
@@ -98,7 +101,14 @@ class Plan:
 
     @property
     def deletes(self) -> int:
-        return sum(1 for action in self.actions if action.kind in DELETE_KINDS)
+        """Deletions the delete brake counts: renames and moves are not counted."""
+        return sum(
+            1 for action in self.actions if action.kind in DELETE_KINDS and not action.renamed_to
+        )
+
+    @property
+    def renames(self) -> int:
+        return sum(1 for action in self.actions if action.renamed_to)
 
     def counts(self) -> dict[ActionKind, int]:
         result: dict[ActionKind, int] = {}

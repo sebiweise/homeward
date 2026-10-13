@@ -38,6 +38,8 @@ def sync_pair(
         excludes=pair.exclude,
         brake=pair.delete_brake,
         today=today,
+        remote_case_insensitive=getattr(remote, "case_insensitive", False),
+        remote_identity=getattr(remote, "file_identity", None),
     )
     result = None
     if not dry_run:

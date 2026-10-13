@@ -132,6 +132,11 @@ class ICloudDriveProvider(Provider):
     # iCloud Drive treats "A.txt" and "a.txt" as the same name.
     case_insensitive = True
 
+    @staticmethod
+    def file_identity(version: str) -> str:
+        """The docwsid part of a version: it stays the same when a file is renamed or moved."""
+        return version.split(":", 1)[0]
+
     def __init__(
         self,
         api: DriveApi,

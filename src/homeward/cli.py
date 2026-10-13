@@ -22,7 +22,7 @@ from homeward.core.config import (
     PhotosConfig,
     load_config,
 )
-from homeward.core.models import ActionKind
+from homeward.core.models import ActionKind, SyncMode
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import PhotoOutcome, PhotoSource, backup_photos
 from homeward.core.provider import Provider
@@ -89,7 +89,8 @@ def _remote_provider(pair: PairConfig, config: Config) -> Provider:
 
 def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
     plan = outcome.plan
-    title = f"Pair {plan.pair} ({plan.mode})"
+    beta = ", beta" if plan.mode is SyncMode.BIDIRECTIONAL else ""
+    title = f"Pair {plan.pair} ({plan.mode}{beta})"
     if plan.first_run:
         title += ", first run: no deletes, no overwrites"
     print(title)
@@ -97,9 +98,13 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
         line = f"  {action.kind:<14} {action.path}"
         if action.conflict_path:
             line += f" -> {action.conflict_path}"
+        if action.renamed_to:
+            line += f" -> {action.renamed_to}"
         print(f"{line}  [{action.reason}]")
     counts = plan.counts()
     summary = ", ".join(f"{counts[kind]} {kind}" for kind in ActionKind if kind in counts)
+    if plan.renames:
+        summary += f"; {plan.renames} of the deletes are renames, the delete brake skips them"
     print(f"  {summary or 'nothing to do'}")
     if plan.blocked and (outcome.result is None or outcome.result.blocked):
         print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
