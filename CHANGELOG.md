@@ -16,6 +16,10 @@ All notable changes to Homeward are listed here. Versions follow
   deleted, and anything a later successful run of the same job has settled.
 - *Clear notices* hides the current notices on the status page. The event log on
   the Log tab keeps every event.
+- *Sign in again* is offered for every Apple ID, also while it shows as signed in. It
+  signs in with password and code from scratch, without the stored cookies, and
+  replaces the stored session only once that worked. Sync pairs, photo backups and
+  their state stay; nothing has to be deleted.
 
 ## [0.1.0] - 2026-10-13
 

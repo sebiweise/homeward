@@ -2,7 +2,10 @@
 
 Each account keeps pyicloud's trusted-session cookies in ``<state_dir>/sessions/<account>/``.
 After one interactive login with 2FA (``homeward login``), syncs reuse that session
-without a password until Apple expires it.
+without a password until Apple expires it. A new login starts from an empty
+``<state_dir>/sessions-pending/<account>/`` and replaces the stored session only once
+it succeeds, so signing in again never reuses a broken cookie and a failed attempt
+keeps the old session.
 """
 
 import importlib
@@ -38,11 +41,33 @@ def session_dir(state_dir: Path, account: str) -> Path:
     return state_dir / "sessions" / safe_component(account)
 
 
-def ensure_session_dir(state_dir: Path, account: str) -> Path:
-    path = session_dir(state_dir, account)
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+def pending_session_dir(state_dir: Path, account: str) -> Path:
+    """Where a new sign-in collects its cookies until it succeeds."""
+    return state_dir / "sessions-pending" / safe_component(account)
+
+
+def fresh_pending_session_dir(state_dir: Path, account: str) -> Path:
+    """An empty pending session dir, so no stale cookie of an earlier session is reused."""
+    path = pending_session_dir(state_dir, account)
+    shutil.rmtree(path, ignore_errors=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.mkdir(mode=0o700)
     os.chmod(path, 0o700)
     return path
+
+
+def commit_pending_session(state_dir: Path, account: str) -> Path:
+    """Replace the stored session with the one a successful sign-in just created."""
+    pending = pending_session_dir(state_dir, account)
+    target = session_dir(state_dir, account)
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    old = target.with_name(target.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    if target.exists():
+        target.rename(old)
+    pending.rename(target)
+    shutil.rmtree(old, ignore_errors=True)
+    return target
 
 
 def open_service(
@@ -86,6 +111,7 @@ def status(
 def logout(account: str, state_dir: Path) -> None:
     """Forget the stored session of an account."""
     shutil.rmtree(session_dir(state_dir, account), ignore_errors=True)
+    shutil.rmtree(pending_session_dir(state_dir, account), ignore_errors=True)
 
 
 def _is_login_error(exc: Exception) -> bool:
