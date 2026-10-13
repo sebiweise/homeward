@@ -39,8 +39,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install build
-      - run: python -m build
+      - run: python -m pip wheel --no-deps --wheel-dir dist .
       - uses: actions/upload-artifact@v7
         with:
           name: homeward-python
@@ -63,7 +62,7 @@ jobs:
         with:
           name: homeward-python
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   release:
     needs: [spk, python]
@@ -86,6 +85,6 @@ jobs:
             /^## / { found = (index($0, "## [" v "]") == 1); next }
             found' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
-          gh release create "${GITHUB_REF_NAME}" dist/*.spk dist/*.whl dist/*.tar.gz \
+          gh release create "${GITHUB_REF_NAME}" dist/*.spk dist/*.whl \
             --repo "${GITHUB_REPOSITORY}" --title "Homeward ${GITHUB_REF_NAME}" \
             --notes-file notes.md
