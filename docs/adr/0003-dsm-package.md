@@ -23,7 +23,8 @@ assumed spksrc for native wheels (`cryptography`, `pydantic-core`, `protobuf`, `
   `X.Y.Z-N` (`0.0.0-N` before the first tag).
 - **Architectures:** INFO `arch` lists the platform names of SynoCommunity's DSM 7.2
   toolchains, i.e. exactly where `python312` is available.
-- **User and data:** everything runs as the package user `homeward` (`run-as: package`).
+- **User and data:** everything runs as the package user `sc-homeward` (`run-as: package`;
+  the `sc-` prefix matches SynoCommunity's packages, so both builds share one user).
   The `data-share` resource creates the share `homeward` with read/write for that user;
   other shares need the user granted in Control Panel. `usr-local-linker` puts the
   `homeward` CLI into `/usr/local/bin`.

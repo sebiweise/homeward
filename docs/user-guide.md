@@ -30,8 +30,8 @@ After the installation:
 | `/usr/local/bin/homeward` | command-line interface |
 
 The package also creates the shared folder `homeward`. Everything runs as the package
-user `homeward`, which can only write where it has been granted access. To use another
-shared folder, give the user `homeward` read/write permission in **Control Panel ›
+user `sc-homeward`, which can only write where it has been granted access. To use another
+shared folder, give the user `sc-homeward` read/write permission in **Control Panel ›
 Shared Folder › Edit › Permissions** (switch the list to *System internal user*).
 
 Updating works the same way as the installation; configuration and state are kept.
@@ -67,7 +67,7 @@ Terminal & SNMP**, log in as an administrator and run the CLI as the package use
 that state and sessions keep the right owner:
 
 ```sh
-alias hw='sudo -u homeward env HOME=/var/packages/homeward/var homeward'
+alias hw='sudo -u sc-homeward env HOME=/var/packages/homeward/var homeward'
 hw --version
 hw login --account alice --apple-id alice@example.com   # password, then 2FA code
 ```
@@ -201,7 +201,7 @@ sudo tail -n 50 /var/packages/homeward/var/homeward.log
 | Symptom | Cause and fix |
 | --- | --- |
 | `account '…' needs a login` | Apple ended the trusted session. Sign in again on the Accounts tab or with `hw login`. |
-| `Permission denied` on a NAS folder | Grant the user `homeward` read/write access to the shared folder. |
+| `Permission denied` on a NAS folder | Grant the user `sc-homeward` read/write access to the shared folder. |
 | Run stopped by the delete brake | Check with a test run, then *Approve deletions* (or `--allow-deletes`). |
 | Package says it is incompatible | Your model has no SynoCommunity Python 3.12 build. |
 | Sign-in fails although the password is right | Advanced Data Protection is on, or Apple temporarily blocks web sign-in; try again later. |

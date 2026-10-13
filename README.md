@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![DSM 7.2+](https://img.shields.io/badge/DSM-7.2%2B-0a5eb5)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)
+[![Release](https://img.shields.io/github/v/release/sebiweise/homeward)](https://github.com/sebiweise/homeward/releases)
 
 Homeward is a native Synology DSM 7.2+ package that brings your iCloud data home:
 
@@ -17,8 +18,8 @@ It runs as an ordinary DSM package under its own unprivileged user: no Docker, n
 no extra server.
 
 > [!WARNING]
-> Homeward is in early development and has not had a stable release yet. Keep an
-> independent backup of anything you point it at.
+> Homeward is beta software (0.x). Keep an independent backup of anything you point
+> it at.
 
 ## Features
 
@@ -54,9 +55,12 @@ no extra server.
 3. In DSM open **Package Center › Manual Install**, choose the file and confirm the
    warning about the unknown publisher.
 
-The package creates the shared folder `homeward`, which the package user `homeward` may
-read and write. To sync another shared folder, grant the user `homeward` read/write
+The package creates the shared folder `homeward`, which the package user `sc-homeward` may
+read and write. To sync another shared folder, grant the user `sc-homeward` read/write
 access to it in **Control Panel › Shared Folder**.
+
+Homeward is on its way into the SynoCommunity package source; once it is there, it
+installs and updates directly from Package Center (see [spksrc/](spksrc/)).
 
 See the [user guide](docs/user-guide.md) for setup, sign-in and configuration.
 
@@ -82,6 +86,7 @@ Everything can also be done from the command line over SSH; see the
 - [DSM UI and API](docs/ui.md): the DSM app, its JSON API and security model
 - [Architecture](docs/architecture.md): sync core, decision tables, safety nets, providers
 - [Architecture decision records](docs/adr/)
+- [Changelog](CHANGELOG.md)
 
 ## Limitations
 
