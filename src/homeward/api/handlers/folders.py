@@ -1,6 +1,6 @@
 """Folder picker: browse the NAS's shared folders and create a folder.
 
-The API runs as the package user ``homeward``, so it only lists what that user can
+The API runs as the package user ``sc-homeward``, so it only lists what that user can
 open; whatever is picked here is a folder the daemon can reach too. Shared folders
 live at ``/volumeN/<share>`` on DSM. DSM's own folders (``@eaDir``, ``@appstore``
 ...), the recycle bin, Homeward's trash and dot folders are never shown or browsed.

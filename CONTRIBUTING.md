@@ -65,5 +65,9 @@ By contributing you agree that your contribution is licensed under the
 
 ## Releases
 
-Maintainers push a tag `vX.Y.Z`; the release workflow builds the x64 and aarch64
-packages and attaches them to a GitHub release.
+1. Add the version's section to [CHANGELOG.md](CHANGELOG.md) and merge it.
+2. Push a tag `vX.Y.Z` on `master`. The release workflow builds the x64 and aarch64
+   packages, publishes the Python package to PyPI and creates the GitHub release with
+   the changelog section as notes.
+3. Update the SynoCommunity package and submit it as described in
+   [spksrc/README.md](spksrc/README.md).

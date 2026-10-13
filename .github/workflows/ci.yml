@@ -24,7 +24,7 @@ jobs:
       - run: ruff format --check .
       - run: mypy
       - run: pytest
-      - run: shellcheck package/scripts/service-setup.sh tools/test_spk_lifecycle.sh
+      - run: shellcheck package/scripts/service-setup.sh tools/test_spk_lifecycle.sh spksrc/spk/homeward/src/service-setup.sh
 
   spk:
     runs-on: ubuntu-latest
