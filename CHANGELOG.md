@@ -20,6 +20,8 @@ All notable changes to Homeward are listed here. Versions follow
   signs in with password and code from scratch, without the stored cookies, and
   replaces the stored session only once that worked. Sync pairs, photo backups and
   their state stay; nothing has to be deleted.
+- When Apple rejects a stored session during a run (for example 421 "Invalid global
+  session"), the Apple ID now shows *Sign-in required* instead of a generic error.
 
 ## [0.1.0] - 2026-10-13
 

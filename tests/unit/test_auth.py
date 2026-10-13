@@ -6,7 +6,14 @@ from typing import Any
 
 import pytest
 
-from homeward.auth.session import LoginRequired, logout, open_service, session_dir, status
+from homeward.auth.session import (
+    LoginRequired,
+    logout,
+    open_service,
+    session_dir,
+    session_rejected,
+    status,
+)
 from homeward.auth.twofa import LoginError, LoginFlow
 
 
@@ -133,3 +140,19 @@ def test_logout_drops_a_pending_sign_in(tmp_path: Path) -> None:
     LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService).login("secret")
     logout("seb", tmp_path)
     assert not (tmp_path / "sessions-pending" / "seb").exists()
+
+
+def test_session_rejected_by_apple() -> None:
+    class Response(Exception):
+        code = 421
+
+    try:
+        try:
+            raise Response('Authentication required for Account. (421): {"reason":"x"}')
+        except Response as inner:
+            raise RuntimeError("Photos service not available") from inner
+    except RuntimeError as exc:
+        assert session_rejected(exc)
+    assert session_rejected(RuntimeError('{"reason":"Invalid global session","error":2}'))
+    assert session_rejected(PyiCloudFailedLoginException("nope"))
+    assert not session_rejected(RuntimeError("Photos service not available"))

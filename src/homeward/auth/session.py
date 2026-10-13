@@ -114,6 +114,28 @@ def logout(account: str, state_dir: Path) -> None:
     shutil.rmtree(pending_session_dir(state_dir, account), ignore_errors=True)
 
 
+# Apple's answer when the stored session is no longer valid server-side, e.g. 421
+# "Invalid global session". pyicloud raises it on the first service call, after the
+# session already looked trusted locally.
+_REJECTED_CODES = {421, 450}
+
+
+def session_rejected(exc: BaseException) -> bool:
+    """Whether Apple rejected the stored session somewhere in this exception chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, Exception) and _is_login_error(current):
+            return True
+        if getattr(current, "code", None) in _REJECTED_CODES:
+            return True
+        if "Invalid global session" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _is_login_error(exc: Exception) -> bool:
     names = {cls.__name__ for cls in type(exc).__mro__}
     return bool(
