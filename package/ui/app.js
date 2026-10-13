@@ -247,7 +247,7 @@ function pickFolder(start, onPick) {
     const newFolder = el("button", { type: "button", text: t("picker:new_folder") });
     const cancel = el("button", { type: "button", text: t("common:cancel") });
     const choose = el("button", { type: "button", class: "primary", text: t("picker:select") });
-    let current = null;
+    let current = { path: null, parent: null, folders: [] };
 
     function fail(e) {
         error.textContent = errorText(e);
@@ -295,7 +295,7 @@ function pickFolder(start, onPick) {
     }
 
     up.addEventListener("click", () => {
-        load(current && current.parent, false);
+        load(current.parent, false);
     });
     newFolder.addEventListener("click", () => {
         newRow.hidden = false;
@@ -312,7 +312,7 @@ function pickFolder(start, onPick) {
     }
 
     create.addEventListener("click", () => {
-        if (newName.value.trim()) createFolder();
+        if (current.path && newName.value.trim()) createFolder();
     });
     newName.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -322,6 +322,7 @@ function pickFolder(start, onPick) {
     });
     cancel.addEventListener("click", () => dialog.close());
     choose.addEventListener("click", () => {
+        if (!current.path) return;
         onPick(current.path);
         dialog.close();
     });
