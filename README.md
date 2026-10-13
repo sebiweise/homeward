@@ -82,7 +82,7 @@ Everything can also be done from the command line over SSH; see the
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): installation, sign-in, configuration, CLI, troubleshooting
+- [User guide](docs/user-guide.md): installation, sign-in, configuration, CLI, troubleshooting, known issues
 - [DSM UI and API](docs/ui.md): the DSM app, its JSON API and security model
 - [Architecture](docs/architecture.md): sync core, decision tables, safety nets, providers
 - [Architecture decision records](docs/adr/)
