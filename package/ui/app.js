@@ -869,6 +869,7 @@ function jobSettings(job) {
                   [t("photos:target"), c.target],
                   [t("photos:libraries"), c.libraries.map((lib) => t("photos:lib_" + lib)).join(", ")],
                   ...PHOTO_SWITCHES.map((key) => [t("photos:" + key), onOff(c[key])]),
+                  [t("photos:source_folders"), onOff(c.source_folders)],
                   ...PHOTO_FOLDERS.map((key) => [t("photos:" + key), c[key]]),
                   [t("ui:schedule"), scheduleText(job)],
               ]
@@ -1120,6 +1121,8 @@ async function photosDialog(job) {
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
             PHOTO_SWITCHES.map((key) => checkbox(key, t("photos:" + key), j[key]))),
         el("fieldset", {}, el("legend", { text: t("photos:folders") }),
+            checkbox("source_folders", t("photos:source_folders"), j.source_folders),
+            el("p", { class: "hint", text: t("photos:source_folders_hint") }),
             PHOTO_FOLDERS.map((key) =>
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
@@ -1129,6 +1132,7 @@ async function photosDialog(job) {
         const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
         photos.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
         for (const key of PHOTO_SWITCHES) photos[key] = v[key] === "on";
+        photos.source_folders = v.source_folders === "on";
         for (const key of PHOTO_FOLDERS) photos[key] = v[key];
         await api(editing ? "photos.update" : "photos.create", { photos: JSON.stringify(photos) }, true);
         view.key = "photos:" + photos.name;

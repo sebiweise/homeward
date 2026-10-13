@@ -107,6 +107,7 @@ libraries = ["personal"]
 albums = false
 folder_scheme = "{year}"
 shared_folder = "Familie"
+source_folders = false
 hidden = true
 xmp = false
 hidden_folder = "Privat"
@@ -134,12 +135,14 @@ def test_photos_jobs() -> None:
     assert seb.workers == 4
     assert seb.layout.favorites_folder == "Favoriten"
     assert seb.layout.scheme == "{year}/{month}"
+    assert seb.layout.source_folders
     anna = config.photos_job("anna")
     assert anna.apple_id is None
     assert not anna.albums
     assert anna.libraries == (Library.PERSONAL,)
     assert anna.layout.scheme == "{year}"
     assert anna.layout.shared_folder == "Familie"
+    assert not anna.layout.source_folders
     assert anna.hidden
     assert not anna.xmp
     assert anna.layout.hidden_folder == "Privat"
@@ -156,6 +159,7 @@ def test_photos_jobs() -> None:
         ("libraries = []", "must not be empty"),
         ('folder_scheme = "{album}"', "folder_scheme"),
         ('albums = "yes"', "true or false"),
+        ('source_folders = "no"', "true or false"),
         ("workers = 0", "from 1 to 8"),
         ("workers = 9", "from 1 to 8"),
         ('workers = "4"', "from 1 to 8"),
