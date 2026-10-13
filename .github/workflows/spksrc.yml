@@ -1,0 +1,66 @@
+name: SynoCommunity package
+
+# Builds the spksrc package in spksrc/ the way SynoCommunity's CI does, so the
+# package can be submitted to SynoCommunity/spksrc with confidence. The DSM app is
+# taken from this commit instead of the release tarball named in cross/homeward.
+
+on:
+  pull_request:
+    paths:
+      - "spksrc/**"
+      - "package/ui/**"
+      - ".github/workflows/spksrc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64-7.2, aarch64-7.2]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: homeward
+          persist-credentials: false
+
+      - name: Check out spksrc and add the Homeward package
+        run: |
+          git clone --depth 1 https://github.com/SynoCommunity/spksrc.git spksrc
+          cp -R homeward/spksrc/. spksrc/
+          version=$(sed -n 's/^PKG_VERS = //p' spksrc/cross/homeward/Makefile)
+          mkdir -p spksrc/distrib
+          git -C homeward archive --format=tar.gz --prefix="homeward-${version}/" \
+            -o "${GITHUB_WORKSPACE}/spksrc/distrib/homeward-${version}.tar.gz" HEAD
+
+      - name: Build
+        run: |
+          docker run --rm -v "${GITHUB_WORKSPACE}/spksrc:/spksrc" -w /spksrc \
+            ghcr.io/synocommunity/spksrc:latest /bin/bash -euo pipefail -c '
+              git config --global --add safe.directory /spksrc
+              make setup-synocommunity
+              sed -i -e "s|#PARALLEL_MAKE\s*=.*|PARALLEL_MAKE=max|" local.mk
+              rm -f cross/homeward/digests
+              make -C cross/homeward digests
+              make -C spk/homeward arch-${{ matrix.arch }}
+            '
+
+      - name: Check the package resources
+        # The shared folder permission and the command link come from conf/resource;
+        # spksrc only warns when it cannot write them.
+        run: |
+          tar -xOf spksrc/packages/homeward_*.spk conf/resource | jq -e '
+            ."data-share".shares[0].name == "{{wizard_shared_folder_name}}"
+            and ."data-share".shares[0].permission.rw == ["sc-homeward"]
+            and ."usr-local-linker".bin == ["env/bin/homeward"]'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: homeward-synocommunity-${{ matrix.arch }}
+          path: spksrc/packages/homeward_*.spk
+          if-no-files-found: error

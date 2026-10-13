@@ -30,20 +30,61 @@ jobs:
           path: dist/*.spk
           if-no-files-found: error
 
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip wheel --no-deps --wheel-dir dist .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: homeward-python
+          path: dist/*
+          if-no-files-found: error
+
+  # The SynoCommunity package installs Homeward from PyPI (spksrc/README.md).
+  # Uses PyPI trusted publishing: no token, but the "pypi" environment and a
+  # trusted publisher for this workflow must be set up once on pypi.org.
+  pypi:
+    needs: python
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/homeward/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: homeward-python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
   release:
-    needs: spk
+    needs: [spk, python]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: homeward-spk-*
+          pattern: homeward-*
           merge-multiple: true
           path: dist
+      # Release notes: this version's section of CHANGELOG.md.
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${GITHUB_REF_NAME}" dist/*.spk
-          --repo "${GITHUB_REPOSITORY}" --title "Homeward ${GITHUB_REF_NAME}"
-          --generate-notes --prerelease
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="${version}" '
+            /^## / { found = (index($0, "## [" v "]") == 1); next }
+            found' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          gh release create "${GITHUB_REF_NAME}" dist/*.spk dist/*.whl \
+            --repo "${GITHUB_REPOSITORY}" --title "Homeward ${GITHUB_REF_NAME}" \
+            --notes-file notes.md

@@ -135,7 +135,7 @@ create="Create"
 folder_name="Name of the new folder"
 read_only="read only"
 empty="This folder has no subfolders."
-no_shares="Homeward cannot open any shared folder. Give the user homeward read/write permission in Control Panel > Shared Folder."
+no_shares="Homeward cannot open any shared folder. Give the user sc-homeward read/write permission in Control Panel > Shared Folder."
 truncated="Only the first {0} folders are shown."
 read_only_hint="Homeward can only read this folder, so it cannot download into it."
 
