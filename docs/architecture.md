@@ -61,6 +61,33 @@ Safety nets:
   `.homeward-papierkorb/<date>/` below the pair's folder. Day folders there older than
   `trash_days` (default 30, 0 keeps them forever) are removed after each run.
 - iCloud deletions go to iCloud's "Recently Deleted" (kept 30 days by Apple).
+- **Deletes run last**: every run transfers first and deletes afterwards.
+
+### Bidirectional (beta)
+
+`mode = "bidirectional"` needs `beta = true` in the pair until it has proven itself
+on real folders.
+
+- **Renames and moves** are carried out as delete plus new file: the old name goes to
+  the other side's trash, the new one is transferred. The planner pairs a delete with
+  a new file on the same side when the content matches: the same NAS version token
+  (it survives a rename), the same iCloud docwsid with the same size (via the
+  provider's `file_identity`; iCloud keeps the docwsid but changes the etag on a
+  rename or move, see ADR 0002), or the same known checksum. Such deletes are marked
+  as renames and do not count for the delete brake, so renaming a folder does not
+  stop the run.
+  If the new file fails to transfer, the old one is kept until a later run.
+- **Upper/lower case**: iCloud Drive does not keep `a.txt` and `A.txt` apart. A
+  provider with `case_insensitive = True` makes the planner skip uploads whose path
+  (or a parent folder) differs only in case from one already in iCloud; the file stays
+  on the NAS and shows up as skipped in every run. A case-only rename works: its
+  delete runs before the upload so the name is free.
+- **Conflicts** keep both versions (see above). A second conflict on the same file and
+  day is numbered: `Name (Konflikt NAS 2026-10-11 2).ext`.
+- `tests/scenarios/test_bidirectional.py` covers these cases and simulates a week of
+  hourly runs with random edits, renames and deletes on both sides, checking after
+  every run that no content was lost, both sides match and a second run has nothing
+  left to do.
 
 ## iCloud Drive provider
 
@@ -91,6 +118,7 @@ apple_id = "alice@example.com"  # optional if account is the Apple ID
 local = "/volume1/homes/alice/Documents"
 remote = "Documents"
 mode = "bidirectional"            # upload | download | bidirectional
+beta = true                       # required for bidirectional while it is in beta
 remote_provider = "icloud_drive"  # "folder" syncs with a second NAS folder (testing)
 exclude = ["*.tmp"]
 max_delete_ratio = 0.10

@@ -39,7 +39,8 @@ def test_first_run_merges_without_deleting(
     assert set(nas.files) == set(icloud.files)
     assert nas.content("both (Konflikt NAS 2026-10-11).txt") == b"nas"
     assert nas.content("both.txt") == icloud.content("both.txt") == b"icloud"
-    assert nas.trash == [] and icloud.trash == []
+    assert nas.trash == []
+    assert icloud.trash == []
     assert set(state.records("p")) == set(nas.files)
 
 
@@ -85,7 +86,8 @@ def test_delete_brake_by_count(state: StateDB, nas: FakeProvider, icloud: FakePr
     outcome = sync_pair(_pair(), nas, icloud, state, dry_run=False)
 
     assert outcome.plan.blocked == "51 deletions exceed the limit of 50 files"
-    assert outcome.result is not None and outcome.result.blocked
+    assert outcome.result is not None
+    assert outcome.result.blocked
     assert len(icloud.files) == 1000
     assert icloud.trash == []
 
@@ -110,7 +112,8 @@ def test_delete_brake_can_be_approved(
 
     outcome = sync_pair(_pair(), nas, icloud, state, dry_run=False, allow_deletes=True)
 
-    assert outcome.result is not None and outcome.result.ok
+    assert outcome.result is not None
+    assert outcome.result.ok
     assert len(nas.files) == 17
     assert len(nas.trash) == 3
 

@@ -25,7 +25,7 @@ NOTICE_HOURS = 24
 MAX_NOTICES = 10
 
 
-def get(ctx: Context, request: Request) -> dict[str, Any]:
+def get(ctx: Context, _request: Request) -> dict[str, Any]:
     config = ctx.store.load()
     pending = {r.pair for r in pending_requests(ctx.paths)}
     daemon = read_status(ctx.paths)

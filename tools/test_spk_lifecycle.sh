@@ -29,18 +29,23 @@ unpack() {
     tar -xOf "${SPK}" package.tgz | tar -xzf - -C "${ROOT}/target"
 }
 
-script() { sh "${ROOT}/scripts/$1" ${2:+"$2"}; }
+script() {
+    script_name=$1
+    script_arg=${2:-}
+    sh "${ROOT}/scripts/${script_name}" ${script_arg:+"${script_arg}"}
+}
 
 wait_for_result() {
+    wanted_result=$1
     i=0
     while [ "${i}" -lt 60 ]; do
-        if grep -q "\"result\": \"$1\"" "${SYNOPKG_PKGVAR}/status.json" 2>/dev/null; then
+        if grep -q "\"result\": \"${wanted_result}\"" "${SYNOPKG_PKGVAR}/status.json" 2>/dev/null; then
             return 0
         fi
         i=$((i + 1))
         sleep 1
     done
-    fail "no job with result $1 in status.json"
+    fail "no job with result ${wanted_result} in status.json"
 }
 
 step "install"
@@ -78,6 +83,17 @@ script start-stop-status stop
 if script start-stop-status status; then fail "daemon still running"; fi
 
 step "upgrade"
+# A bidirectional pair saved before the beta flag existed must keep working.
+mkdir -p "${ROOT}/share/nas2" "${ROOT}/share/cloud2"
+cat >> "${SYNOPKG_PKGVAR}/config.toml" <<EOF
+
+[[pair]]
+name = "legacy"
+local = "${ROOT}/share/nas2"
+remote = "${ROOT}/share/cloud2"
+remote_provider = "folder"
+mode = "bidirectional"
+EOF
 export SYNOPKG_PKG_STATUS=UPGRADE
 script preupgrade
 script preuninst
@@ -87,6 +103,7 @@ script preinst
 script postinst
 script postupgrade
 grep -q 'name = "smoke"' "${SYNOPKG_PKGVAR}/config.toml" || fail "config lost on upgrade"
+grep -q 'beta = true' "${SYNOPKG_PKGVAR}/config.toml" || fail "legacy pair not migrated"
 [ ! -d "${ROOT}/share/.homeward-backup" ] || fail "upgrade must not write a backup"
 script start-stop-status start
 script start-stop-status status || fail "daemon not running after upgrade"

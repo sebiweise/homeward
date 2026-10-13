@@ -1,6 +1,6 @@
 """Builds a sync plan by comparing NAS, iCloud and last-synced state."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import PurePosixPath
@@ -139,6 +139,131 @@ def _first_run_guard(action: Action) -> Action:
     return action
 
 
+Identity = Callable[[str], str]
+"""Maps a side's version token to the part that survives a rename (a file id)."""
+
+
+def _content_matches(
+    meta: FileMeta, record: FileRecord, record_version: str, identity: Identity | None
+) -> bool:
+    if meta.size != record.size:
+        return False
+    if meta.version == record_version:
+        return True
+    if identity is not None and identity(meta.version) == identity(record_version):
+        return True
+    return meta.sha256 is not None and meta.sha256 == record.sha256
+
+
+def _match_renames(
+    actions: list[Action],
+    records: Mapping[str, FileRecord],
+    remote_identity: Identity | None = None,
+) -> list[Action]:
+    """Mark deletes whose content shows up as a new file on the same side.
+
+    A rename or move on one side looks like a deleted file plus a new one. It is still
+    carried out as exactly that (the old file goes to the other side's trash, the new
+    one is transferred), but the delete is not a loss, so the delete brake skips it.
+    The NAS keeps size and mtime on a rename, so its version token matches the record.
+    iCloud changes the etag but keeps the file id, which ``remote_identity`` extracts.
+    Otherwise a known checksum must match.
+    """
+    new_local = [a for a in actions if a.kind is ActionKind.UPLOAD and a.path not in records]
+    new_remote = [a for a in actions if a.kind is ActionKind.DOWNLOAD and a.path not in records]
+    used: set[str] = set()
+    result = []
+    for action in actions:
+        record = records.get(action.path)
+        if action.kind in DELETE_KINDS and record is not None:
+            local_side = action.kind is ActionKind.DELETE_REMOTE
+            target = _rename_target(
+                record,
+                new_local if local_side else new_remote,
+                local_side=local_side,
+                identity=None if local_side else remote_identity,
+                used=used,
+            )
+            if target is not None:
+                used.add(target)
+                action = replace(
+                    action, renamed_to=target, reason=f"{action.reason}, renamed to {target}"
+                )
+        result.append(action)
+    return result
+
+
+def _rename_target(
+    record: FileRecord,
+    candidates: list[Action],
+    *,
+    local_side: bool,
+    identity: Identity | None,
+    used: set[str],
+) -> str | None:
+    """The first unused new file on that side whose content matches ``record``."""
+    version = record.local_version if local_side else record.remote_version
+    for new in candidates:
+        meta = new.local if local_side else new.remote
+        if new.path in used or meta is None:
+            continue
+        if _content_matches(meta, record, version, identity):
+            return new.path
+    return None
+
+
+def _prefixes(path: str) -> list[str]:
+    parts = PurePosixPath(path).parts
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _guard_case(actions: list[Action], remote_files: Mapping[str, FileMeta]) -> list[Action]:
+    """Skip uploads whose path differs only in upper/lower case from one in iCloud.
+
+    iCloud Drive does not keep two names apart that only differ in case, so such an
+    upload could land on the other file. Files the plan deletes in iCloud do not count,
+    which lets a case-only rename (``a.txt`` to ``A.txt``) through.
+    """
+    deleted = {a.path for a in actions if a.kind is ActionKind.DELETE_REMOTE}
+    seen: dict[str, str] = {}
+    for path in remote_files:
+        if path not in deleted:
+            seen.update((prefix.casefold(), prefix) for prefix in _prefixes(path))
+    return [_case_checked(action, seen) for action in actions]
+
+
+def _case_checked(action: Action, seen: dict[str, str]) -> Action:
+    """Skip a new upload that clashes by case with ``seen``, else add it to ``seen``."""
+    if action.kind is not ActionKind.UPLOAD or action.remote is not None:
+        return action
+    prefixes = _prefixes(action.path)
+    clash = next((seen[p.casefold()] for p in prefixes if seen.get(p.casefold(), p) != p), None)
+    if clash is None:
+        seen.update((p.casefold(), p) for p in prefixes)
+        return action
+    return replace(
+        action,
+        kind=ActionKind.SKIP,
+        reason=f"iCloud already has {clash}, which differs only in upper/lower case",
+    )
+
+
+def _order(actions: list[Action]) -> list[Action]:
+    """Run deletes after all transfers, so a rename trashes the old file only once the
+    new one has arrived. A delete whose path equals a transferred one apart from case
+    runs first, because on iCloud the two would collide."""
+    created = {
+        a.path.casefold() for a in actions if a.kind in (ActionKind.UPLOAD, ActionKind.DOWNLOAD)
+    }
+
+    def rank(action: Action) -> int:
+        if action.kind not in DELETE_KINDS:
+            return 1
+        return 0 if action.path.casefold() in created else 2
+
+    return sorted(actions, key=rank)
+
+
 def build_plan(
     pair: str,
     mode: SyncMode,
@@ -149,6 +274,8 @@ def build_plan(
     excludes: Iterable[str] = (),
     brake: DeleteBrake | None = None,
     today: date | None = None,
+    remote_case_insensitive: bool = False,
+    remote_identity: Identity | None = None,
 ) -> Plan:
     """Compare both sides with the last common state and decide every path."""
     patterns = tuple(excludes)
@@ -170,5 +297,9 @@ def build_plan(
             continue
         plan.actions.append(_first_run_guard(action) if first_run else action)
 
+    if remote_case_insensitive:
+        plan.actions = _guard_case(plan.actions, remote)
+    plan.actions = _match_renames(plan.actions, known, remote_identity)
+    plan.actions = _order(plan.actions)
     plan.blocked = (brake or DeleteBrake()).check(plan.deletes, plan.tracked)
     return plan

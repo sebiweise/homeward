@@ -100,7 +100,8 @@ def test_status_survives_a_restart(tmp_path: Path) -> None:
 
     status = json.loads((tmp_path / "status.json").read_text())
     job = status["jobs"]["pair:docs"]
-    assert job["result"] == "blocked" and job["exit_code"] == 3
+    assert job["result"] == "blocked"
+    assert job["exit_code"] == 3
     assert job["next_due"] == clock.now + 3600
 
     second = _scheduler(tmp_path, runner, clock)
@@ -131,7 +132,8 @@ def test_runner_errors_are_recorded(tmp_path: Path) -> None:
 
     scheduler = Scheduler(tmp_path / "status.json", broken, Clock())
     status = scheduler.run(Job("pair:x", ()))
-    assert status.result == "failed" and status.exit_code == 127
+    assert status.result == "failed"
+    assert status.exit_code == 127
 
 
 def test_interrupted_runs_are_due_again(tmp_path: Path) -> None:
@@ -165,10 +167,12 @@ def test_daemon_waits_for_a_valid_config(tmp_path: Path) -> None:
     daemon = Daemon(config, _scheduler(tmp_path, recorder, Clock()), runner)
 
     daemon.cycle()  # missing file
-    assert not daemon.config_ok and recorder.calls == []
+    assert not daemon.config_ok
+    assert recorder.calls == []
     _config(tmp_path)
     daemon.cycle()
-    assert daemon.config_ok and recorder.calls == ["pair:docs"]
+    assert daemon.config_ok
+    assert recorder.calls == ["pair:docs"]
 
 
 def test_once_runs_a_real_sync(tmp_path: Path) -> None:
@@ -321,7 +325,7 @@ class StoppableRunner(SubprocessRunner):
     def __call__(self, job: Job) -> int:
         self.calls.append(job.name)
         self.during()
-        return 4 if self.terminated else 0
+        return 5 if self.terminated else 0
 
     def terminate(self, timeout: float = 0.0) -> None:
         self.terminated += 1
@@ -351,7 +355,7 @@ def test_cancelling_the_running_sync(tmp_path: Path) -> None:
 
     assert runner.terminated == 1
     status = scheduler.status["pair:a"]
-    assert (status.result, status.exit_code) == ("cancelled", 4)
+    assert (status.result, status.exit_code) == ("cancelled", 5)
     assert scheduler.running is None and scheduler.cancelled is None
     assert not list((tmp_path / "cancel").glob("*.json"))
     (event, _started) = read_events(paths)
@@ -362,7 +366,7 @@ def test_cancelling_the_running_sync(tmp_path: Path) -> None:
 
 
 def test_sigterm_without_a_cancel_is_an_interrupted_run(tmp_path: Path) -> None:
-    scheduler = Scheduler(tmp_path / "status.json", Recorder(code=4), Clock())
+    scheduler = Scheduler(tmp_path / "status.json", Recorder(code=5), Clock())
     assert scheduler.run(Job("pair:a", ())).result == "killed"
 
 
@@ -385,3 +389,17 @@ def test_cancelling_a_request_the_daemon_already_took(tmp_path: Path) -> None:
     assert runner.calls == ["pair:a"]
     assert runner.terminated == 0
     assert read_events(paths)[0].code == "sync_cancelled"
+
+
+def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> None:
+    from homeward.runtime import Paths, read_events
+
+    sent: list[str] = []
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=4), Clock(), notifier=lambda e, *a: sent.append(e)
+    )
+    status = scheduler.run(Job("photos:me", ("photos",)))
+    assert status.result == "waiting"
+    (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    assert (event.level, event.code) == ("info", "sync_postponed")
+    assert sent == []

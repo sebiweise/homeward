@@ -44,13 +44,19 @@ class Executor:
         if plan.blocked and not allow_deletes:
             return RunResult(blocked=plan.blocked)
         result = RunResult()
+        failed_paths: set[str] = set()
         for action in plan.actions:
+            if action.renamed_to in failed_paths:
+                # The new name did not arrive; keep the old file until a later run.
+                log.info("keeping %s: its renamed copy %s failed", action.path, action.renamed_to)
+                continue
             try:
                 self._apply(action)
             except Exception as exc:
                 failed = {"event": "file_failed"}
                 log.warning("%s %s failed: %s", action.kind, action.path, exc, extra=failed)
                 result.failed.append(Failure(action, f"{type(exc).__name__}: {exc}"))
+                failed_paths.add(action.path)
             else:
                 result.done.append(action)
         return result
@@ -81,6 +87,7 @@ class Executor:
             case ActionKind.CONFLICT:
                 self._conflict(action)
             case ActionKind.SKIP:
+                # Skipped actions are only reported, never executed.
                 pass
 
     def _record_if_same(self, action: Action) -> bool:

@@ -86,7 +86,8 @@ def test_incremental_second_run_lists_nothing(
     assert source.listed == 1
 
     outcome = backup_photos("photos", source, tmp_path, pstate)
-    assert outcome.plan.unchanged and outcome.plan.up_to_date == 1
+    assert outcome.plan.unchanged
+    assert outcome.plan.up_to_date == 1
     assert source.listed == 1  # cursor unchanged: no listing, no downloads
     assert source.downloads == ["personal/a1/original"]
 
@@ -310,7 +311,8 @@ def test_dry_run_changes_nothing(
     counts = run(source, tmp_path, pstate, dry_run=True)
     assert counts == {PhotoActionKind.DOWNLOAD: 1, PhotoActionKind.LINK: 1}
     assert list(tmp_path.iterdir()) == []
-    assert pstate.records("photos") == {} and pstate.cursor("photos") is None
+    assert pstate.records("photos") == {}
+    assert pstate.cursor("photos") is None
 
 
 def test_failed_download_is_retried_and_cursor_kept(
@@ -341,7 +343,8 @@ def test_truncated_download_leaves_no_file(
     source.data[item.key] = b"full"  # the stream ends early
 
     outcome = backup_photos("photos", source, tmp_path, pstate)
-    assert outcome.result is not None and len(outcome.result.failed) == 1
+    assert outcome.result is not None
+    assert len(outcome.result.failed) == 1
     assert "incomplete" in outcome.result.failed[0].error
     assert not (tmp_path / "2024" / "05" / "a.jpg").exists()
     assert not list(tmp_path.rglob("*.homeward-tmp"))
@@ -370,7 +373,8 @@ def test_unsafe_names_stay_inside_target(
     source.add("a1", "../../evil.jpg", created=at(2024, 5), albums=("../..",))
     run(source, tmp_path / "t", pstate)
     files = [p for p in tmp_path.rglob("*") if p.is_file()]
-    assert files and all(p.is_relative_to(tmp_path / "t") for p in files)
+    assert files
+    assert all(p.is_relative_to(tmp_path / "t") for p in files)
 
 
 def test_favorites_folder_holds_hard_links(

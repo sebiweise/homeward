@@ -22,7 +22,7 @@ function dsmSession() {
 
 function language() {
     const session = dsmSession();
-    const lang = (session && session.lang) || "";
+    const lang = session?.lang || "";
     if (lang && lang !== "def") return lang === "ger" ? "ger" : "enu";
     return (navigator.language || "").toLowerCase().startsWith("de") ? "ger" : "enu";
 }
@@ -36,15 +36,19 @@ function parseStrings(text) {
             continue;
         }
         const entry = line.match(/^\s*([\w.-]+)\s*=\s*"(.*)"\s*$/);
-        if (entry) strings[section + ":" + entry[1]] = entry[2].replace(/\\"/g, '"');
+        if (entry) strings[section + ":" + entry[1]] = entry[2].replaceAll(String.raw`\"`, '"');
     }
 }
 
 async function loadStrings() {
-    for (const lang of ["enu", language()]) {
-        const response = await fetch("texts/" + lang + "/strings", { cache: "no-cache" });
-        if (response.ok) parseStrings(await response.text());
-    }
+    // English first, so a string missing in the user's language falls back to it.
+    const texts = await Promise.all(
+        ["enu", language()].map(async (lang) => {
+            const response = await fetch("texts/" + lang + "/strings", { cache: "no-cache" });
+            return response.ok ? response.text() : "";
+        })
+    );
+    texts.forEach(parseStrings);
 }
 
 function t(key, ...args) {
@@ -109,13 +113,14 @@ class ApiError extends Error {
 
 async function synoToken() {
     const session = dsmSession();
-    if (session && session.SynoToken) return session.SynoToken;
+    if (session?.SynoToken) return session.SynoToken;
     // Opened outside the DSM desktop: ask DSM for the session's token.
     try {
         const response = await fetch("/webman/login.cgi", { credentials: "same-origin" });
         const data = await response.json();
         return data.SynoToken || "";
-    } catch (e) {
+    } catch {
+        // No DSM session here: the API call that follows reports "not signed in".
         return "";
     }
 }
@@ -123,7 +128,7 @@ async function synoToken() {
 async function api(method, params, write) {
     if (tokenRequest === null) tokenRequest = synoToken();
     const token = await tokenRequest;
-    const body = new URLSearchParams(Object.assign({ method: method }, params || {}));
+    const body = new URLSearchParams({ method: method, ...params });
     let response;
     try {
         response = await fetch(write ? API : API + "?" + body, {
@@ -211,6 +216,131 @@ function select(name, options, value) {
     );
 }
 
+// --- folder picker ---------------------------------------------------------------------
+
+const PICKER_MAX = 2000;
+
+// A text field for a NAS folder with a "Browse..." button that opens the picker.
+function folderField(label, name, value, hint) {
+    const input = el("input", { name: name, value: value, required: true });
+    const browse = el("button", {
+        type: "button",
+        text: t("picker:browse"),
+        onclick: () => pickFolder(input.value.trim(), (path) => (input.value = path)),
+    });
+    return el(
+        "label",
+        {},
+        label,
+        el("div", { class: "folder-input" }, input, browse),
+        hint ? el("span", { class: "hint", text: hint }) : null
+    );
+}
+
+// Lets the user browse the shared folders Homeward can open; `onPick` gets the path.
+// It runs on top of the open form dialog, which keeps its values.
+function pickFolder(start, onPick) {
+    const dialog = document.getElementById("picker");
+    const where = el("div", { class: "where" });
+    const list = el("ul", { class: "folders" });
+    const note = el("p", { class: "hint", hidden: true });
+    const error = el("p", { class: "error", hidden: true });
+    const up = el("button", { type: "button", text: t("picker:up") });
+    const newName = el("input", { placeholder: t("picker:folder_name"), "aria-label": t("picker:folder_name") });
+    const create = el("button", { type: "button", text: t("picker:create") });
+    const newRow = el("div", { class: "folder-input", hidden: true }, newName, create);
+    const newFolder = el("button", { type: "button", text: t("picker:new_folder") });
+    const cancel = el("button", { type: "button", text: t("common:cancel") });
+    const choose = el("button", { type: "button", class: "primary", text: t("picker:select") });
+    let current = { path: null, parent: null, folders: [] };
+
+    function fail(e) {
+        error.textContent = errorText(e);
+        error.hidden = false;
+    }
+
+    async function load(path, fallback) {
+        let data;
+        try {
+            data = await api("folders.list", path ? { path: path } : {});
+        } catch (e) {
+            if (fallback) return load(null, false);
+            fail(e);
+            return;
+        }
+        error.hidden = true;
+        current = data;
+        where.textContent = data.path || t("picker:shares");
+        up.disabled = !data.path;
+        choose.disabled = !data.path;
+        newFolder.disabled = !data.path || !data.writable;
+        newRow.hidden = true;
+        const notes = [];
+        if (data.path && !data.writable) notes.push(t("picker:read_only_hint"));
+        if (data.truncated) notes.push(t("picker:truncated", PICKER_MAX));
+        note.textContent = notes.join(" ");
+        note.hidden = !notes.length;
+        list.replaceChildren(
+            ...data.folders.map((folder) =>
+                el(
+                    "li",
+                    {},
+                    el(
+                        "button",
+                        { type: "button", class: "folder", title: folder.path, onclick: () => void load(folder.path, false) },
+                        el("span", { class: "name", text: folder.name }),
+                        data.path ? null : el("span", { class: "muted", text: folder.path }),
+                        folder.writable ? null : el("span", { class: "muted", text: t("picker:read_only") })
+                    )
+                )
+            )
+        );
+        if (!data.folders.length)
+            list.append(el("li", { class: "muted", text: t(data.path ? "picker:empty" : "picker:no_shares") }));
+    }
+
+    up.addEventListener("click", () => {
+        void load(current.parent, false);
+    });
+    newFolder.addEventListener("click", () => {
+        newRow.hidden = false;
+        newName.value = "";
+        newName.focus();
+    });
+    async function createFolder() {
+        try {
+            const folder = await api("folders.create", { path: current.path, name: newName.value.trim() }, true);
+            await load(folder.path, false);
+        } catch (e) {
+            fail(e);
+        }
+    }
+
+    create.addEventListener("click", () => {
+        if (current.path && newName.value.trim()) void createFolder();
+    });
+    newName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            create.click();
+        }
+    });
+    cancel.addEventListener("click", () => dialog.close());
+    choose.addEventListener("click", () => {
+        if (!current.path) return;
+        onPick(current.path);
+        dialog.close();
+    });
+
+    dialog.replaceChildren(
+        el("h2", { text: t("picker:title") }),
+        el("div", { class: "body" }, el("div", { class: "nav" }, up, where), list, newRow, note, error),
+        el("div", { class: "foot" }, newFolder, el("span", { class: "spacer" }), cancel, choose)
+    );
+    dialog.showModal();
+    void load(start, true);
+}
+
 // --- events ----------------------------------------------------------------------------
 
 const LEVEL_BADGE = { info: "idle", warning: "warn", error: "bad" };
@@ -262,20 +392,20 @@ function resultBadge(pair, running) {
     return el("span", { class: "badge ok", text: t("status:result_ok", run.actions) });
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", cancelled: "warn" };
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn" };
 const JOB_UNFINISHED = ["killed", "cancelled"];
 
 function jobBadge(item) {
     if (item.pending) return el("span", { class: "badge idle", text: t("status:queued") });
     const job = item.job;
-    if (job && job.started_at && !job.finished_at)
+    if (job?.started_at && !job.finished_at)
         return el("span", { class: "badge idle", text: t("status:running_since", formatTime(job.started_at)) });
-    if (!job || !job.result) return el("span", { class: "muted", text: t("common:never") });
+    if (!job?.result) return el("span", { class: "muted", text: t("common:never") });
     return el("span", { class: "badge " + (JOB_BADGE[job.result] || "bad"), text: t("status:job_" + job.result) });
 }
 
 function nextRun(item) {
-    const due = item.job && item.job.next_due;
+    const due = item.job?.next_due;
     return due ? el("div", { class: "muted", text: t("status:next_run", formatTime(due)) }) : null;
 }
 
@@ -301,7 +431,7 @@ function cancelRun(name, label) {
 
 function runPhotos(job, options) {
     return guarded(async () => {
-        await api("photos.run", Object.assign({ name: job.name }, options), true);
+        await api("photos.run", { name: job.name, ...options }, true);
         showMessage(t("status:run_queued", job.name));
         await renderStatus();
     });
@@ -309,20 +439,27 @@ function runPhotos(job, options) {
 
 function runPair(pair, options) {
     return guarded(async () => {
-        await api("pairs.run", Object.assign({ name: pair.name }, options), true);
+        await api("pairs.run", { name: pair.name, ...options }, true);
         showMessage(t("status:run_queued", pair.name));
         await renderStatus();
     });
+}
+
+function daemonText(daemon) {
+    if (daemon.running) {
+        const job = daemon.running.startsWith("photos:")
+            ? t("event:src_photos", daemon.running.slice(7))
+            : daemon.running;
+        return t("status:daemon_running", job);
+    }
+    return Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
 }
 
 async function renderStatus() {
     const data = await api("status.get");
     document.getElementById("version").textContent = t("common:version", data.version);
     const daemon = data.daemon || {};
-    document.getElementById("daemon").textContent = daemon.running
-        ? t("status:daemon_running", daemon.running.startsWith("photos:")
-            ? t("event:src_photos", daemon.running.slice(7)) : daemon.running)
-        : Object.keys(daemon).length ? t("status:daemon_idle") : t("status:daemon_unknown");
+    document.getElementById("daemon").textContent = daemonText(daemon);
     const service = [t("status:api_user", data.api_user || "?")];
     if (daemon.interval_minutes) service.push(t("status:interval", daemon.interval_minutes));
     document.getElementById("service").textContent = service.join(" · ");
@@ -334,7 +471,7 @@ async function renderStatus() {
         const run = pair.last_run;
         const running = daemon.running === pair.name;
         const busy = running || pair.pending;
-        const blocked = run && run.blocked && !busy;
+        const blocked = run?.blocked && !busy;
         return el(
             "tr",
             {},
@@ -364,7 +501,7 @@ async function renderStatus() {
         );
     });
     for (const job of data.photos || []) {
-        const finished = job.job && job.job.finished_at;
+        const finished = job.job?.finished_at;
         const name = "photos:" + job.name;
         const running = daemon.running === name;
         const busy = running || job.pending;
@@ -459,7 +596,7 @@ function pairDialog(pair) {
             )
         ),
         field(t("pair:account"), select("account", accountOptions, p.account)),
-        field(t("pair:local"), el("input", { name: "local", value: p.local, required: true }), t("pair:local_hint")),
+        folderField(t("pair:local"), "local", p.local, t("pair:local_hint")),
         field(t("pair:remote"), el("input", { name: "remote", value: p.remote, required: true }), t("pair:remote_hint")),
         field(
             t("pair:mode"),
@@ -560,12 +697,12 @@ function checkbox(name, label, checked) {
 
 function photosDialog(job) {
     const editing = Boolean(job);
-    const j = job || Object.assign({ name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "" }, photoDefaults);
+    const j = job || { name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "", ...photoDefaults };
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
     const fields = [
         field(t("photos:name"), el("input", { name: "name", value: j.name, required: true, readonly: editing })),
         field(t("photos:account"), select("account", accountOptions, j.account)),
-        field(t("photos:target"), el("input", { name: "target", value: j.target, required: true }), t("photos:target_hint")),
+        folderField(t("photos:target"), "target", j.target, t("photos:target_hint")),
         el("fieldset", {}, el("legend", { text: t("photos:libraries") }),
             LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
@@ -631,7 +768,7 @@ async function renderAccounts() {
 function afterLogin(result) {
     // The dialog closes after this returns; open the code dialog on the next tick.
     if (result.state === "needs_2fa") setTimeout(() => codeDialog(result.name), 0);
-    guarded(renderAccounts);
+    void guarded(renderAccounts);
 }
 
 function accountDialog() {
@@ -734,16 +871,17 @@ function selectTab(name) {
     for (const section of document.querySelectorAll(".tab")) {
         section.hidden = section.id !== "tab-" + name;
     }
-    guarded(RENDER[name]);
+    void guarded(RENDER[name]);
     clearInterval(refreshTimer);
     if (name === "status") {
         refreshTimer = setInterval(() => {
-            if (!document.getElementById("dialog").open) guarded(renderStatus);
+            if (!document.querySelector("dialog[open]")) void guarded(renderStatus);
         }, REFRESH_MS);
     }
 }
 
 async function start() {
+    document.documentElement.lang = language() === "ger" ? "de" : "en";
     await loadStrings();
     for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
     for (const button of document.querySelectorAll("[data-tab]")) {
@@ -757,4 +895,4 @@ async function start() {
     selectTab(activeTab);
 }
 
-start();
+await start();

@@ -13,6 +13,7 @@ name = "docs"
 local = "/volume1/homes/seb/Docs"
 remote = "Documents"
 mode = "bidirectional"
+beta = true
 exclude = ["*.tmp"]
 max_delete_count = 10
 trash_days = 7
@@ -33,6 +34,7 @@ def test_load_valid(tmp_path: Path) -> None:
     config = load_config(path)
     docs = config.pair("docs")
     assert docs.mode is SyncMode.BIDIRECTIONAL
+    assert docs.beta
     assert docs.exclude == ("*.tmp",)
     assert docs.delete_brake.max_count == 10
     assert docs.delete_brake.max_ratio == 0.10
@@ -54,6 +56,11 @@ def test_load_valid(tmp_path: Path) -> None:
             "remote_provider",
         ),
         ({"name": "x", "local": "/a", "remote": 5, "mode": "upload"}, "wrong type"),
+        ({"name": "x", "local": "/a", "remote": "r", "mode": "bidirectional"}, "in beta"),
+        (
+            {"name": "x", "local": "/a", "remote": "r", "mode": "bidirectional", "beta": "yes"},
+            "true or false",
+        ),
         (
             {"name": "x", "local": "/a", "remote": "r", "mode": "upload", "trash_days": -1},
             "trash_days",
@@ -77,8 +84,9 @@ def test_missing_file(tmp_path: Path) -> None:
 
 
 def test_unknown_pair() -> None:
+    config = parse_config({})
     with pytest.raises(ConfigError, match="no sync pair"):
-        parse_config({}).pair("x")
+        config.pair("x")
 
 
 PHOTOS = """
@@ -114,16 +122,26 @@ def test_photos_jobs() -> None:
     seb = config.photos_job("seb")
     assert seb.apple_id == "seb@example.com"
     assert seb.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
-    assert seb.albums and seb.videos and seb.live_videos
-    assert seb.raw_alternative and seb.edited and seb.favorites and seb.xmp
-    assert not seb.hidden and seb.workers == 4
+    assert seb.albums
+    assert seb.videos
+    assert seb.live_videos
+    assert seb.raw_alternative
+    assert seb.edited
+    assert seb.favorites
+    assert seb.xmp
+    assert not seb.hidden
+    assert seb.workers == 4
     assert seb.layout.favorites_folder == "Favoriten"
     assert seb.layout.scheme == "{year}/{month}"
     anna = config.photos_job("anna")
-    assert anna.apple_id is None and not anna.albums
+    assert anna.apple_id is None
+    assert not anna.albums
     assert anna.libraries == (Library.PERSONAL,)
-    assert anna.layout.scheme == "{year}" and anna.layout.shared_folder == "Familie"
-    assert anna.hidden and not anna.xmp and anna.layout.hidden_folder == "Privat"
+    assert anna.layout.scheme == "{year}"
+    assert anna.layout.shared_folder == "Familie"
+    assert anna.hidden
+    assert not anna.xmp
+    assert anna.layout.hidden_folder == "Privat"
     assert anna.workers == 1
     assert config.photo_state_path("anna") == Path("/state/anna.photos.sqlite3")
     with pytest.raises(ConfigError, match="no photos job"):
@@ -146,8 +164,9 @@ def test_photos_invalid(extra: str, message: str) -> None:
     import tomllib
 
     text = f'[[photos]]\nname = "p"\ntarget = "/t"\n{extra}\n'
+    raw = tomllib.loads(text)
     with pytest.raises(ConfigError, match=message):
-        parse_config(tomllib.loads(text))
+        parse_config(raw)
 
 
 def test_photos_relative_target_and_duplicates() -> None:

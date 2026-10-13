@@ -1,6 +1,7 @@
 # Homeward – iCloud Sync for Synology DSM
 
 [![CI](https://github.com/sebiweise/homeward/actions/workflows/ci.yml/badge.svg)](https://github.com/sebiweise/homeward/actions/workflows/ci.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=sebiweise_homeward&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=sebiweise_homeward)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![DSM 7.2+](https://img.shields.io/badge/DSM-7.2%2B-0a5eb5)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)

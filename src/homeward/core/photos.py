@@ -68,6 +68,30 @@ class PhotoItem:
     def key(self) -> str:
         return f"{self.library}/{self.asset_id}/{self.resource}"
 
+    def variant(
+        self,
+        resource: str,
+        filename: str,
+        size: int | None,
+        checksum: str | None,
+        *,
+        sidecar_for: str | None = None,
+    ) -> "PhotoItem":
+        """Another file of the same photo; a sidecar is never linked into albums."""
+        return PhotoItem(
+            asset_id=self.asset_id,
+            resource=resource,
+            library=self.library,
+            filename=filename,
+            created=self.created,
+            size=size,
+            checksum=checksum,
+            albums=() if sidecar_for else self.albums,
+            hidden=self.hidden,
+            collection=self.collection,
+            sidecar_for=sidecar_for,
+        )
+
 
 class PhotoSource(Protocol):
     """The iCloud side of a photos job, implemented in ``homeward.providers``."""
@@ -125,7 +149,7 @@ class PhotoLayout:
 def check_scheme(scheme: str) -> None:
     """Raise ValueError unless ``scheme`` only uses ``{year}``, ``{month}`` and ``{day}``."""
     try:
-        rendered = scheme.format(**{name: "0" for name in SCHEME_FIELDS})
+        rendered = scheme.format(**dict.fromkeys(SCHEME_FIELDS, "0"))
     except (KeyError, IndexError, ValueError) as exc:
         fields = ", ".join(f"{{{name}}}" for name in SCHEME_FIELDS)
         raise ValueError(f"folder_scheme may only use {fields}: {exc}") from None
@@ -314,7 +338,29 @@ def build_photo_plan(
         return plan
 
     paths = _Paths(root, [r.path for r in records.values()] + list(links))
-    wanted_links: dict[tuple[str, str], str] = {}  # (key, album) -> primary path
+    seen, wanted_links = _plan_items(plan, source, root, records, paths, layout, albums=albums)
+    for key, record in sorted(records.items()):
+        if key not in seen and record.gone_at is None:
+            plan.actions.append(PhotoAction(PhotoActionKind.GONE, record.path, key=key))
+    existing = {(key, album): path for path, (key, album) in links.items()}
+    _plan_links(plan, root, layout, paths, existing, wanted_links)
+    _plan_unlinks(plan, records, existing, wanted_links, seen)
+    return plan
+
+
+def _plan_items(
+    plan: PhotoPlan,
+    source: PhotoSource,
+    root: Path,
+    records: dict[str, PhotoRecord],
+    paths: _Paths,
+    layout: PhotoLayout,
+    *,
+    albums: bool,
+) -> tuple[set[str], dict[tuple[str, str], str]]:
+    """Download what is new, restore or replace what changed. Returns the keys seen in
+    iCloud and the album links wanted, as (key, album) -> primary path."""
+    wanted_links: dict[tuple[str, str], str] = {}
     assigned: dict[str, str] = {}  # key -> NAS path, for placing sidecars
     seen: set[str] = set()
     for item in sorted(source.list_items(), key=lambda i: (i.created, i.key)):
@@ -323,33 +369,50 @@ def build_photo_plan(
         seen.add(item.key)
         record = records.get(item.key)
         if record is None:
-            wanted = layout.folder(item) / safe_component(item.filename, "photo")
-            beside = _sidecar_owner(item, assigned)
-            if beside is not None:
-                wanted = beside.with_name(f"{beside.name}{PurePosixPath(item.filename).suffix}")
-            path = paths.claim(wanted)
+            path = paths.claim(_new_path(item, layout, assigned))
             plan.actions.append(PhotoAction(PhotoActionKind.DOWNLOAD, path, item, item.key))
         else:
             path = record.path
-            if not (root / path).exists():
-                plan.actions.append(PhotoAction(PhotoActionKind.RESTORE, path, item, item.key))
-            elif _changed(record, item):
-                plan.actions.append(PhotoAction(PhotoActionKind.REPLACE, path, item, item.key))
-            elif record.gone_at is not None:
-                plan.actions.append(PhotoAction(PhotoActionKind.RETURNED, path, item, item.key))
-            else:
+            kind = _record_action(root, record, item)
+            if kind is None:
                 plan.up_to_date += 1
+            else:
+                plan.actions.append(PhotoAction(kind, path, item, item.key))
         assigned[item.key] = path
         if albums:
             for album in item.albums:
                 wanted_links[(item.key, album)] = path
+    return seen, wanted_links
 
-    for key, record in sorted(records.items()):
-        if key not in seen and record.gone_at is None:
-            plan.actions.append(PhotoAction(PhotoActionKind.GONE, record.path, key=key))
 
-    existing = {(key, album): path for path, (key, album) in links.items()}
-    folders = _album_folders(root, layout, existing, {album for _key, album in wanted_links})
+def _new_path(item: PhotoItem, layout: PhotoLayout, assigned: dict[str, str]) -> PurePosixPath:
+    beside = _sidecar_owner(item, assigned)
+    if beside is not None:
+        return beside.with_name(f"{beside.name}{PurePosixPath(item.filename).suffix}")
+    return layout.folder(item) / safe_component(item.filename, "photo")
+
+
+def _record_action(root: Path, record: PhotoRecord, item: PhotoItem) -> PhotoActionKind | None:
+    """What a photo downloaded before needs, or None when it is up to date."""
+    if not (root / record.path).exists():
+        return PhotoActionKind.RESTORE
+    if _changed(record, item):
+        return PhotoActionKind.REPLACE
+    if record.gone_at is not None:
+        return PhotoActionKind.RETURNED
+    return None
+
+
+def _plan_links(
+    plan: PhotoPlan,
+    root: Path,
+    layout: PhotoLayout,
+    paths: _Paths,
+    existing: dict[tuple[str, str], str],
+    wanted_links: dict[tuple[str, str], str],
+) -> None:
+    """Link every photo into the folders of its albums."""
+    folders = _album_folders(root, layout, existing, {key[1] for key in wanted_links})
     for (key, album), target in sorted(wanted_links.items()):
         link_path = existing.get((key, album))
         folder = folders[album]
@@ -365,11 +428,20 @@ def build_photo_plan(
         elif link_path is not None and (root / link_path).exists():
             continue
         if link_path is None:
-            name = PurePosixPath(target).name
-            link_path = paths.claim(folder / name)
+            link_path = paths.claim(folder / PurePosixPath(target).name)
         plan.actions.append(
             PhotoAction(PhotoActionKind.LINK, link_path, key=key, target=target, album=album)
         )
+
+
+def _plan_unlinks(
+    plan: PhotoPlan,
+    records: dict[str, PhotoRecord],
+    existing: dict[tuple[str, str], str],
+    wanted_links: dict[tuple[str, str], str],
+    seen: set[str],
+) -> None:
+    """Remove the links of photos that left an album but are still in iCloud."""
     for (key, album), link_path in sorted(existing.items()):
         if (key, album) not in wanted_links and key in seen:
             owner = records.get(key)
@@ -382,7 +454,6 @@ def build_photo_plan(
                     album=album,
                 )
             )
-    return plan
 
 
 def _album_folders(

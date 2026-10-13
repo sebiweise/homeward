@@ -51,8 +51,8 @@ MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
 CANCEL_POLL_SECONDS = 1.0
 
-# Exit codes of `homeward sync` (see homeward.cli); 4 means it ended on SIGTERM.
-_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "killed"}
+# Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
+_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed"}
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
     "ok": (Level.INFO, "sync_finished"),
@@ -60,6 +60,12 @@ _EVENTS = {
     "config_error": (Level.ERROR, "config_error"),
     "killed": (Level.WARNING, "sync_stopped"),
     "cancelled": (Level.WARNING, "sync_cancelled"),
+    "waiting": (Level.INFO, "sync_postponed"),
+}
+_MESSAGES = {
+    "killed": "stopped, runs again shortly",
+    "waiting": "iCloud is not ready yet, the next run tries again",
+    "cancelled": "cancelled by the user, finished steps are kept",
 }
 # results that send a DSM notification when they first occur
 _NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
@@ -216,7 +222,7 @@ class Scheduler:
         try:
             code = self._runner(job)
         except OSError as exc:
-            log.error("%s could not start: %s", job.name, exc)
+            log.exception("%s could not start: %s", job.name, exc)
             code = 127
         status.finished_at = self._clock()
         status.exit_code = code
@@ -225,10 +231,7 @@ class Scheduler:
             status.result = "cancelled"
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
-        message = {
-            "killed": "stopped, runs again shortly",
-            "cancelled": "cancelled by the user, finished steps are kept",
-        }.get(status.result, f"exit code {code}")
+        message = _MESSAGES.get(status.result or "", f"exit code {code}")
         record_event(level, job.name, event, message, paths=self.events,
                      dry_run=dry_run, exit_code=code)  # fmt: skip
         if status.result in _NOTIFY and status.result != previous and not dry_run:
