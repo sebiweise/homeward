@@ -493,7 +493,7 @@ async function renderStatus() {
                           "div",
                           { class: "notices-head" },
                           el("h3", { text: t("status:notices") }),
-                          el("button", { text: t("status:clear_notices"), title: t("status:clear_notices_hint"), onclick: clearNotices })
+                          el("button", { text: t("status:clear_notices"), title: t("status:clear_notices_hint"), onclick: () => void clearNotices() })
                       ),
                       eventTable(notices)
                   )
