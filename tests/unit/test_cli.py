@@ -328,11 +328,40 @@ def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     logging.getLogger("homeward").setLevel(logging.INFO)
     with _events(config, "photos:me"):
-        assert _reported(crash) == EXIT_FAILED
-        assert _reported(not_ready) == EXIT_WAITING
+        assert _reported(crash, "me") == EXIT_FAILED
+        assert _reported(not_ready, "me") == EXIT_WAITING
     events = read_events(Paths(var_dir=tmp_path, config=config))
     assert [(e.code, e.level) for e in events] == [("icloud_indexing", "warning"), ("log", "error")]
     assert events[1].message == "the run stopped: Photos service not available ('indexing')"
+
+
+def test_a_session_apple_rejects_mid_run_asks_for_a_new_sign_in(tmp_path: Path) -> None:
+    import logging
+
+    from homeward.cli import EXIT_FAILED, _events, _reported
+    from homeward.runtime import Paths, read_events
+
+    class PyiCloudAPIResponseException(Exception):
+        def __init__(self, message: str, code: int) -> None:
+            super().__init__(message)
+            self.code = code
+
+    class PyiCloudServiceUnavailable(Exception):
+        pass
+
+    def rejected() -> int:
+        try:
+            raise PyiCloudAPIResponseException("Authentication required for Account.", 421)
+        except PyiCloudAPIResponseException as exc:
+            raise PyiCloudServiceUnavailable("Photos service not available") from exc
+
+    config = tmp_path / "config.toml"
+    logging.getLogger("homeward").setLevel(logging.INFO)
+    with _events(config, "photos:me"):
+        assert _reported(rejected, "me") == EXIT_FAILED
+    [event] = read_events(Paths(var_dir=tmp_path, config=config))
+    assert (event.code, event.details.get("account")) == ("login_required", "me")
+    assert "homeward login --account me" in event.message
 
 
 def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
