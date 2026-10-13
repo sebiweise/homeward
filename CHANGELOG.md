@@ -3,6 +3,20 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
+## [Unreleased]
+
+### Changed
+
+- The DSM app is laid out like Cloud Sync: a sidebar with every sync pair and photos
+  backup, and per task the tabs Overview, Runs, Settings and Log. *Runs* lists each run
+  with its result, what it did and the waits, retries and errors during it.
+- Each run records a summary (files uploaded, downloaded, up to date, failed) in the
+  event log.
+- The notices on the status page leave out pairs and photo backups that were
+  deleted, and anything a later successful run of the same job has settled.
+- *Clear notices* hides the current notices on the status page. The event log on
+  the Log tab keeps every event.
+
 ## [0.1.0] - 2026-10-13
 
 First public release. Homeward is still beta: keep an independent backup of

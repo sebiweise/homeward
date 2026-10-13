@@ -1,6 +1,7 @@
-"""Overview for the status page: version, daemon state and each pair's last run,
-and cancelling a queued or running sync."""
+"""Overview for the status page: version, daemon state, each pair's last run and
+notices, cancelling a queued or running sync and clearing the notices."""
 
+import json
 import os
 import pwd
 import time
@@ -12,6 +13,7 @@ from homeward.api.handlers.common import check_name, existing_state, package_ver
 from homeward.api.server import Context, Request
 from homeward.runtime import (
     CancelRequest,
+    Event,
     Level,
     drop_request,
     pending_requests,
@@ -19,6 +21,7 @@ from homeward.runtime import (
     read_status,
     record_event,
     request_cancel,
+    write_json_atomic,
 )
 
 NOTICE_HOURS = 24
@@ -66,6 +69,23 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
     }
 
 
+def clear_notices(ctx: Context, request: Request) -> dict[str, Any]:
+    """Hide the current notices, of one ``source`` or all; the event log keeps them."""
+    source = request.get("source", "")
+    if source and source != "service" and not _is_job(source):
+        raise ApiError("invalid_param", "source")
+    cleared_at = time.time()
+    data = _cleared(ctx)
+    if source:
+        data.setdefault("sources", {})[source] = cleared_at
+    else:
+        data = {"cleared_at": cleared_at}
+    write_json_atomic(ctx.paths.notices_file, data)
+    record_event(Level.INFO, source or "service", "notices_cleared",
+                 "notices cleared in the DSM UI", paths=ctx.paths)  # fmt: skip
+    return {"cleared_at": cleared_at}
+
+
 def cancel(ctx: Context, request: Request) -> dict[str, Any]:
     """Stop a sync: a queued one is dropped, a running one is asked to stop.
 
@@ -86,13 +106,25 @@ def cancel(ctx: Context, request: Request) -> dict[str, Any]:
 
 
 def notices(ctx: Context) -> list[dict[str, Any]]:
-    """Running waits and recent warnings or errors, the newest per source and code."""
+    """Running waits and recent warnings or errors, the newest per source and code.
+
+    Left out: events from before the user last cleared the notices, events of
+    pairs and photo backups that no longer exist, and events from
+    before the last run of the same job that finished fine. The event log
+    keeps all of them.
+    """
     now = time.time()
+    cleared = _cleared(ctx)
+    since = max(now - NOTICE_HOURS * 3600, float(cleared.get("cleared_at", 0.0)))
+    by_source: dict[str, float] = cleared.get("sources", {})
+    shown = _ShownSources(_existing_sources(ctx))
     seen: set[tuple[str, str]] = set()
     result = []
     for event in read_events(ctx.paths, limit=2000):
-        if event.time < now - NOTICE_HOURS * 3600:
+        if event.time <= since:
             break
+        if event.time <= by_source.get(event.source, 0.0) or not shown.keeps(event):
+            continue
         waiting = event.until is not None and event.until > now
         key = (event.source, event.code)
         if key in seen:
@@ -104,6 +136,47 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
         if len(result) >= MAX_NOTICES:
             break
     return result
+
+
+class _ShownSources:
+    """Decides, newest event first, which events still need the user's attention."""
+
+    def __init__(self, existing: set[str]) -> None:
+        self.existing = existing
+        self.finished: set[str] = set()  # a later run of this source finished fine
+        self.settled: set[str] = set()  # older events of this source are dealt with
+
+    def keeps(self, event: Event) -> bool:
+        source = event.source
+        if source in self.settled or (_is_job(source) and source not in self.existing):
+            return False
+        if event.code == "sync_finished":
+            self.finished.add(source)
+        elif event.code == "sync_started" and source in self.finished:
+            self.settled.add(source)  # everything before this good run is resolved
+        return True
+
+
+def _is_job(source: str) -> bool:
+    return source.startswith(("pair:", "photos:"))
+
+
+def _existing_sources(ctx: Context) -> set[str]:
+    config = ctx.store.load()
+    return {f"pair:{pair.name}" for pair in config.pairs} | {
+        f"photos:{job.name}" for job in config.photos
+    }
+
+
+def _cleared(ctx: Context) -> dict[str, Any]:
+    """``cleared_at`` (all notices) and ``sources`` (one job's) from the last clearing."""
+    try:
+        data = json.loads(ctx.paths.notices_file.read_text(encoding="utf-8"))
+        cleared_at = float(data.get("cleared_at", 0.0))
+        sources = {str(k): float(v) for k, v in dict(data.get("sources") or {}).items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+    return {"cleared_at": cleared_at, "sources": sources}
 
 
 def _user() -> str:
