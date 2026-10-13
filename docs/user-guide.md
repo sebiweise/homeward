@@ -56,6 +56,11 @@ Homeward keeps only the trusted session Apple hands out after the 2FA step (in
 When Apple expires the session, the affected jobs fail and the Accounts tab asks you to
 sign in again. A failed sync also sends a DSM notification.
 
+NAS folders are picked with *Browse...*: it lists the shared folders the user
+`homeward` can open, and *New folder* creates one in place. A share missing there
+needs read/write permission for `homeward` (see above). Typing the full path still
+works.
+
 Every change in the app is checked before it is saved; the previous configuration is
 kept in `var/config-backups/` (the last 20). Removing a pair, a photos backup or an
 account never touches any files.
@@ -147,7 +152,7 @@ exclude = ["*.tmp", "Archive"]
 | --- | --- |
 | `upload` | NAS → iCloud. The NAS wins; files that only exist in iCloud are left alone. |
 | `download` | iCloud → NAS. iCloud wins; files that only exist on the NAS are left alone. |
-| `bidirectional` | Changes flow both ways; a file changed on both sides keeps both versions as a conflict copy. Beta. |
+| `bidirectional` | Changes flow both ways; a file changed on both sides keeps both versions as a conflict copy. Beta: needs `beta = true` in the pair (the DSM app sets it when you pick this mode). |
 
 Optional settings:
 
@@ -160,6 +165,11 @@ Optional settings:
 
 Synology system folders (`@eaDir`, `#recycle`, …), `.DS_Store` and temporary files are
 always excluded.
+
+In `bidirectional` mode a rename or move on either side is carried out as "old name to
+the trash, new name copied over" and does not count for the delete brake. iCloud Drive
+does not keep names apart that differ only in upper/lower case (`notes.txt`,
+`Notes.txt`); such a NAS file is not uploaded and shows up as skipped in every run.
 
 ## Safety nets
 

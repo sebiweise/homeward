@@ -28,6 +28,7 @@ local = "{tmp_path / "nas"}"
 remote = "{tmp_path / "cloud"}"
 remote_provider = "{provider}"
 mode = "bidirectional"
+beta = true
 """
     )
     return config
@@ -40,8 +41,10 @@ def test_sync_dry_run_then_real(tmp_path: Path, capsys: pytest.CaptureFixture[st
 
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "upload" in out and "a.txt" in out
-    assert "download" in out and "b.txt" in out
+    assert "upload" in out
+    assert "a.txt" in out
+    assert "download" in out
+    assert "b.txt" in out
     assert "Dry run" in out
     assert not (tmp_path / "cloud" / "a.txt").exists()
 
@@ -67,6 +70,23 @@ def test_sync_delete_brake_exit_code(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main(["sync", "--config", str(config), "--allow-deletes"]) == EXIT_OK
     assert not (tmp_path / "cloud" / "0.txt").exists()
     assert (tmp_path / "cloud" / ".homeward-papierkorb").is_dir()
+
+
+def test_sync_shows_renames(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = _config(tmp_path)
+    for i in range(3):
+        (tmp_path / "nas" / f"{i}.txt").write_text(str(i))
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    (tmp_path / "nas" / "0.txt").rename(tmp_path / "nas" / "zero.txt")
+    capsys.readouterr()
+
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "(bidirectional, beta)" in out
+    assert "0.txt -> zero.txt" in out
+    assert "1 of the deletes are renames" in out
+    assert (tmp_path / "cloud" / "zero.txt").read_text() == "0"
+    assert not (tmp_path / "cloud" / "0.txt").exists()
 
 
 def test_icloud_sign_in_uses_the_stored_session(
@@ -167,7 +187,8 @@ def test_photos_dry_run_then_real(
 
     assert main(["photos", "--config", str(config), "--dry-run"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "download  2024/05/a.jpg" in out and "Dry run" in out
+    assert "download  2024/05/a.jpg" in out
+    assert "Dry run" in out
     assert not (tmp_path / "photos").exists()
 
     assert main(["photos", "--config", str(config), "--job", "seb"]) == EXIT_OK
@@ -275,7 +296,7 @@ def test_photos_refuses_a_second_run_for_the_same_account(
 def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     import logging
 
-    from homeward.cli import EXIT_FAILED, _events, _reported
+    from homeward.cli import EXIT_FAILED, EXIT_WAITING, _events, _reported
     from homeward.providers.icloud_photos import PhotosNotReady
     from homeward.runtime import Paths, read_events
 
@@ -295,7 +316,7 @@ def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     logging.getLogger("homeward").setLevel(logging.INFO)
     with _events(config, "photos:me"):
         assert _reported(crash) == EXIT_FAILED
-        assert _reported(not_ready) == EXIT_FAILED
+        assert _reported(not_ready) == EXIT_WAITING
     events = read_events(Paths(var_dir=tmp_path, config=config))
     assert [(e.code, e.level) for e in events] == [("icloud_indexing", "warning"), ("log", "error")]
     assert events[1].message == "the run stopped: Photos service not available ('indexing')"
@@ -319,3 +340,11 @@ def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
     assert run.returncode == 1, run.stderr
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [e["code"] for e in events] == ["login_required"]
+
+
+def test_the_worst_exit_code_wins() -> None:
+    from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_OK, EXIT_WAITING, _worst
+
+    assert _worst(EXIT_OK, EXIT_WAITING) == EXIT_WAITING
+    assert _worst(EXIT_WAITING, EXIT_FAILED) == EXIT_FAILED
+    assert _worst(EXIT_BLOCKED, EXIT_WAITING) == EXIT_BLOCKED

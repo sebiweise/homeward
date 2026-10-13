@@ -82,3 +82,19 @@ dialog label.check { flex-direction: row; align-items: center; gap: 8px; }
 label.inline { display: flex; align-items: center; gap: 8px; }
 #notices h3 { margin-top: 0; }
 #notices { margin-bottom: 16px; }
+.folder-input { display: flex; gap: 6px; }
+.folder-input[hidden] { display: none; }
+.folder-input input { flex: 1; min-width: 0; }
+dialog.picker { width: 520px; }
+dialog.picker .body { gap: 8px; }
+.picker .nav { display: flex; align-items: center; gap: 8px; }
+.picker .where { font-weight: bold; overflow-wrap: anywhere; }
+.picker .folders { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 3px;
+  height: 300px; overflow: auto; }
+.picker .folders li { border-bottom: 1px solid var(--line); }
+.picker .folders li.muted { padding: 8px; border-bottom: 0; }
+.picker button.folder { display: flex; gap: 8px; width: 100%; text-align: left; border: 0; border-radius: 0;
+  padding: 6px 8px; background: none; }
+.picker button.folder:hover { background: var(--panel); }
+.picker button.folder .name { flex: 1; overflow-wrap: anywhere; }
+.picker .foot .spacer { flex: 1; }

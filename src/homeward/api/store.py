@@ -60,6 +60,29 @@ class ConfigStore:
                 raise ApiError("config_not_writable", str(exc), status=500) from exc
             return config
 
+    def migrate(self) -> list[str]:
+        """Bring a config saved by an older version up to date; return the pairs changed.
+
+        Bidirectional pairs saved before the ``beta`` flag existed could only be created
+        through the UI's "Both directions (beta)" choice, so they get ``beta = true``.
+        """
+        with self._locked():
+            if not self.paths.config.exists():
+                return []
+            raw = self.read()
+            changed = []
+            for pair in raw.get("pair", []):
+                if (
+                    isinstance(pair, dict)
+                    and pair.get("mode") == "bidirectional"
+                    and "beta" not in pair
+                ):
+                    pair["beta"] = True
+                    changed.append(str(pair.get("name")))
+            if changed:
+                self._write(raw)
+            return changed
+
     @contextmanager
     def _locked(self) -> Iterator[None]:
         lock_path = self.paths.config.with_name(f".{self.paths.config.name}.lock")

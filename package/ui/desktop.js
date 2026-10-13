@@ -15,7 +15,7 @@ Ext.define("SYNO.SDS.Homeward.MainWindow", {
     extend: "SYNO.SDS.AppWindow",
     constructor: function (config) {
         this.appInstance = config.appInstance;
-        var src = "webman/3rdparty/homeward/index.html?_=" + new Date().getTime();
+        const src = "webman/3rdparty/homeward/index.html?_=" + Date.now();
         this.callParent([Ext.apply({
             layout: "fit",
             cls: "syno-app-win",
