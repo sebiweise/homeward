@@ -112,6 +112,10 @@ def test_conflict_copies_send_a_notification(
     assert sent == []
     assert main(["sync", "--config", str(config)]) == EXIT_OK
     assert sent == [("conflicts", "docs", "1")]
+    summary = next(e for e in _events(tmp_path) if e.code == "sync_summary")
+    [conflict] = summary.details["files"]
+    assert (conflict["kind"], conflict["path"]) == ("conflict", "a.txt")
+    assert conflict["to"].startswith("a (Konflikt NAS ")
 
 
 def test_sync_shows_renames(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

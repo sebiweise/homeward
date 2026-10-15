@@ -340,7 +340,7 @@ class EventLogHandler(logging.Handler):
         else:
             level = Level.INFO
         until = getattr(record, "until", None)
-        keys = ("account", "counts")
+        keys = ("account", "counts", "files", "files_total")
         details = {key: getattr(record, key) for key in keys if hasattr(record, key)}
         record_event(
             level,

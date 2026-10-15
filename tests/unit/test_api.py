@@ -679,7 +679,9 @@ def test_run_history_of_one_job(client: Client) -> None:
     _run_event(paths, 780, "sync_postponed", exit_code=4)
     _run_event(paths, 700, "sync_started", dry_run=True)
     _run_event(paths, 690, "file_failed", Level.WARNING)
-    _run_event(paths, 680, "sync_summary", counts={"download": 3, "failed": 1})
+    deleted = [{"kind": "delete", "path": "2024/05/a.jpg", "to": ""}]
+    _run_event(paths, 680, "sync_summary", counts={"download": 3, "failed": 1}, files=deleted,
+               files_total=4)  # fmt: skip
     _run_event(paths, 670, "sync_failed", Level.ERROR, exit_code=1, dry_run=True)
     _run_event(paths, 100, "sync_started", dry_run=False)
     record_event(Level.ERROR, "pair:docs", "file_failed", paths=paths)  # another job
@@ -690,6 +692,8 @@ def test_run_history_of_one_job(client: Client) -> None:
     running, failed, postponed, finished = runs
     assert running["finished_at"] is None and running["events"] == []
     assert failed["dry_run"] and failed["counts"] == {"download": 3, "failed": 1}
+    assert (failed["files"], failed["files_total"]) == (deleted, 4)
+    assert (finished["files"], finished["files_total"]) == ([], 0)
     assert failed["level"] == "error"
     assert [e["code"] for e in failed["events"]] == ["file_failed"]
     assert [e["code"] for e in postponed["events"]] == ["icloud_indexing"]

@@ -915,9 +915,21 @@ function runDetail(run, running) {
         "div",
         { class: "run-detail" },
         infoCard(t("run:title"), rows),
+        run.files && run.files.length ? runFiles(run) : null,
         el("section", { class: "card" }, el("h3", { text: t("run:events") }),
             run.events.length ? eventTable(run.events, false) : el("p", { class: "muted", text: t("run:no_events") }))
     );
+}
+
+// Files the run deleted (to the trash), replaced, kept as conflict copies or moved.
+function runFiles(run) {
+    const rows = run.files.map((file) =>
+        el("tr", {}, el("td", { text: t("file:" + file.kind) }),
+            el("td", { class: "path", text: file.to ? file.path + " → " + file.to : file.path })));
+    const more = run.files_total > run.files.length ? t("run:files_more", run.files_total - run.files.length) : null;
+    return el("section", { class: "card" }, el("h3", { text: t("run:files") }),
+        table([t("run:file_kind"), t("run:file_path")], rows),
+        more ? el("p", { class: "muted", text: more }) : null);
 }
 
 // --- job: settings ---------------------------------------------------------------------

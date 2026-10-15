@@ -26,7 +26,7 @@ from homeward.core.config import (
 )
 from homeward.core.models import ActionKind, FolderMissing, SyncMode
 from homeward.core.photo_state import PhotoStateDB
-from homeward.core.photos import PhotoOutcome, PhotoSource, backup_photos
+from homeward.core.photos import PhotoActionKind, PhotoOutcome, PhotoSource, backup_photos
 from homeward.core.progress import Progress, ProgressLogHandler
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
@@ -259,7 +259,7 @@ def _sync_one(
             notifier(Event.CONFLICTS, pair.name, str(conflicts))
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
-    _log_summary(f"pair {pair.name}", counts, failed)
+    _log_summary(f"pair {pair.name}", counts, failed, _pair_files(outcome))
     if not args.dry_run:
         purged = local.purge_trash(pair.trash_days)
         if purged:
@@ -378,7 +378,7 @@ def _photos_one(
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     counts["up_to_date"] = outcome.plan.up_to_date
-    _log_summary(f"photos {job.name}", counts, failed)
+    _log_summary(f"photos {job.name}", counts, failed, _photo_files(outcome))
     if not args.dry_run:
         # Also without mirror_deletes: replaced files land there too. Only the
         # backup's own trash: DSM empties #recycle on its own schedule.
@@ -401,13 +401,53 @@ def _selection(job: PhotosConfig) -> str:
     return f"{libraries}:" + "".join("1" if on else "0" for on in switches)
 
 
-def _log_summary(what: str, counts: dict[str, int], failed: int) -> None:
+# The run details in the UI list the files a run removed, replaced or kept twice.
+MAX_LISTED_FILES = 200
+
+
+def _log_summary(
+    what: str, counts: dict[str, int], failed: int, files: list[dict[str, str]] | None = None
+) -> None:
     """Record what a run did (planned, for a dry run), so the DSM UI can show it."""
     counts = {kind: n for kind, n in counts.items() if n}
     if failed:
         counts["failed"] = failed
     text = ", ".join(f"{n} {kind}" for kind, n in counts.items()) or "nothing to do"
-    log.info("%s: %s", what, text, extra={"event": "sync_summary", "counts": counts})
+    extra: dict[str, object] = {"event": "sync_summary", "counts": counts}
+    if files:
+        extra["files"] = files[:MAX_LISTED_FILES]
+        extra["files_total"] = len(files)
+    log.info("%s: %s", what, text, extra=extra)
+
+
+def _pair_files(outcome: SyncOutcome) -> list[dict[str, str]]:
+    """Deleted, replaced and conflicting files of a pair's run (planned in a dry run)."""
+    actions = outcome.plan.actions if outcome.result is None else outcome.result.done
+    files = []
+    for action in actions:
+        if action.kind in (ActionKind.DELETE_LOCAL, ActionKind.DELETE_REMOTE):
+            kind = "renamed" if action.renamed_to else str(action.kind)
+            files.append({"kind": kind, "path": action.path, "to": action.renamed_to or ""})
+        elif action.kind is ActionKind.CONFLICT:
+            copy = action.conflict_path or ""
+            files.append({"kind": "conflict", "path": action.path, "to": copy})
+        elif action.overwrite and action.kind in (ActionKind.UPLOAD, ActionKind.DOWNLOAD):
+            side = "replaced-remote" if action.kind is ActionKind.UPLOAD else "replaced-local"
+            files.append({"kind": side, "path": action.path, "to": ""})
+    return files
+
+
+def _photo_files(outcome: PhotoOutcome) -> list[dict[str, str]]:
+    """Deleted, replaced and moved photos of a run (planned in a dry run)."""
+    actions = outcome.plan.actions if outcome.result is None else outcome.result.done
+    kinds = {PhotoActionKind.DELETE: "delete", PhotoActionKind.REPLACE: "replace"}
+    files = []
+    for action in actions:
+        if action.kind is PhotoActionKind.MOVE:
+            files.append({"kind": "move", "path": action.target or "", "to": action.path})
+        elif action.kind in kinds:
+            files.append({"kind": kinds[action.kind], "path": action.path, "to": ""})
+    return files
 
 
 @contextlib.contextmanager
