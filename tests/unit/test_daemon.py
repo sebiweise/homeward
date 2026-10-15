@@ -6,6 +6,7 @@ import pytest
 
 from homeward.core.config import ConfigError
 from homeward.daemon.scheduler import (
+    WAITING_RETRY_MINUTES,
     Daemon,
     Job,
     Scheduler,
@@ -91,6 +92,26 @@ def test_jobs_run_once_per_interval(tmp_path: Path) -> None:
     clock.now += 60
     scheduler.run_due()
     assert runner.calls == ["pair:docs", "pair:docs"]
+
+
+def test_a_job_waiting_for_icloud_is_tried_again_soon(tmp_path: Path) -> None:
+    clock, runner = Clock(), Recorder(code=4)  # EXIT_WAITING
+    scheduler = _scheduler(tmp_path, runner, clock)
+    scheduler.update(load_plan(_config(tmp_path, "[daemon]\ninterval_minutes = 360")))
+
+    scheduler.run_due()
+    assert scheduler.status["pair:docs"].result == "waiting"
+    assert (
+        json.loads((tmp_path / "status.json").read_text())["jobs"]["pair:docs"]["next_due"]
+        == clock.now + WAITING_RETRY_MINUTES * 60
+    )
+    clock.now += (WAITING_RETRY_MINUTES - 1) * 60
+    assert scheduler.run_due() == []
+    clock.now += 60
+    runner.code = 0
+    assert len(scheduler.run_due()) == 1
+    clock.now += WAITING_RETRY_MINUTES * 60
+    assert scheduler.run_due() == []  # back to the normal interval
 
 
 def test_a_pair_can_have_its_own_interval(tmp_path: Path) -> None:

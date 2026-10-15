@@ -23,6 +23,12 @@ All notable changes to Homeward are listed here. Versions follow
 
 ### Changed
 
+- "Waiting for iCloud": a library zone Apple is still indexing only holds up a photos
+  backup when the backup includes it (pyicloud gave up on any zone, even ones no backup
+  reads). The log names the library and Apple's progress, e.g. "the Shared Library
+  (73 %)". A run waits at most 3 minutes for it instead of 8, so other jobs are not held
+  up, and the daemon tries a waiting job again after 15 minutes instead of a whole
+  interval.
 - A photos backup reads only what changed in iCloud when it safely can (from iCloud's
   change feed) instead of the whole library, which took about 20 minutes for 28,000
   photos. It still reads the whole library on the first run, after a run with errors,

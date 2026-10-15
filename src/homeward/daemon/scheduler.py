@@ -54,6 +54,9 @@ log = logging.getLogger("homeward.daemon")
 MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
 CANCEL_POLL_SECONDS = 1.0
+# A run iCloud was not ready for (e.g. still indexing) is tried again this soon,
+# instead of after the whole interval.
+WAITING_RETRY_MINUTES = 15
 
 # Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
 _RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed"}
@@ -68,7 +71,7 @@ _EVENTS = {
 }
 _MESSAGES = {
     "killed": "stopped, runs again shortly",
-    "waiting": "iCloud is not ready yet, the next run tries again",
+    "waiting": f"iCloud is not ready yet, trying again in {WAITING_RETRY_MINUTES} minutes",
     "cancelled": "cancelled by the user, finished steps are kept",
 }
 # results that send a DSM notification when they first occur
@@ -206,7 +209,7 @@ class Scheduler:
         status = self.status.get(job.name, JobStatus())
         if status.started_at is None or status.finished_at is None or status.result == "killed":
             return 0.0  # never ran, or a stop or crash interrupted the last run
-        return status.started_at + self.interval_minutes(job) * 60.0
+        return status.started_at + self._minutes_after(job, status) * 60.0
 
     def due(self) -> list[Job]:
         now = self._clock()
@@ -288,11 +291,15 @@ class Scheduler:
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
         tmp.replace(self.status_path)
 
+    def _minutes_after(self, job: Job, status: JobStatus) -> int:
+        interval = self.interval_minutes(job)
+        return min(interval, WAITING_RETRY_MINUTES) if status.result == "waiting" else interval
+
     def _next_due_in_status(self, job: Job) -> float | None:
-        started = self.status[job.name].started_at
-        if job.name in self._forced or started is None:
+        status = self.status[job.name]
+        if job.name in self._forced or status.started_at is None:
             return None
-        return started + self.interval_minutes(job) * 60.0
+        return status.started_at + self._minutes_after(job, status) * 60.0
 
     def _load_status(self) -> dict[str, JobStatus]:
         try:

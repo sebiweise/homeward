@@ -11,6 +11,7 @@ from homeward.core.photos import FAVORITES_ALBUM, Library
 from homeward.providers.icloud_photos import (
     RENEW_AFTER,
     ICloudPhotosSource,
+    Indexing,
     PhotoOptions,
     PhotosNotReady,
 )
@@ -618,6 +619,103 @@ def test_waits_when_pyicloud_wraps_the_indexing_refusal() -> None:
     source = ICloudPhotosSource(service, [Library.PERSONAL], sleep=pauses.append)
     assert source.cursor() is not None
     assert pauses == [60.0]
+
+
+class _IndexingZone:
+    """pyicloud's photos service while Apple indexes one library zone."""
+
+    streams = None
+
+    @property
+    def libraries(self) -> dict[str, Library_]:
+        raise PyiCloudServiceNotActivatedException("not finished indexing")
+
+
+def test_a_zone_the_backup_does_not_need_does_not_hold_it_up(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, pauses = make_service(), []
+    libraries = service.photos.libraries
+    service.photos = _IndexingZone()  # type: ignore[assignment]
+
+    def open_zones(photos: object) -> tuple[dict[str, Any], dict[str, Indexing]]:
+        return {"root": libraries["root"]}, {"shared:SharedSync-1": Indexing("RUNNING", 73)}
+
+    source = ICloudPhotosSource(
+        service, [Library.PERSONAL], sleep=pauses.append, open_zones=open_zones
+    )
+    with caplog.at_level("INFO", logger="homeward"):
+        keys = {item.key for item in source.list_items()}
+    assert keys == {"personal/a/original", "personal/b/original",
+                    "personal/b/original_video", "personal/v/original"}  # fmt: skip
+    assert pauses == []
+    assert "the Shared Library (73 %), which this backup does not include" in caplog.text
+
+
+def test_a_needed_zone_that_is_indexing_is_named_with_its_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, pauses = make_service(), []
+    libraries = service.photos.libraries
+    service.photos = _IndexingZone()  # type: ignore[assignment]
+
+    def open_zones(photos: object) -> tuple[dict[str, Any], dict[str, Indexing]]:
+        return {"root": libraries["root"]}, {"shared:SharedSync-1": Indexing("RUNNING", 73)}
+
+    source = ICloudPhotosSource(
+        service, [Library.PERSONAL, Library.SHARED], sleep=pauses.append, open_zones=open_zones
+    )
+    with caplog.at_level("INFO", logger="homeward"), pytest.raises(PhotosNotReady) as excinfo:
+        source.cursor()
+    assert pauses == [60.0, 120.0]
+    assert "iCloud is still indexing the Shared Library (73 %)" in str(excinfo.value)
+    assert "the Shared Library (73 %), waiting 60 s" in caplog.text
+
+
+def test_pyicloud_zones_are_opened_one_by_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pyicloud")
+    from types import SimpleNamespace
+
+    from pyicloud.common.cloudkit import models
+    from pyicloud.services.photos_cloudkit import service as pyicloud_service
+
+    from homeward.providers.icloud_photos import pyicloud_open_zones
+
+    def zone(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            deleted=False, syncToken=f"token-{name}", zoneID=models.CKZoneID(zoneName=name)
+        )
+
+    class Client:
+        def zones_list(self) -> SimpleNamespace:
+            names = ("PrimarySync", "SharedSync-1", "SomeOtherZone")
+            return SimpleNamespace(zones=[zone(n) for n in names])
+
+        def query(self, **kwargs: Any) -> SimpleNamespace:
+            assert kwargs["zone_id"].zoneName == "SomeOtherZone"
+            record = models.CKRecord.model_validate({
+                "recordName": "x", "recordType": "CheckIndexingState",
+                "fields": {"state": {"value": "RUNNING", "type": "STRING"},
+                           "progress": {"value": 40, "type": "INT64"}},
+            })  # fmt: skip
+            return SimpleNamespace(records=[record])
+
+    class PhotoLibrary:
+        def __init__(self, photos: object, *, zone_id: dict[str, str], **kwargs: Any) -> None:
+            if zone_id["zoneName"] == "SomeOtherZone":
+                raise PyiCloudServiceNotActivatedException("not finished indexing")
+            self.zone_id, self.scope = zone_id, kwargs["scope"]
+
+    monkeypatch.setattr(pyicloud_service, "PhotoLibrary", PhotoLibrary)
+    root = SimpleNamespace(current_sync_token=None)
+    photos = SimpleNamespace(private_client=Client(), _root_library=root)
+
+    opened, waiting = pyicloud_open_zones(photos)
+
+    assert set(opened) == {"root", "shared:SharedSync-1"}
+    assert opened["shared:SharedSync-1"].scope == "shared-library"
+    assert root.current_sync_token == "token-PrimarySync"
+    assert waiting == {"SomeOtherZone": Indexing("RUNNING", 40)}
 
 
 def test_download_threads_get_their_own_session_with_icloud_cookies() -> None:

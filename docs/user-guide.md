@@ -275,3 +275,13 @@ log excerpt.
 
 When you open an issue, attach the relevant part of `homeward.log` and remove Apple IDs,
 names and paths you do not want to share.
+
+### Photos backup shows "Waiting for iCloud"
+
+Apple answers "not finished indexing" while it rebuilds the index of a photo library,
+for example after many photos were added or edited on a device. Homeward then waits up
+to 3 minutes within the run and otherwise tries again 15 minutes later; the log names
+the library and, when Apple reports it, how far the indexing is ("the Shared Library
+(73 %)"). Only the libraries the backup includes count: indexing of another library is
+logged and skipped. If it lasts for days, open icloud.com/photos once; that usually
+gets Apple's indexing going.
