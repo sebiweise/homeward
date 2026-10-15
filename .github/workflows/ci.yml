@@ -19,11 +19,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: 'pip install --only-binary :all: -e ".[dev]"'
+      # The same pinned pyicloud the package bundles, so its tests run instead of skipping.
+      - run: 'pip install --only-binary :all: --require-hashes -r requirements/icloud.txt'
+      - run: 'pip install --only-binary :all: -e ".[dev,icloud]"'
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: pytest
+      - run: pytest --cov=homeward --cov-report=term --cov-report=markdown-append:"$GITHUB_STEP_SUMMARY" --cov-fail-under=90
       - run: shellcheck package/scripts/service-setup.sh tools/test_spk_lifecycle.sh spksrc/spk/homeward/src/service-setup.sh
 
   spk:

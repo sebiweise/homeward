@@ -27,7 +27,7 @@ dependencies = []
 
 [project.optional-dependencies]
 icloud = ["pyicloud>=2.7,<2.8", "rich"]  # pyicloud 2.7 imports rich without declaring it
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8", "pytest-cov>=6.1", "ruff>=0.6", "mypy>=1.11"]
 
 [project.urls]
 Homepage = "https://github.com/sebiweise/homeward"

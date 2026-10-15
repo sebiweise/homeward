@@ -94,16 +94,25 @@ service_postuninst() {
 
 # Copy config and state into the package's share before DSM deletes var/, so a
 # reinstall can pick them up again. The synced files themselves live in shares
-# and are never touched by an uninstall.
+# and are never touched by an uninstall. The iCloud sessions (trusted-session
+# cookies) stay behind: anyone who can read the share could use them to reach the
+# Apple ID, so a reinstall asks to sign in again instead.
 backup_var() {
     if [ ! -d "${PKG_SHARE}" ] || [ ! -f "${CONFIG}" ]; then
         return 0
     fi
     dest="${PKG_SHARE}/.homeward-backup/$(date +%Y-%m-%d_%H%M%S)"
-    echo "Saving configuration and state to ${dest}"
+    echo "Saving configuration and state (without the iCloud sessions) to ${dest}"
     mkdir -p "${dest}" && cp -p "${CONFIG}" "${dest}/" || return 0
     if [ -d "${PKG_VAR}/state" ]; then
-        cp -pR "${PKG_VAR}/state" "${dest}/"
+        mkdir -p "${dest}/state"
+        for entry in "${PKG_VAR}/state"/* "${PKG_VAR}/state"/.[!.]*; do
+            [ -e "${entry}" ] || continue
+            case "$(basename "${entry}")" in
+                sessions | sessions-pending) continue ;;
+            esac
+            cp -pR "${entry}" "${dest}/state/"
+        done
     fi
 }
 
