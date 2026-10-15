@@ -27,6 +27,7 @@ from typing import BinaryIO, Protocol
 
 from homeward.core.files import link_noreplace, rename_noreplace, temp_name
 from homeward.core.photo_state import PhotoRecord, PhotoStateDB
+from homeward.core.progress import Progress
 from homeward.core.rules import TRASH_DIR
 
 log = logging.getLogger(__name__)
@@ -327,9 +328,12 @@ def build_photo_plan(
     layout: PhotoLayout | None = None,
     *,
     albums: bool = True,
+    progress: Progress | None = None,
 ) -> PhotoPlan:
     """Compare iCloud with the state of the last run and decide what to fetch or link."""
     layout = layout or PhotoLayout()
+    progress = progress or Progress()
+    progress.phase("checking")
     records = state.records(job)
     links = state.links(job)
     cursor = source.cursor()
@@ -344,7 +348,10 @@ def build_photo_plan(
         return plan
 
     paths = _Paths(root, [r.path for r in records.values()] + list(links))
-    seen, wanted_links = _plan_items(plan, source, root, records, paths, layout, albums=albums)
+    progress.phase("listing")  # the source sets the total once it knows it
+    items = sorted(source.list_items(), key=lambda i: (i.created, i.key))
+    progress.phase("planning", total=len(items))
+    seen, wanted_links = _plan_items(plan, items, root, records, paths, layout, progress, albums)
     for key, record in sorted(records.items()):
         if key not in seen and record.gone_at is None:
             plan.actions.append(PhotoAction(PhotoActionKind.GONE, record.path, key=key))
@@ -356,12 +363,12 @@ def build_photo_plan(
 
 def _plan_items(
     plan: PhotoPlan,
-    source: PhotoSource,
+    items: list[PhotoItem],
     root: Path,
     records: dict[str, PhotoRecord],
     paths: _Paths,
     layout: PhotoLayout,
-    *,
+    progress: Progress,
     albums: bool,
 ) -> tuple[set[str], dict[tuple[str, str], str]]:
     """Download what is new, restore or replace what changed. Returns the keys seen in
@@ -369,7 +376,8 @@ def _plan_items(
     wanted_links: dict[tuple[str, str], str] = {}
     assigned: dict[str, str] = {}  # key -> NAS path, for placing sidecars
     seen: set[str] = set()
-    for item in sorted(source.list_items(), key=lambda i: (i.created, i.key)):
+    for item in items:
+        progress.advance()
         if item.key in seen:
             continue
         seen.add(item.key)
@@ -508,8 +516,10 @@ class PhotoExecutor:
         *,
         today: Callable[[], date] = date.today,
         workers: int = 1,
+        progress: Progress | None = None,
     ) -> None:
         self.source = source
+        self.progress = progress or Progress()
         self.root = root
         self.state = state
         self.job = job
@@ -528,6 +538,10 @@ class PhotoExecutor:
         files = [a for a in actions if a.kind in _FILE_KINDS]
         self._bytes, self._fetched, self._files = 0, 0, len(files)
         self._started = time.monotonic()
+        if files:
+            sizes = [_need(a.item).size for a in files]
+            known = None if None in sizes else sum(s or 0 for s in sizes)
+            self.progress.phase("downloading", total=len(files), total_bytes=known or None)
         # Downloads run in parallel (each request waits mostly on Apple, not on bandwidth);
         # the state database and everything else stay on this thread.
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
@@ -538,9 +552,11 @@ class PhotoExecutor:
                 # writes a temporary file first), drop the queued ones.
                 pool.shutdown(cancel_futures=True)
                 raise
-        for action in actions:
-            if action.kind not in _FILE_KINDS:
-                self._step(result, action, partial(self._apply, action))
+        rest = [a for a in actions if a.kind not in _FILE_KINDS]
+        if rest:
+            self.progress.phase("linking", total=len(rest))
+        for action in rest:
+            self._step(result, action, partial(self._apply, action))
         if result.ok and not plan.unchanged:
             self.state.set_cursor(self.job, plan.cursor)
         return result
@@ -548,6 +564,9 @@ class PhotoExecutor:
     def _run_files(
         self, result: PhotoRunResult, files: list[PhotoAction], pool: ThreadPoolExecutor
     ) -> None:
+        # Two batches are in flight: while the workers download one, the next one's
+        # links are renewed and queued, so no worker waits for a batch to drain.
+        in_flight: list[tuple[list[PhotoAction], dict[Future[int], PhotoAction]]] = []
         for start in range(0, len(files), PREPARE_BATCH):
             batch = files[start : start + PREPARE_BATCH]
             self._prepare([_need(a.item) for a in batch])
@@ -556,14 +575,27 @@ class PhotoExecutor:
                 for action in batch
                 if action.kind is not PhotoActionKind.REPLACE
             }
-            for future in as_completed(fetches):
-                action = fetches[future]
-                self._step(result, action, partial(self._collect, action, future))
-            for action in batch:
-                if action.kind is PhotoActionKind.REPLACE:
-                    self._step(result, action, partial(self._apply, action))
+            in_flight.append((batch, fetches))
+            if len(in_flight) > 1:
+                self._finish_batch(result, *in_flight.pop(0))
+        for batch, fetches in in_flight:
+            self._finish_batch(result, batch, fetches)
+
+    def _finish_batch(
+        self,
+        result: PhotoRunResult,
+        batch: list[PhotoAction],
+        fetches: "dict[Future[int], PhotoAction]",
+    ) -> None:
+        for future in as_completed(fetches):
+            action = fetches[future]
+            self._step(result, action, partial(self._collect, action, future))
+        for action in batch:
+            if action.kind is PhotoActionKind.REPLACE:
+                self._step(result, action, partial(self._apply, action))
 
     def _step(self, result: PhotoRunResult, action: PhotoAction, apply: Callable[[], None]) -> None:
+        before = self._bytes
         try:
             apply()
         except Exception as exc:
@@ -571,8 +603,14 @@ class PhotoExecutor:
                 "%s %s failed: %s", action.kind, action.path, exc, extra={"event": "file_failed"}
             )
             result.failed.append(PhotoFailure(action, f"{type(exc).__name__}: {exc}"))
+            failed = True
         else:
             result.done.append(action)
+            failed = False
+        nbytes = self._bytes - before
+        if failed and action.item is not None and action.item.size:
+            nbytes = action.item.size  # keeps the remaining bytes and the estimate right
+        self.progress.advance(nbytes=nbytes, failed=failed, current=action.path)
         if action.kind in _FILE_KINDS:
             self._fetched += 1
             if self._fetched % PROGRESS_EVERY == 0 or self._fetched == self._files:
@@ -718,9 +756,13 @@ def backup_photos(
     dry_run: bool = False,
     workers: int = 1,
     today: Callable[[], date] = date.today,
+    progress: Progress | None = None,
 ) -> PhotoOutcome:
-    plan = build_photo_plan(job, source, root, state, layout, albums=albums)
+    plan = build_photo_plan(job, source, root, state, layout, albums=albums, progress=progress)
     if dry_run:
         return PhotoOutcome(plan, None)
-    result = PhotoExecutor(source, root, state, job, today=today, workers=workers).run(plan)
+    executor = PhotoExecutor(
+        source, root, state, job, today=today, workers=workers, progress=progress
+    )
+    result = executor.run(plan)
     return PhotoOutcome(plan, result)

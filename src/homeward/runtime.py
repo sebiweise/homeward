@@ -7,6 +7,7 @@
 - ``homeward.log``: the daemon's log, shown in the UI
 - ``events.jsonl``: the event log (waits, retries, errors) shown in the UI
 - ``notices.json``: when the user last cleared the notices on the status page
+- ``progress/<job>.json``: how far the running sync or photos backup is, written by it
 """
 
 import json
@@ -60,6 +61,14 @@ class Paths:
     @property
     def notices_file(self) -> Path:
         return self.var_dir / "notices.json"
+
+    @property
+    def progress_dir(self) -> Path:
+        return self.var_dir / "progress"
+
+    def progress_file(self, source: str) -> Path:
+        """``source`` is ``pair:<name>`` or ``photos:<name>`` (names are file-safe)."""
+        return self.progress_dir / (source.replace(":", "-", 1) + ".json")
 
     @property
     def backup_dir(self) -> Path:
@@ -161,6 +170,28 @@ def take_cancels(paths: Paths) -> list[CancelRequest]:
             pass
         file.unlink(missing_ok=True)
     return taken
+
+
+def write_progress(paths: Paths, source: str, snapshot: dict[str, Any]) -> None:
+    write_json_atomic(paths.progress_file(source), snapshot | {"pid": os.getpid()})
+
+
+def clear_progress(paths: Paths, source: str) -> None:
+    paths.progress_file(source).unlink(missing_ok=True)
+
+
+def read_progress(paths: Paths, source: str) -> dict[str, Any] | None:
+    """The progress of a running job, or None when there is none or its run ended."""
+    try:
+        data = json.loads(paths.progress_file(source).read_text(encoding="utf-8"))
+        os.kill(int(data["pid"]), 0)  # the run crashed without removing it
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass  # the process exists
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def read_status(paths: Paths) -> dict[str, Any]:

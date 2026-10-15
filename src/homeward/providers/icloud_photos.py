@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 from typing import Any, BinaryIO, cast
 
 from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem, PhotoSource
+from homeward.core.progress import Progress
 
 log = logging.getLogger(__name__)
 
@@ -104,8 +105,10 @@ class ICloudPhotosSource(PhotoSource):
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         name: str = "icloud-photos",
+        progress: Progress | None = None,
     ) -> None:
         self.name = name
+        self.progress = progress or Progress()
         self.service = service
         self.wanted = tuple(libraries)
         self.options = options or PhotoOptions()
@@ -159,9 +162,12 @@ class ICloudPhotosSource(PhotoSource):
         # (pyicloud 2.7 cannot read the Shared Library's own albums.)
         members = self._album_members(personal)
         unmatched = set(members)
-        for lib, key, library in self._libraries():
+        libraries = self._libraries()
+        self.progress.phase("listing", total=_photo_count(libraries))
+        for lib, key, library in libraries:
             count = 0
             for count, asset in enumerate(library.all.photos, 1):
+                self.progress.advance()
                 unmatched.discard(asset.id)
                 yield from self._items(asset, lib, members.get(asset.id, ()), origin=library)
                 if count % PROGRESS_EVERY == 0:
@@ -344,11 +350,13 @@ class ICloudPhotosSource(PhotoSource):
         members: dict[str, set[str]] = defaultdict(set)
         if self.options.albums:
             albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
+            self.progress.phase("albums", total=len(albums))
             for number, album in enumerate(albums, 1):
                 name = album.fullname
                 log.info("reading album %d of %d: %s", number, len(albums), name)
                 for asset in album.photos:
                     members[asset.id].add(name)
+                self.progress.advance(current=name)
         return {asset_id: tuple(sorted(names)) for asset_id, names in members.items()}
 
     def _hidden_items(
@@ -490,6 +498,15 @@ class ICloudPhotosSource(PhotoSource):
         )
         self._blobs[item.key] = data
         return item
+
+
+def _photo_count(libraries: list[tuple[Library, str, Any]]) -> int | None:
+    """How many photos the libraries hold (one count query each), None if unknown."""
+    try:
+        return sum(len(library.all) for _lib, _key, library in libraries)
+    except Exception as exc:  # only the progress bar needs it
+        log.debug("could not count the photos: %s", exc)
+        return None
 
 
 def _resources(asset: Any) -> dict[str, _Resource]:

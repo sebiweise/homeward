@@ -5,6 +5,18 @@ All notable changes to Homeward are listed here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- While a photos backup or sync runs, its overview shows a progress card: the current
+  step (signing in, reading the library, reading albums, downloading, album links), how
+  many of how many are done, data, speed, time left, the last file and the latest log
+  message, including waits for Apple. The page refreshes every 3 s while a job runs.
+
+### Changed
+
+- Photo downloads no longer pause after every 100 files: the next batch's download
+  links are renewed and queued while the current batch still downloads.
+
 ### Fixed
 
 - Photos (and files from iCloud Drive) now show up in Synology Photos. Homeward used

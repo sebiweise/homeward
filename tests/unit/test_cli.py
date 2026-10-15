@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -189,7 +190,7 @@ def test_photos_dry_run_then_real(
     source.add(
         "a1", "a.jpg", b"img", created=datetime(2024, 5, 3, 12, tzinfo=UTC), albums=("Urlaub",)
     )
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
     config = _photos_config(tmp_path)
 
     assert main(["photos", "--config", str(config), "--dry-run"]) == EXIT_OK
@@ -219,7 +220,7 @@ def test_photos_failed_download_exit_code(
 
     source = FakePhotoSource()
     source.fail_keys.add(source.add("a1", "a.jpg").key)
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
 
     assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_FAILED
     assert "FAILED download" in capsys.readouterr().out
@@ -274,12 +275,38 @@ def test_photos_progress_on_stderr(
 
     source = FakePhotoSource()
     source.add("a1", "a.jpg")
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
 
     assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_OK
     err = capsys.readouterr().err
     assert "reading iCloud" in err
     assert "1 of 1 files downloaded" in err
+
+
+def test_photos_progress_file_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    progress_file = tmp_path / "progress" / "photos-seb.json"
+    seen: list[dict[str, object]] = []
+    open_read = source.open_read
+
+    def reading(item: object) -> object:
+        seen.append(json.loads(progress_file.read_text()))
+        return open_read(item)  # type: ignore[arg-type]
+
+    source.open_read = reading  # type: ignore[assignment,method-assign]
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_OK
+    assert seen[0]["phase"] == "downloading"
+    assert seen[0]["total"] == 1
+    assert seen[0]["pid"] == os.getpid()
+    assert not progress_file.exists()  # removed when the run ends
 
 
 def test_photos_refuses_a_second_run_for_the_same_account(
@@ -292,7 +319,7 @@ def test_photos_refuses_a_second_run_for_the_same_account(
 
     source = FakePhotoSource()
     source.add("a1", "a.jpg")
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
     config = _photos_config(tmp_path)
     lock = tmp_path / "state" / "seb@example.com.photos.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)

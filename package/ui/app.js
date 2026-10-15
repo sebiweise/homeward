@@ -4,6 +4,7 @@
 
 const API = "api.cgi";
 const REFRESH_MS = 10000;
+const REFRESH_RUNNING_MS = 3000; // while a job runs, so its progress moves
 const strings = {};
 let tokenRequest = null;
 let accountsCache = [];
@@ -97,7 +98,23 @@ function formatTime(seconds) {
 
 function formatDuration(seconds) {
     const s = Math.max(0, Math.round(seconds));
+    if (s >= 3600) return Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min";
     return s < 60 ? s + " s" : Math.floor(s / 60) + " min " + (s % 60) + " s";
+}
+
+function formatNumber(n) {
+    return Number(n).toLocaleString(language() === "ger" ? "de-DE" : "en-GB");
+}
+
+function formatBytes(n) {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = n, unit = 0;
+    while (value >= 1000 && unit < units.length - 1) {
+        value /= 1000;
+        unit += 1;
+    }
+    const digits = unit === 0 || value >= 100 ? 0 : 1;
+    return value.toLocaleString(language() === "ger" ? "de-DE" : "en-GB", { maximumFractionDigits: digits }) + " " + units[unit];
 }
 
 // --- API -------------------------------------------------------------------------------
@@ -759,9 +776,44 @@ function jobOverview(job) {
     const notices = (data.status?.notices || []).filter((n) => n.source === job.key);
     return [
         headCard(state.cls, job.name, state.text, jobActions(job)),
+        progressCard(job.item.progress),
         noticesCard(notices, job.key),
         infoCard(t("ui:details"), rows),
     ].filter(Boolean);
+}
+
+// What the running job does right now: its phase, how far it is, its speed and what it
+// last logged (e.g. a wait for Apple), so a long run never looks stuck.
+function progressCard(p) {
+    if (!p || !p.phase) return null;
+    const now = Date.now() / 1000;
+    const known = p.total !== null && p.total !== undefined;
+    const bar = known ? el("progress", { max: Math.max(p.total, 1), value: Math.min(p.done, p.total) }) : el("progress", {});
+    let amount = known ? t("progress:of", formatNumber(p.done), formatNumber(p.total)) : t("progress:count", formatNumber(p.done));
+    if (known && p.total) amount += " (" + Math.floor((Math.min(p.done, p.total) / p.total) * 100) + " %)";
+    const rows = [
+        [t("progress:phase"), t("progress:phase_" + p.phase)],
+        [t("progress:amount"), amount],
+        p.failed ? [t("progress:failed"), formatNumber(p.failed)] : null,
+        p.bytes ? [t("progress:bytes"), p.total_bytes ? t("progress:of", formatBytes(p.bytes), formatBytes(p.total_bytes)) : formatBytes(p.bytes)] : null,
+        p.byte_rate ? [t("progress:speed"), formatBytes(p.byte_rate) + "/s" + (p.rate ? " · " + t("progress:per_minute", formatNumber(Math.round(p.rate * 60))) : "")] : p.rate ? [t("progress:speed"), t("progress:per_minute", formatNumber(Math.round(p.rate * 60)))] : null,
+        p.eta_seconds !== null && p.eta_seconds !== undefined ? [t("progress:eta"), t("progress:eta_value", formatDuration(p.eta_seconds))] : null,
+        [t("progress:elapsed"), formatDuration(now - p.started_at) + " · " + t("progress:phase_since", formatDuration(now - p.phase_started_at))],
+        p.current ? [t("progress:current"), p.current] : null,
+        p.activity ? [t("progress:activity"), p.activity + " (" + t("progress:ago", formatDuration(now - p.activity_at)) + ")"] : null,
+        p.waiting_until && p.waiting_until > now ? [t("progress:waiting"), t("progress:waiting_value", formatDuration(p.waiting_until - now))] : null,
+    ];
+    return el(
+        "section",
+        { class: "card progress-card" },
+        el("h3", { text: t("progress:title") }),
+        bar,
+        el(
+            "dl",
+            { class: "info" },
+            rows.filter(Boolean).flatMap(([label, value]) => [el("dt", { text: label }), el("dd", {}, value)])
+        )
+    );
 }
 
 // --- job: runs -------------------------------------------------------------------------
@@ -1268,9 +1320,10 @@ function addClicked(event) {
 
 // --- start -----------------------------------------------------------------------------
 
-function autoRefresh() {
+async function autoRefresh() {
     const live = view.tab === "overview" || view.tab === "runs";
-    if (live && !openMenu && !document.querySelector("dialog[open]")) void guarded(refresh);
+    if (live && !openMenu && !document.querySelector("dialog[open]")) await guarded(refresh);
+    setTimeout(autoRefresh, data.status?.daemon?.running ? REFRESH_RUNNING_MS : REFRESH_MS);
 }
 
 async function start() {
@@ -1291,7 +1344,7 @@ async function start() {
         if (event.key === "Escape") closeMenu();
     });
     await guarded(refresh);
-    setInterval(autoRefresh, REFRESH_MS);
+    setTimeout(autoRefresh, data.status?.daemon?.running ? REFRESH_RUNNING_MS : REFRESH_MS);
 }
 
 await start();

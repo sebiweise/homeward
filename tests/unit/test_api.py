@@ -25,6 +25,7 @@ from homeward.runtime import (
     read_events,
     record_event,
     take_requests,
+    write_progress,
 )
 
 
@@ -356,6 +357,16 @@ def test_status_shows_last_run_and_daemon(client: Client, tmp_path: Path) -> Non
 
     runs = client.call("log.runs", limit="1")["runs"]
     assert [run["actions"] for run in runs] == [4]
+
+
+def test_status_shows_the_progress_of_the_running_job(client: Client, tmp_path: Path) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    write_progress(client.paths, "pair:docs", {"phase": "transferring", "done": 2, "total": 5})
+    assert client.call("status.get")["pairs"][0]["progress"] is None  # not running
+
+    client.paths.status_file.write_text('{"running": "docs"}')
+    progress = client.call("status.get")["pairs"][0]["progress"]
+    assert (progress["phase"], progress["done"], progress["total"]) == ("transferring", 2, 5)
 
 
 def test_log_tail(client: Client) -> None:
