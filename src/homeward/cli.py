@@ -31,6 +31,7 @@ from homeward.core.progress import Progress, ProgressLogHandler
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
+from homeward.core.trash import Trash
 from homeward.dsm.notify import Event, notify
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
@@ -380,7 +381,7 @@ def _photos_one(
     if not args.dry_run:
         # Also without mirror_deletes: replaced files land there too. Only the
         # backup's own trash: DSM empties #recycle on its own schedule.
-        purged = NasProvider(job.target).purge_trash(job.trash_days)
+        purged = Trash(job.target).purge(job.trash_days)
         if purged:
             print(f"  Emptied {purged} day folder(s) older than {job.trash_days} days "
                   "from the NAS trash.")  # fmt: skip
