@@ -299,6 +299,11 @@ target = "{tmp_path / "photos"}"
     assert runner.argv[-1] == (
         "photos", "--config", str(config), "--job", "me", "--dry-run", "--allow-deletes"
     )  # fmt: skip
+    _request(tmp_path, "p", '{"pair": "photos:me", "remove_gone": true}')
+    daemon.cycle()
+    assert runner.argv[-1] == (
+        "photos", "--config", str(config), "--job", "me", "--remove-gone"
+    )  # fmt: skip
 
 
 def test_runs_write_events_and_notify_once(tmp_path: Path) -> None:

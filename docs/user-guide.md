@@ -144,13 +144,20 @@ Switching an option off later keeps the files it already produced. Folder change
 apply to newly downloaded photos; photos already on the NAS keep their place.
 
 With `mirror_deletes`, a run that reads the whole library (at least once a day) moves
-photos deleted in iCloud, and their album links, to `<target>/.homeward-papierkorb/<date>/`;
-day folders older than `trash_days` are emptied. Photos in iCloud's "Recently Deleted"
+photos deleted in iCloud, and their album links, to the trash: the share's Synology
+recycle bin (`#recycle`, same path below it as in the share) when it is enabled for the
+share, so DSM's own emptying schedule applies; otherwise `<target>/.homeward-papierkorb/<date>/`,
+whose day folders older than `trash_days` are emptied. Photos in iCloud's "Recently Deleted"
 count as deleted. A run that would delete more than `max_delete_count` photos or more
 than `max_delete_ratio` of them only holds those deletions back (the rest of the backup
 runs) until you approve them with *Approve deletions* or `--allow-deletes`. Photos that
 only drop out because you changed the libraries or file types are not deleted, and
 neither are photos that were already marked deleted before the option was switched on.
+
+Photos deleted in iCloud that are still on the NAS (marked deleted by earlier runs, with
+or without `mirror_deletes`) are counted on the backup's overview. *Clean up deleted
+photos* (or `homeward photos --remove-gone`) backs up now and moves them and their album
+links to the same trash. Photos that are back in iCloud by then are kept.
 
 ### iCloud Drive pairs
 

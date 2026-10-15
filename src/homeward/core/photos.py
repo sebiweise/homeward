@@ -227,7 +227,8 @@ class PhotoPlan:
     full: bool = True  # the whole library was read (False: only the changes)
     started_at: float = 0.0  # when the plan asked iCloud
     selection: str | None = None  # see ``build_photo_plan``
-    blocked: str | None = None  # the delete brake holds back the DELETE actions
+    blocked: str | None = None  # the delete brake holds back the DELETE actions...
+    held: set[str] = field(default_factory=set)  # ...of these photo keys
     actions: list[PhotoAction] = field(default_factory=list)
     up_to_date: int = 0
 
@@ -350,6 +351,7 @@ def build_photo_plan(
     mirror_deletes: bool = False,
     selection: str | None = None,
     brake: DeleteBrake | None = None,
+    remove_gone: bool = False,
 ) -> PhotoPlan:
     """Compare iCloud with the state of the last run and decide what to fetch or link.
 
@@ -358,6 +360,9 @@ def build_photo_plan(
     ``selection`` (libraries and file types, any text) as the last complete run: a
     photo that merely left the selection is not deleted, it only counts as gone.
     More deletions than ``brake`` allows are held back until approved.
+
+    ``remove_gone`` (the user's explicit "clean up") also deletes the photos earlier
+    runs marked as deleted in iCloud, the same way and without the brake.
 
     When only some photos changed since the last run, the source is asked for just
     those (``list_changes``) instead of the whole library. The whole library is still
@@ -374,6 +379,12 @@ def build_photo_plan(
     previous = state.cursor(job)
     plan = PhotoPlan(job=job, cursor=cursor, started_at=now(), selection=selection)
     present = _all_present(root, records.values(), links)
+    if remove_gone:
+        plan.actions += [
+            PhotoAction(PhotoActionKind.DELETE, r.path, key=key)
+            for key, r in sorted(records.items())
+            if r.gone_at is not None
+        ]
     if cursor is not None and cursor == previous and present:
         plan.unchanged = True
         plan.up_to_date = sum(1 for r in records.values() if r.gone_at is None)
@@ -384,6 +395,8 @@ def build_photo_plan(
     if changes is not None:
         plan.full = False
         progress.phase("planning", total=len(changes))
+        changed = {i.key for i in changes}
+        plan.actions = [a for a in plan.actions if a.key not in changed]  # back in iCloud
         _, wanted_links = _plan_items(plan, changes, root, records, paths, layout, progress, albums)
         fetched = {a.key for a in plan.actions if a.kind in _FILE_KINDS}
         plan.up_to_date = sum(
@@ -403,9 +416,17 @@ def build_photo_plan(
         if key not in seen and record.gone_at is None:
             kind = PhotoActionKind.DELETE if delete else PhotoActionKind.GONE
             plan.actions.append(PhotoAction(kind, record.path, key=key))
-    deletes = sum(1 for a in plan.actions if a.kind is PhotoActionKind.DELETE)
-    if deletes:
-        plan.blocked = (brake or DeleteBrake()).check(deletes, live)
+    # A photo marked as gone that is back in iCloud is not cleaned up.
+    plan.actions = [
+        a for a in plan.actions if a.kind is not PhotoActionKind.DELETE or a.key not in seen
+    ]
+    mirrored = (
+        {k for k, r in records.items() if k not in seen and r.gone_at is None} if delete else set()
+    )
+    if mirrored:
+        plan.blocked = (brake or DeleteBrake()).check(len(mirrored), live)
+        if plan.blocked:
+            plan.held = mirrored
     existing = {(key, album): path for path, (key, album) in links.items()}
     _plan_links(plan, root, layout, paths, existing, wanted_links)
     _plan_unlinks(plan, records, existing, wanted_links, seen)
@@ -608,8 +629,10 @@ class PhotoExecutor:
         today: Callable[[], date] = date.today,
         workers: int = 1,
         progress: Progress | None = None,
+        recycle_bin: Path | None = None,
     ) -> None:
         self.source = source
+        self.recycle_bin = recycle_bin
         self.progress = progress or Progress()
         self.root = root
         self.state = state
@@ -651,7 +674,9 @@ class PhotoExecutor:
                 extra={"event": "delete_brake"},
             )
             result.blocked = plan.blocked
-            rest = [a for a in rest if a.kind is not PhotoActionKind.DELETE]
+            rest = [
+                a for a in rest if a.kind is not PhotoActionKind.DELETE or a.key not in plan.held
+            ]
             self.state.clear_full_listing(self.job)  # the approving run reads it all again
         if rest:
             self.progress.phase("linking", total=len(rest))
@@ -787,14 +812,17 @@ class PhotoExecutor:
         self.state.record(self.job, item.key, action.path, size, item.checksum)
 
     def _trash(self, path: str) -> None:
+        """Move a file to the share's Synology recycle bin (same layout DSM uses, so
+        DSM's emptying schedule applies), else to ``.homeward-papierkorb/<date>/``."""
         source = self.root / path
-        day_dir = self.root / TRASH_DIR / self._today().isoformat()
-        target, number = day_dir / path, 2
-        while target.exists():
-            target = day_dir / numbered(PurePosixPath(path), number)
-            number += 1
-        target.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(target)
+        if self.recycle_bin is not None:
+            try:
+                relative = source.relative_to(self.recycle_bin.parent).as_posix()
+                _move_numbered(source, self.recycle_bin, relative)
+                return
+            except (OSError, ValueError) as exc:  # e.g. no write permission in #recycle
+                log.info("recycle bin not usable (%s), using the backup's own trash", exc)
+        _move_numbered(source, self.root / TRASH_DIR / self._today().isoformat(), path)
 
     def _link(self, target: Path, link: Path) -> None:
         link.parent.mkdir(parents=True, exist_ok=True)
@@ -854,6 +882,16 @@ class PhotoExecutor:
             self._link(target, link)
 
 
+def _move_numbered(source: Path, folder: Path, relative: str) -> None:
+    """Move ``source`` to ``folder/relative``, numbered if that name is taken."""
+    target, number = folder / relative, 2
+    while target.exists():
+        target = folder / numbered(PurePosixPath(relative), number)
+        number += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
+
+
 def _need[T](value: T | None) -> T:
     if value is None:
         raise ValueError("photo action is missing required data")
@@ -883,15 +921,19 @@ def backup_photos(
     selection: str | None = None,
     brake: DeleteBrake | None = None,
     allow_deletes: bool = False,
+    remove_gone: bool = False,
+    recycle_bin: Path | None = None,
 ) -> PhotoOutcome:
     plan = build_photo_plan(
         job, source, root, state, layout, albums=albums, progress=progress, now=now,
         mirror_deletes=mirror_deletes, selection=selection, brake=brake,
+        remove_gone=remove_gone,
     )  # fmt: skip
     if dry_run:
         return PhotoOutcome(plan, None)
     executor = PhotoExecutor(
-        source, root, state, job, today=today, workers=workers, progress=progress
-    )
+        source, root, state, job, today=today, workers=workers, progress=progress,
+        recycle_bin=recycle_bin,
+    )  # fmt: skip
     result = executor.run(plan, allow_deletes=allow_deletes)
     return PhotoOutcome(plan, result)

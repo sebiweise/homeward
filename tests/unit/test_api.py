@@ -857,3 +857,30 @@ def test_folders_create(client: Client, volumes: Path) -> None:
     with pytest.raises(ApiError) as excinfo:
         client.call("folders.create", path=str(photo), name="get")
     assert _error(excinfo) == "post_required"
+
+
+def test_photos_cleanup_shows_the_count_and_queues_a_request(
+    client: Client, tmp_path: Path
+) -> None:
+    from homeward.core.config import load_config
+    from homeward.core.photo_state import PhotoStateDB
+
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    client.call("photos.create", post=True, photos=_photos(tmp_path))
+    assert client.call("status.get")["photos"][0]["gone"] == 0  # no run yet
+
+    config = load_config(client.paths.config)
+    with PhotoStateDB(config.photo_state_path("me")) as state:
+        for key in ("a", "b", "c"):
+            state.record("fotos", key, f"{key}.jpg", 1, None)
+        state.mark_gone("fotos", "a")
+        state.mark_gone("fotos", "b")
+        state.record("other", "x", "x.jpg", 1, None)
+        state.mark_gone("other", "x")
+    assert client.call("status.get")["photos"][0]["gone"] == 2
+
+    client.call("photos.run", post=True, name="fotos", remove_gone="true")
+    (request,) = take_requests(client.paths)
+    assert request.pair == "photos:fotos"
+    assert request.remove_gone
+    assert not request.allow_deletes

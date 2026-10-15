@@ -153,7 +153,9 @@ several Apple IDs, each with its own login session and state file
   in the state). With `mirror_deletes` a full listing with the same selection (libraries,
   file types) as the last complete run moves it and its album links to the trash
   instead, behind a delete brake (held deletions keep neither cursor nor full-listing
-  time, so the approving run reads everything again). A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
+  time, so the approving run reads everything again). `--remove-gone` deletes the photos
+  marked `gone` the same way, without the brake (an explicit user action). Photo trash
+  is the share's `#recycle` when enabled, else `.homeward-papierkorb/`. A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
   When a photo leaves an album only its album link is removed; an album file that is no
   longer the same file as the original goes to the trash instead.
 - Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.

@@ -710,10 +710,22 @@ function jobActions(job) {
                   ),
           })
         : null;
+    const gone = job.kind === "photos" && !busy ? job.item.gone || 0 : 0;
+    const cleanup = gone
+        ? el("button", {
+              class: "danger",
+              text: t("status:remove_gone", gone),
+              title: t("status:remove_gone_hint"),
+              onclick: () =>
+                  confirmDialog(t("status:remove_gone_confirm", job.name, gone), t("status:remove_gone", gone), () =>
+                      runJob(job, { remove_gone: "true" })
+                  ),
+          })
+        : null;
     const primary = busy
         ? null
         : el("button", { class: "primary", text: items[0][0], onclick: () => void items[0][1]() });
-    return [primary, menuButton(t("ui:manage"), items), approve];
+    return [primary, menuButton(t("ui:manage"), items), approve, cleanup];
 }
 
 function scheduleText(job) {

@@ -335,6 +335,30 @@ def test_photos_mirror_deletes_and_delete_brake(
     assert (trash / "2024" / "05" / "0.jpg").exists()
 
 
+def test_photos_remove_gone_uses_the_synology_recycle_bin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    items = [source.add(f"a{n}", f"{n}.jpg") for n in range(2)]
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+    config = _photos_config(tmp_path)
+    (tmp_path / "#recycle").mkdir()  # the recycle bin of the share holding the backup
+    photo = tmp_path / "photos" / "2024" / "05"
+
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    source.remove(items[0].key)
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    assert (photo / "0.jpg").exists()  # without mirror_deletes it stays
+
+    assert main(["photos", "--config", str(config), "--remove-gone"]) == EXIT_OK
+    assert sorted(p.name for p in photo.iterdir()) == ["1.jpg"]
+    assert (tmp_path / "#recycle" / "photos" / "2024" / "05" / "0.jpg").exists()
+    assert not (tmp_path / "photos" / ".homeward-papierkorb").exists()
+
+
 def test_photos_refuses_a_second_run_for_the_same_account(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

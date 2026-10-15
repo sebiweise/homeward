@@ -108,6 +108,7 @@ class RunRequest:
     pair: str
     dry_run: bool = False
     allow_deletes: bool = False
+    remove_gone: bool = False  # photos: also clean up photos deleted in iCloud
 
 
 def take_requests(requests_dir: Path) -> list[RunRequest]:
@@ -123,6 +124,7 @@ def take_requests(requests_dir: Path) -> list[RunRequest]:
                     pair=str(data["pair"]),
                     dry_run=bool(data.get("dry_run", False)),
                     allow_deletes=bool(data.get("allow_deletes", False)),
+                    remove_gone=bool(data.get("remove_gone", False)),
                 )
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -448,6 +450,8 @@ class Daemon:
             extra = ("--dry-run",) * request.dry_run
             if request.allow_deletes:
                 extra += ("--allow-deletes",)
+            if request.remove_gone and name.startswith("photos:"):
+                extra += ("--remove-gone",)
             log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
             self.scheduler.run(replace(job, argv=job.argv + extra), record=not request.dry_run)
 

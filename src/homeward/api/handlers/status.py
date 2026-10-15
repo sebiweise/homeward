@@ -11,6 +11,7 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import check_name, existing_state, package_version
 from homeward.api.server import Context, Request
+from homeward.core.photo_state import gone_counts
 from homeward.runtime import (
     CancelRequest,
     Event,
@@ -51,10 +52,14 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
                 "progress": _progress(ctx, daemon, pair.name, f"pair:{pair.name}"),
             }
         )
+    gone: dict[str, dict[str, int]] = {}
+    for account in {job.account for job in config.photos}:
+        gone[account] = gone_counts(config.photo_state_path(account))
     photos = [
         {
             "name": job.name,
             "account": job.account,
+            "gone": gone[job.account].get(job.name, 0),  # deleted in iCloud, kept on the NAS
             "job": jobs.get(f"photos:{job.name}"),
             "pending": f"photos:{job.name}" in pending,
             "progress": _progress(ctx, daemon, f"photos:{job.name}", f"photos:{job.name}"),

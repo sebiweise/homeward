@@ -107,7 +107,8 @@ def delete(ctx: Context, request: Request) -> dict[str, Any]:
 
 
 def run(ctx: Context, request: Request) -> dict[str, Any]:
-    """Ask the daemon to back up one photos job now (``dry_run`` only lists changes)."""
+    """Ask the daemon to back up one photos job now (``dry_run`` only lists changes,
+    ``remove_gone`` also deletes the photos found deleted in iCloud, to the trash)."""
     name = request.get("name")
     if not any(job["name"] == name for job in _entries(ctx.store.read())):
         raise ApiError("photos_not_found", name, status=404)
@@ -117,6 +118,7 @@ def run(ctx: Context, request: Request) -> dict[str, Any]:
             pair=f"photos:{name}",
             dry_run=request.flag("dry_run"),
             allow_deletes=request.flag("allow_deletes"),
+            remove_gone=request.flag("remove_gone"),
         ),
     )
     return {"name": name, "queued": True}

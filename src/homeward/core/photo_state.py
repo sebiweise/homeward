@@ -145,3 +145,24 @@ class PhotoStateDB:
     def clear_full_listing(self, job: str) -> None:
         """Make the next run read the whole library (its selection still counts)."""
         self._conn.execute("UPDATE full_listings SET finished_at = 0 WHERE job = ?", (job,))
+
+
+def gone_counts(path: Path) -> dict[str, int]:
+    """Per job, the photos still on the NAS that iCloud no longer has.
+
+    Opens the database read-only (for the UI, also while a run writes to it); a
+    missing or unreadable database counts as none.
+    """
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT job, COUNT(*) FROM photos WHERE gone_at IS NOT NULL GROUP BY job"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {str(job): int(count) for job, count in rows}

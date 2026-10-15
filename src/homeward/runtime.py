@@ -80,6 +80,7 @@ class RunRequest:
     pair: str
     dry_run: bool = False
     allow_deletes: bool = False
+    remove_gone: bool = False  # photos: also clean up photos deleted in iCloud
     requested_at: float = 0.0
 
 
@@ -99,6 +100,7 @@ def request_run(paths: Paths, request: RunRequest) -> None:
         "pair": request.pair,
         "dry_run": request.dry_run,
         "allow_deletes": request.allow_deletes,
+        "remove_gone": request.remove_gone,
         "requested_at": request.requested_at or time.time(),
     }
     write_json_atomic(paths.requests_dir / f"{request.pair}.json", data)
@@ -127,6 +129,7 @@ def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
                 pair=str(data["pair"]),
                 dry_run=bool(data.get("dry_run", False)),
                 allow_deletes=bool(data.get("allow_deletes", False)),
+                remove_gone=bool(data.get("remove_gone", False)),
                 requested_at=float(data.get("requested_at", 0.0)),
             )
         except (OSError, ValueError, KeyError, TypeError):

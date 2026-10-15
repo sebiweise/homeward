@@ -356,13 +356,15 @@ def _photos_one(
                 albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
                 progress=progress, mirror_deletes=job.mirror_deletes, selection=_selection(job),
                 brake=job.delete_brake, allow_deletes=args.allow_deletes,
+                remove_gone=args.remove_gone, recycle_bin=find_recycle_bin(job.target),
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     counts["up_to_date"] = outcome.plan.up_to_date
     _log_summary(f"photos {job.name}", counts, failed)
-    if job.mirror_deletes and not args.dry_run:
+    if (job.mirror_deletes or args.remove_gone) and not args.dry_run:
+        # Only the backup's own trash: DSM empties #recycle on its own schedule.
         purged = NasProvider(job.target).purge_trash(job.trash_days)
         if purged:
             print(f"  Emptied {purged} day folder(s) older than {job.trash_days} days "
@@ -459,6 +461,11 @@ def main(argv: list[str] | None = None) -> int:
     photos.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
     photos.add_argument(
         "--allow-deletes", action="store_true", help="approve deletions the delete brake held back"
+    )
+    photos.add_argument(
+        "--remove-gone",
+        action="store_true",
+        help="also delete the photos earlier runs found deleted in iCloud (to the trash)",
     )
 
     login = sub.add_parser("login", help="log in to an Apple ID (password and 2FA)")
