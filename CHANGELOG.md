@@ -7,6 +7,11 @@ All notable changes to Homeward are listed here. Versions follow
 
 ### Added
 
+- Photos backups have an option *Also delete photos on the NAS that were deleted in
+  iCloud (1:1)* (`mirror_deletes`, off by default). Deleted photos and their album links
+  move to the backup folder's trash, which is emptied after `trash_days` (30). The delete
+  brake holds back more than 50 or more than 10 % of the photos until approved; photos
+  that only left the selection (libraries, file types) are never deleted.
 - While a photos backup or sync runs, its overview shows a progress card: the current
   step (signing in, reading the library, reading albums, downloading, album links), how
   many of how many are done, data, speed, time left, the last file and the latest log

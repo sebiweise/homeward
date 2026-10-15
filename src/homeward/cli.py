@@ -309,6 +309,8 @@ def _print_photos(job: PhotosConfig, outcome: PhotoOutcome, dry_run: bool) -> No
     counts = plan.counts()
     summary = ", ".join(f"{n} {kind}" for kind, n in counts.items())
     print(f"  {summary or 'nothing to do'}; {plan.up_to_date} up to date")
+    if plan.blocked:
+        print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
     if dry_run:
         print("  Dry run: nothing was changed.")
     elif outcome.result:
@@ -352,16 +354,32 @@ def _photos_one(
             outcome = backup_photos(
                 job.name, source, job.target, state, job.layout,
                 albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
-                progress=progress,
+                progress=progress, mirror_deletes=job.mirror_deletes, selection=_selection(job),
+                brake=job.delete_brake, allow_deletes=args.allow_deletes,
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     counts["up_to_date"] = outcome.plan.up_to_date
     _log_summary(f"photos {job.name}", counts, failed)
+    if job.mirror_deletes and not args.dry_run:
+        purged = NasProvider(job.target).purge_trash(job.trash_days)
+        if purged:
+            print(f"  Emptied {purged} day folder(s) older than {job.trash_days} days "
+                  "from the NAS trash.")  # fmt: skip
     if outcome.result and outcome.result.failed:
         return EXIT_FAILED
+    if outcome.result and outcome.result.blocked:
+        return EXIT_BLOCKED
     return EXIT_OK
+
+
+def _selection(job: PhotosConfig) -> str:
+    """What decides which files a photos job backs up; deletions are only mirrored
+    while it stays the same (see ``build_photo_plan``)."""
+    libraries = ",".join(sorted(lib.value for lib in job.libraries))
+    switches = (job.videos, job.live_videos, job.raw_alternative, job.edited, job.xmp, job.hidden)
+    return f"{libraries}:" + "".join("1" if on else "0" for on in switches)
 
 
 def _log_summary(what: str, counts: dict[str, int], failed: int) -> None:
@@ -439,6 +457,9 @@ def main(argv: list[str] | None = None) -> int:
     _add_config_arg(photos)
     photos.add_argument("--job", help="only run this photos job")
     photos.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
+    photos.add_argument(
+        "--allow-deletes", action="store_true", help="approve deletions the delete brake held back"
+    )
 
     login = sub.add_parser("login", help="log in to an Apple ID (password and 2FA)")
     _add_config_arg(login)

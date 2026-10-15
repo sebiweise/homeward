@@ -104,7 +104,8 @@ interval" in its dialog); without one it follows the global schedule.
 ### Photos backup
 
 One `[[photos]]` job backs up one Apple ID into one NAS folder. Photos only flow from
-iCloud to the NAS; a photo deleted in iCloud stays on the NAS.
+iCloud to the NAS; Homeward never deletes anything in iCloud. A photo deleted in iCloud
+stays on the NAS, unless `mirror_deletes` is on (see below).
 
 ```toml
 [[photos]]
@@ -129,6 +130,9 @@ Optional settings with their defaults:
 | `xmp` | `true` | XMP sidecars for photos with caption, keywords, location or favorite |
 | `hidden` | `false` | hidden photos |
 | `workers` | `4` | parallel downloads, 1 to 8 |
+| `mirror_deletes` | `false` | 1:1 backup: photos deleted in iCloud are deleted on the NAS too (into the trash) |
+| `max_delete_ratio`, `max_delete_count` | `0.1`, `50` | delete brake for `mirror_deletes` |
+| `trash_days` | `30` | with `mirror_deletes`: days the trash keeps deleted photos, `0` forever |
 | `shared_folder` | `"Geteilte Mediathek"` | folder for the Shared Library |
 | `albums_folder` | `"Alben"` | folder for albums |
 | `favorites_folder` | `"Favoriten"` | folder for favorites |
@@ -138,6 +142,15 @@ Optional settings with their defaults:
 
 Switching an option off later keeps the files it already produced. Folder changes
 apply to newly downloaded photos; photos already on the NAS keep their place.
+
+With `mirror_deletes`, a run that reads the whole library (at least once a day) moves
+photos deleted in iCloud, and their album links, to `<target>/.homeward-papierkorb/<date>/`;
+day folders older than `trash_days` are emptied. Photos in iCloud's "Recently Deleted"
+count as deleted. A run that would delete more than `max_delete_count` photos or more
+than `max_delete_ratio` of them only holds those deletions back (the rest of the backup
+runs) until you approve them with *Approve deletions* or `--allow-deletes`. Photos that
+only drop out because you changed the libraries or file types are not deleted, and
+neither are photos that were already marked deleted before the option was switched on.
 
 ### iCloud Drive pairs
 
@@ -191,7 +204,7 @@ does not keep names apart that differ only in upper/lower case (`notes.txt`,
 
 ```sh
 hw sync [--pair NAME] [--dry-run] [--allow-deletes]   # Drive pairs
-hw photos [--job NAME] [--dry-run]                    # Photos jobs
+hw photos [--job NAME] [--dry-run] [--allow-deletes] # Photos jobs
 hw login --account NAME [--apple-id ID]               # sign in with 2FA
 ```
 

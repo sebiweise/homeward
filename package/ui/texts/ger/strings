@@ -24,6 +24,7 @@ none="Noch nichts vorhanden."
 version="Version {0}"
 
 [status]
+approve_confirm_photos="Die Löschbremse hat beim letzten Lauf von {0} das Löschen auf dem NAS angehalten (Details im Protokoll). Gelöschte Fotos landen im Papierkorb des Backup-Ordners. Jetzt mit diesen Löschungen sichern?"
 pair="Paar"
 mode="Modus"
 last_run="Letzter Lauf"
@@ -97,6 +98,9 @@ delete_confirm="Sync-Paar {0} entfernen? Es werden keine Dateien gelöscht, wede
 reset_hint="Wer Ordner oder Konto ändert, beginnt mit einem Erstlauf, der nie löscht oder überschreibt."
 
 [photos]
+mirror_deletes="In iCloud gelöschte Fotos auch auf dem NAS löschen (1:1)"
+mirror_deletes_hint="Gelöschte Fotos und ihre Album-Verknüpfungen wandern in den Papierkorb des Backup-Ordners (.homeward-papierkorb) und werden nach 30 Tagen endgültig entfernt. Löscht ein Lauf mehr als 50 Fotos oder mehr als 10 %, hält die Löschbremse ihn an, bis du freigibst. Fotos, die nur durch eine geänderte Auswahl (Mediatheken, Videos usw.) herausfallen, werden nicht gelöscht."
+mirror_on="Fotos werden nur aus iCloud geladen; Homeward löscht nie etwas in iCloud Fotos. In iCloud gelöschte Fotos landen auf dem NAS im Papierkorb des Backup-Ordners."
 name="Name"
 account="Apple-ID"
 target="NAS-Ordner"
@@ -311,6 +315,7 @@ sync_stopped="Unterbrochen"
 sync_postponed="Wartet auf iCloud"
 
 [count]
+delete="{0} auf dem NAS gelöscht (Papierkorb)"
 upload="{0} hochgeladen"
 download="{0} heruntergeladen"
 delete-remote="{0} in iCloud gelöscht"

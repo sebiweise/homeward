@@ -27,6 +27,7 @@ from typing import BinaryIO, Protocol
 
 from homeward.core.files import link_noreplace, rename_noreplace, temp_name
 from homeward.core.photo_state import PhotoRecord, PhotoStateDB
+from homeward.core.planner import DeleteBrake
 from homeward.core.progress import Progress
 from homeward.core.rules import TRASH_DIR
 
@@ -195,6 +196,7 @@ class PhotoActionKind(StrEnum):
     UNLINK = "unlink"  # the photo left the album; its Year/Month file stays
     GONE = "gone"  # deleted in iCloud; the NAS copy stays
     RETURNED = "returned"  # back in iCloud after it was gone (e.g. restored there)
+    DELETE = "delete"  # deleted in iCloud, mirrored: NAS file and album links to the trash
 
 
 _FILE_KINDS = frozenset(
@@ -224,6 +226,8 @@ class PhotoPlan:
     unchanged: bool = False  # cursor unchanged and every file present: nothing listed
     full: bool = True  # the whole library was read (False: only the changes)
     started_at: float = 0.0  # when the plan asked iCloud
+    selection: str | None = None  # see ``build_photo_plan``
+    blocked: str | None = None  # the delete brake holds back the DELETE actions
     actions: list[PhotoAction] = field(default_factory=list)
     up_to_date: int = 0
 
@@ -244,6 +248,7 @@ class PhotoFailure:
 class PhotoRunResult:
     done: list[PhotoAction] = field(default_factory=list)
     failed: list[PhotoFailure] = field(default_factory=list)
+    blocked: str | None = None  # deletions held back by the delete brake
 
     @property
     def ok(self) -> bool:
@@ -342,8 +347,17 @@ def build_photo_plan(
     albums: bool = True,
     progress: Progress | None = None,
     now: Callable[[], float] = time.time,
+    mirror_deletes: bool = False,
+    selection: str | None = None,
+    brake: DeleteBrake | None = None,
 ) -> PhotoPlan:
     """Compare iCloud with the state of the last run and decide what to fetch or link.
+
+    With ``mirror_deletes``, photos deleted in iCloud are removed on the NAS too (into
+    the trash), but only when this run reads the whole library with the same
+    ``selection`` (libraries and file types, any text) as the last complete run: a
+    photo that merely left the selection is not deleted, it only counts as gone.
+    More deletions than ``brake`` allows are held back until approved.
 
     When only some photos changed since the last run, the source is asked for just
     those (``list_changes``) instead of the whole library. The whole library is still
@@ -358,7 +372,7 @@ def build_photo_plan(
     links = state.links(job)
     cursor = source.cursor()
     previous = state.cursor(job)
-    plan = PhotoPlan(job=job, cursor=cursor, started_at=now())
+    plan = PhotoPlan(job=job, cursor=cursor, started_at=now(), selection=selection)
     present = _all_present(root, records.values(), links)
     if cursor is not None and cursor == previous and present:
         plan.unchanged = True
@@ -383,13 +397,30 @@ def build_photo_plan(
     items = sorted(source.list_items(), key=lambda i: (i.created, i.key))
     progress.phase("planning", total=len(items))
     seen, wanted_links = _plan_items(plan, items, root, records, paths, layout, progress, albums)
+    delete = mirror_deletes and _same_selection(job, state, selection)
+    live = sum(1 for r in records.values() if r.gone_at is None)
     for key, record in sorted(records.items()):
         if key not in seen and record.gone_at is None:
-            plan.actions.append(PhotoAction(PhotoActionKind.GONE, record.path, key=key))
+            kind = PhotoActionKind.DELETE if delete else PhotoActionKind.GONE
+            plan.actions.append(PhotoAction(kind, record.path, key=key))
+    deletes = sum(1 for a in plan.actions if a.kind is PhotoActionKind.DELETE)
+    if deletes:
+        plan.blocked = (brake or DeleteBrake()).check(deletes, live)
     existing = {(key, album): path for path, (key, album) in links.items()}
     _plan_links(plan, root, layout, paths, existing, wanted_links)
     _plan_unlinks(plan, records, existing, wanted_links, seen)
     return plan
+
+
+def _same_selection(job: str, state: PhotoStateDB, selection: str | None) -> bool:
+    previous = state.full_listing_selection(job)
+    if previous is None or previous != selection:
+        log.info(
+            "photos removed from iCloud are not deleted on the NAS in this run: "
+            "the libraries or file types changed since the last complete run"
+        )
+        return False
+    return True
 
 
 def _changes(
@@ -590,7 +621,7 @@ class PhotoExecutor:
         self._files = 0
         self._started = 0.0
 
-    def run(self, plan: PhotoPlan) -> PhotoRunResult:
+    def run(self, plan: PhotoPlan, *, allow_deletes: bool = False) -> PhotoRunResult:
         result = PhotoRunResult()
         # Files first, so links of the same run find their target.
         order = {kind: i for i, kind in enumerate(PhotoActionKind)}
@@ -613,14 +644,24 @@ class PhotoExecutor:
                 pool.shutdown(cancel_futures=True)
                 raise
         rest = [a for a in actions if a.kind not in _FILE_KINDS]
+        if plan.blocked and not allow_deletes:
+            log.warning(
+                "delete brake: %s; photos deleted in iCloud stay on the NAS until approved",
+                plan.blocked,
+                extra={"event": "delete_brake"},
+            )
+            result.blocked = plan.blocked
+            rest = [a for a in rest if a.kind is not PhotoActionKind.DELETE]
+            self.state.clear_full_listing(self.job)  # the approving run reads it all again
         if rest:
             self.progress.phase("linking", total=len(rest))
         for action in rest:
             self._step(result, action, partial(self._apply, action))
-        if result.ok and not plan.unchanged:
+        # A run the delete brake held keeps neither: the next one reads everything again.
+        if result.ok and not plan.unchanged and not result.blocked:
             self.state.set_cursor(self.job, plan.cursor)
             if plan.full:
-                self.state.set_full_listing(self.job, plan.started_at)
+                self.state.set_full_listing(self.job, plan.started_at, plan.selection)
         return result
 
     def _run_files(
@@ -706,6 +747,8 @@ class PhotoExecutor:
                 self.state.remove_link(self.job, action.path)
             case PhotoActionKind.GONE:
                 self.state.mark_gone(self.job, action.key)
+            case PhotoActionKind.DELETE:
+                self._delete(action)
             case PhotoActionKind.RETURNED:
                 item = _need(action.item)
                 size = (self.root / action.path).stat().st_size
@@ -779,6 +822,22 @@ class PhotoExecutor:
         else:
             self._trash(action.path)  # a copy or an edited file: keep it recoverable
 
+    def _delete(self, action: PhotoAction) -> None:
+        """Move a photo deleted in iCloud and its album links to the trash."""
+        target = self.root / action.path
+        for path, (key, _album) in self.state.links(self.job).items():
+            if key != action.key:
+                continue
+            link = self.root / path
+            if link.exists() and target.exists() and os.path.samefile(link, target):
+                link.unlink()  # the same file, kept once in the trash below
+            elif link.exists():
+                self._trash(path)
+            self.state.remove_link(self.job, path)
+        if target.exists():
+            self._trash(action.path)
+        self.state.forget(self.job, action.key)
+
     def _relink(self, key: str, target_path: str, old: os.stat_result) -> None:
         """After a replace, point the album links of ``key`` at the new file."""
         target = self.root / target_path
@@ -820,14 +879,19 @@ def backup_photos(
     today: Callable[[], date] = date.today,
     progress: Progress | None = None,
     now: Callable[[], float] = time.time,
+    mirror_deletes: bool = False,
+    selection: str | None = None,
+    brake: DeleteBrake | None = None,
+    allow_deletes: bool = False,
 ) -> PhotoOutcome:
     plan = build_photo_plan(
-        job, source, root, state, layout, albums=albums, progress=progress, now=now
-    )
+        job, source, root, state, layout, albums=albums, progress=progress, now=now,
+        mirror_deletes=mirror_deletes, selection=selection, brake=brake,
+    )  # fmt: skip
     if dry_run:
         return PhotoOutcome(plan, None)
     executor = PhotoExecutor(
         source, root, state, job, today=today, workers=workers, progress=progress
     )
-    result = executor.run(plan)
+    result = executor.run(plan, allow_deletes=allow_deletes)
     return PhotoOutcome(plan, result)

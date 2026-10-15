@@ -446,7 +446,7 @@ class Daemon:
                 log.warning("run request for unknown job %r ignored", request.pair)
                 continue
             extra = ("--dry-run",) * request.dry_run
-            if request.allow_deletes and name.startswith("pair:"):
+            if request.allow_deletes:
                 extra += ("--allow-deletes",)
             log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
             self.scheduler.run(replace(job, argv=job.argv + extra), record=not request.dry_run)

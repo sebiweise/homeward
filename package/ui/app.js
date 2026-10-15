@@ -691,7 +691,9 @@ function jobActions(job) {
     const running = daemon.running === job.run;
     const busy = running || job.item.pending;
     const run = job.item.last_run;
-    const blocked = job.kind === "pair" && run?.blocked && !busy;
+    const photosBlocked = job.kind === "photos" && job.item.job?.result === "blocked";
+    const blocked = !busy && ((job.kind === "pair" && run?.blocked) || photosBlocked);
+    const confirmText = photosBlocked ? t("status:approve_confirm_photos", job.name) : t("status:approve_confirm", job.name, run?.blocked);
     const items = busy
         ? [[t("status:cancel"), () => cancelRun(job, running), "danger"]]
         : [
@@ -703,7 +705,7 @@ function jobActions(job) {
               class: "danger",
               text: t("status:approve_deletes"),
               onclick: () =>
-                  confirmDialog(t("status:approve_confirm", job.name, run.blocked), t("status:approve_deletes"), () =>
+                  confirmDialog(confirmText, t("status:approve_deletes"), () =>
                       runJob(job, { allow_deletes: "true" })
                   ),
           })
@@ -946,7 +948,7 @@ function jobSettings(job) {
         el("div", { class: "toolbar" }, el("button", { class: "primary", text: t("common:edit"), onclick: edit }),
             el("button", { class: "danger", text: t("common:delete"), onclick: remove })),
         infoCard(t("ui:tab_settings"), rows),
-        job.kind === "photos" ? el("p", { class: "muted", text: t("photos:only_download") }) : null,
+        job.kind === "photos" ? el("p", { class: "muted", text: t(c.mirror_deletes ? "photos:mirror_on" : "photos:only_download") }) : null,
     ].filter(Boolean);
 }
 
@@ -1151,7 +1153,7 @@ function pairDialog(pair) {
 // --- photos dialog ---------------------------------------------------------------------
 
 const LIBRARIES = ["personal", "shared", "shared_albums"];
-const PHOTO_SWITCHES = ["albums", "favorites", "videos", "live_videos", "raw_alternative", "edited", "xmp", "hidden"];
+const PHOTO_SWITCHES = ["albums", "favorites", "videos", "live_videos", "raw_alternative", "edited", "xmp", "hidden", "mirror_deletes"];
 const PHOTO_FOLDERS = ["folder_scheme", "shared_folder", "albums_folder", "favorites_folder", "hidden_folder", "shared_albums_folder"];
 let photoDefaults = null;
 
@@ -1171,7 +1173,8 @@ async function photosDialog(job) {
         el("fieldset", {}, el("legend", { text: t("photos:libraries") }),
             LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
-            PHOTO_SWITCHES.map((key) => checkbox(key, t("photos:" + key), j[key]))),
+            PHOTO_SWITCHES.map((key) => checkbox(key, t("photos:" + key), j[key])),
+            el("p", { class: "hint", text: t("photos:mirror_deletes_hint") })),
         el("fieldset", {}, el("legend", { text: t("photos:folders") }),
             checkbox("source_folders", t("photos:source_folders"), j.source_folders),
             el("p", { class: "hint", text: t("photos:source_folders_hint") }),

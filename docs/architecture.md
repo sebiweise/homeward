@@ -149,13 +149,17 @@ several Apple IDs, each with its own login session and state file
 - **Incremental**: the libraries' CloudKit sync tokens form a cursor. If it did not change
   since the last complete run and every file is still there, nothing is listed at all.
   Otherwise known photos are skipped by key, only new ones are downloaded.
-- **Never deletes**: a photo deleted in iCloud stays on the NAS (marked `gone` in the
-  state). A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
+- **Never deletes** by default: a photo deleted in iCloud stays on the NAS (marked `gone`
+  in the state). With `mirror_deletes` a full listing with the same selection (libraries,
+  file types) as the last complete run moves it and its album links to the trash
+  instead, behind a delete brake (held deletions keep neither cursor nor full-listing
+  time, so the approving run reads everything again). A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
   When a photo leaves an album only its album link is removed; an album file that is no
   longer the same file as the original goes to the trash instead.
 - Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.
 - Downloads stream into a temp file, are checked against the size iCloud reports and are
-  hard-linked into place, so a crash leaves no partial photo.
+  renamed into place without replacing (`RENAME_NOREPLACE`, so DSM's indexer sees them),
+  so a crash leaves no partial photo.
 - Album folders come from the personal library's albums, which can also hold Shared
   Library photos. The Shared Library's own albums are not readable through pyicloud 2.7.
 - Not possible with pyicloud 2.7: people/faces and memories.

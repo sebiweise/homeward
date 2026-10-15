@@ -24,6 +24,7 @@ none="Nothing here yet."
 version="Version {0}"
 
 [status]
+approve_confirm_photos="The delete brake held back deletions on the NAS in the last run of {0} (see the log). Deleted photos go to the trash of the backup folder. Back up now with these deletions?"
 pair="Pair"
 mode="Mode"
 last_run="Last run"
@@ -97,6 +98,9 @@ delete_confirm="Remove sync pair {0}? No files are deleted, neither on the NAS n
 reset_hint="Changing folders or account starts over with a first run, which never deletes or overwrites anything."
 
 [photos]
+mirror_deletes="Also delete photos on the NAS that were deleted in iCloud (1:1)"
+mirror_deletes_hint="Deleted photos and their album links move to the backup folder's trash (.homeward-papierkorb) and are removed for good after 30 days. A run that would delete more than 50 photos or more than 10 % is held by the delete brake until you approve it. Photos that only drop out because the selection changed (libraries, videos and so on) are not deleted."
+mirror_on="Photos are only downloaded from iCloud; Homeward never deletes anything in iCloud Photos. Photos deleted in iCloud go to the trash of the backup folder on the NAS."
 name="Name"
 account="Apple ID"
 target="NAS folder"
@@ -311,6 +315,7 @@ sync_stopped="Interrupted"
 sync_postponed="Waiting for iCloud"
 
 [count]
+delete="{0} deleted on the NAS (trash)"
 upload="{0} uploaded"
 download="{0} downloaded"
 delete-remote="{0} deleted in iCloud"

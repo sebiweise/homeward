@@ -309,6 +309,32 @@ def test_photos_progress_file_while_running(
     assert not progress_file.exists()  # removed when the run ends
 
 
+def test_photos_mirror_deletes_and_delete_brake(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    items = [source.add(f"a{n}", f"{n}.jpg") for n in range(3)]
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+    config = _photos_config(tmp_path)
+    config.write_text(config.read_text() + "mirror_deletes = true\nmax_delete_count = 1\n")
+    photo = tmp_path / "photos" / "2024" / "05"
+
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    source.remove(items[0].key)
+    source.remove(items[1].key)
+    assert main(["photos", "--config", str(config)]) == EXIT_BLOCKED
+    assert "Delete brake: 2 deletions exceed" in capsys.readouterr().out
+    assert (photo / "0.jpg").exists()
+
+    assert main(["photos", "--config", str(config), "--allow-deletes"]) == EXIT_OK
+    assert sorted(p.name for p in photo.iterdir()) == ["2.jpg"]
+    trash = next((tmp_path / "photos" / ".homeward-papierkorb").iterdir())
+    assert (trash / "2024" / "05" / "0.jpg").exists()
+
+
 def test_photos_refuses_a_second_run_for_the_same_account(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

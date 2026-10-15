@@ -28,6 +28,7 @@ SWITCHES = {
     "edited": True,
     "xmp": True,
     "hidden": False,
+    "mirror_deletes": False,  # photos deleted in iCloud are deleted on the NAS too
     "source_folders": True,  # own folders for the shared library and shared albums
 }
 FOLDERS = {
@@ -110,7 +111,14 @@ def run(ctx: Context, request: Request) -> dict[str, Any]:
     name = request.get("name")
     if not any(job["name"] == name for job in _entries(ctx.store.read())):
         raise ApiError("photos_not_found", name, status=404)
-    request_run(ctx.paths, RunRequest(pair=f"photos:{name}", dry_run=request.flag("dry_run")))
+    request_run(
+        ctx.paths,
+        RunRequest(
+            pair=f"photos:{name}",
+            dry_run=request.flag("dry_run"),
+            allow_deletes=request.flag("allow_deletes"),
+        ),
+    )
     return {"name": name, "queued": True}
 
 
