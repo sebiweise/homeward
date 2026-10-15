@@ -55,6 +55,8 @@ log = logging.getLogger("homeward.daemon")
 MAX_SLEEP_SECONDS = 10.0
 STOP_TIMEOUT_SECONDS = 30.0
 CANCEL_POLL_SECONDS = 1.0
+# Jobs of different Apple IDs (or without one) run side by side, at most this many.
+MAX_PARALLEL_RUNS = 2
 # A run iCloud was not ready for (e.g. still indexing) is tried again this soon,
 # instead of after the whole interval.
 WAITING_RETRY_MINUTES = 15
@@ -125,25 +127,30 @@ class RunRequest:
     remove_gone: bool = False  # photos: also clean up photos deleted in iCloud
 
 
-def take_requests(requests_dir: Path) -> list[RunRequest]:
-    """Return and remove the pending requests; unreadable files are dropped."""
+def take_requests(
+    requests_dir: Path, accept: Callable[[RunRequest], bool] = lambda _request: True
+) -> list[RunRequest]:
+    """Return and remove the pending requests ``accept`` takes now; the others stay
+    queued (and shown as queued) for a later cycle. Unreadable files are dropped."""
     if not requests_dir.is_dir():
         return []
     requests = []
     for file in sorted(requests_dir.glob("*.json")):
         try:
             data = json.loads(file.read_text(encoding="utf-8"))
-            requests.append(
-                RunRequest(
-                    pair=str(data["pair"]),
-                    dry_run=bool(data.get("dry_run", False)),
-                    allow_deletes=bool(data.get("allow_deletes", False)),
-                    remove_gone=bool(data.get("remove_gone", False)),
-                )
+            request = RunRequest(
+                pair=str(data["pair"]),
+                dry_run=bool(data.get("dry_run", False)),
+                allow_deletes=bool(data.get("allow_deletes", False)),
+                remove_gone=bool(data.get("remove_gone", False)),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log.warning("ignoring run request %s: %s", file.name, exc)
-        file.unlink(missing_ok=True)
+            file.unlink(missing_ok=True)
+            continue
+        if accept(request):
+            requests.append(request)
+            file.unlink(missing_ok=True)
     return requests
 
 
@@ -205,9 +212,14 @@ class Scheduler:
         self.jobs: list[Job] = []
         self.status: dict[str, JobStatus] = self._load_status()
         self._forced: set[str] = set()
-        self.running: str | None = None
-        # The running job (in the format of ``running``) the user asked to stop.
-        self.cancelled: str | None = None
+        # The running jobs, as the UI names them: the pair name, or ``photos:<job>``.
+        self.running: set[str] = set()
+        # The running jobs (in the format of ``running``) the user asked to stop.
+        self.cancelled: set[str] = set()
+        self._lock = threading.RLock()
+        self._lanes: set[str] = set()  # see ``lane``
+        self._threads: list[threading.Thread] = []
+        self.on_finish: Callable[[], None] = lambda: None  # called when a run ends
 
     def update(self, plan: Plan) -> None:
         self.settings = plan.settings
@@ -225,38 +237,143 @@ class Scheduler:
         return status.started_at + self._minutes_after(job, status) * 60.0
 
     def due(self) -> list[Job]:
+        """The jobs whose time has come and that do not run right now."""
         now = self._clock()
-        return [job for job in self.jobs if self.next_due(job) <= now]
+        with self._lock:
+            running = set(self.running)
+        return [
+            job for job in self.jobs
+            if _running_name(job) not in running and self.next_due(job) <= now
+        ]  # fmt: skip
 
     def seconds_until_next(self) -> float:
-        if not self.jobs:
+        """How long to sleep until the next job is due. A due job that waits for its
+        lane is left out: the end of a run wakes the daemon (``on_finish``)."""
+        now = self._clock()
+        with self._lock:
+            running = set(self.running)
+        waits = []
+        for job in self.jobs:
+            if _running_name(job) in running:
+                continue
+            due = self.next_due(job)
+            if due <= now and not self.can_start(job):
+                continue
+            waits.append(due - now)
+        if not waits:
             return MAX_SLEEP_SECONDS
-        wait = min(self.next_due(job) for job in self.jobs) - self._clock()
-        return max(0.0, min(wait, MAX_SLEEP_SECONDS))
+        return max(0.0, min(min(waits), MAX_SLEEP_SECONDS))
+
+    def lane(self, job: Job) -> str:
+        """Jobs in the same lane never run at the same time: those of one Apple ID
+        (Apple dislikes parallel sessions of one account), else each job alone."""
+        return f"account:{job.account}" if job.account else job.name
+
+    def can_start(self, job: Job) -> bool:
+        with self._lock:
+            return (
+                self.lane(job) not in self._lanes
+                and len(self._lanes) < MAX_PARALLEL_RUNS
+                and _running_name(job) not in self.running
+            )
 
     def run(self, job: Job, *, record: bool = True) -> JobStatus:
-        """Run one job; ``record=False`` (dry runs) leaves its schedule alone."""
+        """Run one job and wait for it; ``record=False`` (dry runs) leaves its
+        schedule alone."""
+        lane = self.lane(job)
+        with self._lock:
+            self._lanes.add(lane)
+        status, previous = self._begin(job, record)
+        try:
+            self._execute(job, status, previous)
+        finally:
+            with self._lock:
+                self._lanes.discard(lane)
+        return status
+
+    def start(self, job: Job, *, record: bool = True) -> bool:
+        """Start one job on its own thread, unless its lane is busy or
+        ``MAX_PARALLEL_RUNS`` already run. Returns whether it started."""
+        lane = self.lane(job)
+        with self._lock:
+            if not self.can_start(job):
+                return False
+            self._lanes.add(lane)
+            status, previous = self._begin(job, record)
+
+        def work() -> None:
+            try:
+                self._execute(job, status, previous)
+            except Exception:  # never let one job's bookkeeping stop the daemon
+                log.exception("running %s failed", job.name)
+            finally:
+                with self._lock:
+                    self._lanes.discard(lane)
+                self.on_finish()
+
+        thread = threading.Thread(target=work, name=f"run-{job.name}", daemon=True)
+        with self._lock:
+            self._threads = [t for t in self._threads if t.is_alive()]
+            self._threads.append(thread)
+        thread.start()
+        return True
+
+    def start_due(self, stop: threading.Event | None = None) -> list[Job]:
+        """Start every due job whose lane is free; the others wait for a later cycle."""
+        started = []
+        for job in self.due():
+            if stop is not None and stop.is_set():
+                break
+            if self.start(job):
+                started.append(job)
+        return started
+
+    def wait(self, timeout: float | None = None) -> None:
+        """Wait for the jobs started with ``start``."""
+        with self._lock:
+            threads = list(self._threads)
+        for thread in threads:
+            thread.join(timeout)
+
+    @property
+    def busy(self) -> bool:
+        with self._lock:
+            return bool(self._lanes)
+
+    def _begin(self, job: Job, record: bool) -> tuple[JobStatus, str | None]:
+        """Mark the job as running; returns its new status and its previous result."""
         status = JobStatus(started_at=self._clock())
-        previous = self.status.get(job.name, JobStatus()).result
+        name = _running_name(job)
+        with self._lock:
+            previous = self.status.get(job.name, JobStatus()).result
+            if record:
+                self._forced.discard(job.name)
+                self.status[job.name] = status
+            self.running.add(name)
+            self.cancelled.discard(name)
+            self.save()
         dry_run = "--dry-run" in job.argv
         record_event(Level.INFO, job.name, "sync_started", paths=self.events, dry_run=dry_run)
-        if record:
-            self._forced.discard(job.name)
-            self.status[job.name] = status
-        self.running = job.name.removeprefix("pair:")
-        self.cancelled = None
-        self.save()
         log.info("starting %s", job.name)
+        return status, previous
+
+    def _execute(self, job: Job, status: JobStatus, previous: str | None) -> None:
+        name = _running_name(job)
+        dry_run = "--dry-run" in job.argv
         try:
             code = self._runner(job)
         except OSError as exc:
             log.exception("%s could not start: %s", job.name, exc)
             code = 127
-        status.finished_at = self._clock()
-        status.exit_code = code
-        status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
-        if status.result == "killed" and self.cancelled == self.running:
-            status.result = "cancelled"
+        with self._lock:
+            status.finished_at = self._clock()
+            status.exit_code = code
+            status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
+            if status.result == "killed" and name in self.cancelled:
+                status.result = "cancelled"
+            notify_login = status.result == "login_required" and self._first_login_needed(
+                job, previous
+            )
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
         message = _MESSAGES.get(status.result or "", f"exit code {code}")
@@ -264,12 +381,12 @@ class Scheduler:
                      dry_run=dry_run, exit_code=code)  # fmt: skip
         if status.result in _NOTIFY and status.result != previous and not dry_run:
             self._notify(_NOTIFY[status.result], job.name.split(":", 1)[-1])
-        elif status.result == "login_required" and self._first_login_needed(job, previous):
+        elif notify_login:
             self._notify(Event.LOGIN_NEEDED, job.account or job.name.split(":", 1)[-1])
-        self.running = None
-        self.cancelled = None
-        self.save()
-        return status
+        with self._lock:
+            self.running.discard(name)
+            self.cancelled.discard(name)
+            self.save()
 
     def _first_login_needed(self, job: Job, previous: str | None) -> bool:
         """Notify once per account: not again while this or another job of the same
@@ -284,6 +401,7 @@ class Scheduler:
         )
 
     def run_due(self, stop: threading.Event | None = None) -> list[Job]:
+        """Run the due jobs one after the other (``--once``, and tests)."""
         ran = []
         for job in self.due():
             if stop is not None and stop.is_set():
@@ -297,12 +415,19 @@ class Scheduler:
         self._forced.update(job.name for job in self.jobs)
 
     def save(self) -> None:
+        with self._lock:
+            self._save()
+
+    def _save(self) -> None:
         jobs = {job.name: job for job in self.jobs}
+        running = sorted(self.running)
         data: dict[str, Any] = {
             "updated_at": self._clock(),
             "pid": os.getpid(),
             "interval_minutes": self.settings.interval_minutes,
-            "running": self.running,
+            # ``running`` (one job) is kept for UIs from before parallel runs.
+            "running": running[0] if running else None,
+            "running_jobs": running,
             "jobs": {
                 name: {
                     **asdict(status),
@@ -348,34 +473,47 @@ class Scheduler:
             return {}
 
 
+def _running_name(job: Job) -> str:
+    """The job as ``running`` and the UI name it: the pair name, or ``photos:<job>``."""
+    return job.name.removeprefix("pair:")
+
+
+def _job_name(running: str) -> str:
+    return running if ":" in running else f"pair:{running}"
+
+
 class SubprocessRunner:
-    """Runs a job as ``python -m homeward.cli ARGV`` and can terminate it."""
+    """Runs jobs as ``python -m homeward.cli ARGV`` (several at once) and can
+    terminate them."""
 
     def __init__(self, python: str = sys.executable) -> None:
         self._python = python
         self._lock = threading.Lock()
-        self._proc: subprocess.Popen[bytes] | None = None
+        self._procs: dict[str, subprocess.Popen[bytes]] = {}
 
     def __call__(self, job: Job) -> int:
         with self._lock:
-            self._proc = subprocess.Popen([self._python, "-m", "homeward.cli", *job.argv])
+            proc = subprocess.Popen([self._python, "-m", "homeward.cli", *job.argv])
+            self._procs[job.name] = proc
         try:
-            return self._proc.wait()
+            return proc.wait()
         finally:
             with self._lock:
-                self._proc = None
+                self._procs.pop(job.name, None)
 
-    def terminate(self, timeout: float = STOP_TIMEOUT_SECONDS) -> None:
+    def terminate(self, name: str | None = None, timeout: float = STOP_TIMEOUT_SECONDS) -> None:
+        """Stop the run of the job ``name`` (``pair:x``, ``photos:y``), or all runs."""
         with self._lock:
-            proc = self._proc
-        if proc is None or proc.poll() is not None:
-            return
-        log.info("stopping the running sync (pid %d)", proc.pid)
-        proc.terminate()
-        try:
-            proc.wait(timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            procs = [p for n, p in self._procs.items() if name is None or n == name]
+        running = [proc for proc in procs if proc.poll() is None]
+        for proc in running:
+            log.info("stopping the running sync (pid %d)", proc.pid)
+            proc.terminate()
+        for proc in running:
+            try:
+                proc.wait(timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 class Daemon:
@@ -383,6 +521,7 @@ class Daemon:
         self.config_path = config_path
         self.requests_dir = config_path.parent / "requests"
         self.scheduler = scheduler
+        scheduler.on_finish = self._wake_up
         self.runner = runner
         self.stop = threading.Event()
         self._wake = threading.Event()
@@ -409,6 +548,9 @@ class Daemon:
         # The main thread is blocked waiting for the sync process; end it here.
         threading.Thread(target=self.runner.terminate, daemon=True).start()
 
+    def _wake_up(self) -> None:
+        self._wake.set()
+
     def _on_run_now(self, signum: int, frame: FrameType | None) -> None:
         self._run_now = True
         self._wake.set()
@@ -417,13 +559,13 @@ class Daemon:
         """Act on cancel requests: stop the running sync, or drop a queued request."""
         with self._cancel_lock:
             for request in take_cancels(self.paths):
-                running = self.scheduler.running
-                if request.pair == running:
-                    if self.scheduler.cancelled == running:
+                name = request.pair
+                if name in self.scheduler.running:
+                    if name in self.scheduler.cancelled:
                         continue  # already stopping
-                    log.info("cancel requested for %s, stopping it", running)
-                    self.scheduler.cancelled = running
-                    self.runner.terminate()
+                    log.info("cancel requested for %s, stopping it", name)
+                    self.scheduler.cancelled.add(name)
+                    self.runner.terminate(_job_name(name))
                 else:
                     self._dropped.add(request.pair)
 
@@ -457,37 +599,45 @@ class Daemon:
                 self._run_now = False
                 self.scheduler.run_all_now()
             self.run_requests()
-            self.scheduler.run_due(self.stop)
+            self.scheduler.start_due(self.stop)
             self.scheduler.save()
 
     def run_requests(self) -> None:
-        jobs = {job.name: job for job in self.scheduler.jobs}
+        """Start the "sync now" requests whose Apple ID is free; the others stay
+        queued until a later cycle."""
         self.check_cancels()
         self._dropped.clear()  # cancels from before these requests were taken
-        for request in take_requests(self.requests_dir):
-            if self.stop.is_set():
-                break
-            # Requests name a pair, or a photos job as "photos:<name>".
-            name = request.pair if ":" in request.pair else f"pair:{request.pair}"
-            self.check_cancels()
-            if request.pair in self._dropped:
-                self._dropped.discard(request.pair)
-                log.info("run request for %s cancelled before it started", name)
-                record_event(Level.WARNING, name, "sync_cancelled",
-                             "cancelled by the user before it started",
-                             paths=self.paths)  # fmt: skip
-                continue
-            job = jobs.get(name)
-            if job is None:
-                log.warning("run request for unknown job %r ignored", request.pair)
-                continue
-            extra = ("--dry-run",) * request.dry_run
-            if request.allow_deletes:
-                extra += ("--allow-deletes",)
-            if request.remove_gone and name.startswith("photos:"):
-                extra += ("--remove-gone",)
-            log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
-            self.scheduler.run(replace(job, argv=job.argv + extra), record=not request.dry_run)
+        take_requests(self.requests_dir, self._start_request)
+
+    def _start_request(self, request: RunRequest) -> bool:
+        """Start one request; False leaves it queued."""
+        if self.stop.is_set():
+            return False
+        jobs = {job.name: job for job in self.scheduler.jobs}
+        # Requests name a pair, or a photos job as "photos:<name>".
+        name = _job_name(request.pair)
+        self.check_cancels()
+        if request.pair in self._dropped:
+            self._dropped.discard(request.pair)
+            log.info("run request for %s cancelled before it started", name)
+            record_event(Level.WARNING, name, "sync_cancelled",
+                         "cancelled by the user before it started",
+                         paths=self.paths)  # fmt: skip
+            return True
+        job = jobs.get(name)
+        if job is None:
+            log.warning("run request for unknown job %r ignored", request.pair)
+            return True
+        extra = ("--dry-run",) * request.dry_run
+        if request.allow_deletes:
+            extra += ("--allow-deletes",)
+        if request.remove_gone and name.startswith("photos:"):
+            extra += ("--remove-gone",)
+        run = replace(job, argv=job.argv + extra)
+        if not self.scheduler.start(run, record=not request.dry_run):
+            return False
+        log.info("run requested for %s%s", job.name, " (dry run)" if request.dry_run else "")
+        return True
 
     def run_forever(self) -> None:
         log.info("daemon started (pid %d), config %s", os.getpid(), self.config_path)
@@ -499,6 +649,8 @@ class Daemon:
             wait = self.scheduler.seconds_until_next() if self.config_ok else MAX_SLEEP_SECONDS
             self._wake.wait(wait)
             self._wake.clear()
+        self.runner.terminate()
+        self.scheduler.wait(STOP_TIMEOUT_SECONDS)
         log.info("daemon stopped")
 
 
@@ -561,6 +713,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     daemon = Daemon(args.config, Scheduler(status_path, runner), runner)
     if args.once:
         daemon.cycle()
+        daemon.scheduler.wait()
         return 0 if daemon.config_ok else 2
     daemon.install_signal_handlers()
     daemon.run_forever()

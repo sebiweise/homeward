@@ -77,9 +77,18 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
     }
 
 
+def running_jobs(daemon: dict[str, Any]) -> set[str]:
+    """The jobs the daemon runs now: pair names and ``photos:<job>``."""
+    jobs = daemon.get("running_jobs")
+    if isinstance(jobs, list):
+        return {str(job) for job in jobs}
+    running = daemon.get("running")  # a daemon from before parallel runs
+    return {running} if isinstance(running, str) else set()
+
+
 def _progress(ctx: Context, daemon: dict[str, Any], running: str, source: str) -> Any:
-    """How far the job is, while the daemon runs it (``running`` as in ``daemon.running``)."""
-    if daemon.get("running") != running:
+    """How far the job is, while the daemon runs it (``running`` as in ``running_jobs``)."""
+    if running not in running_jobs(daemon):
         return None
     return read_progress(ctx.paths, source)
 
@@ -104,7 +113,7 @@ def clear_notices(ctx: Context, request: Request) -> dict[str, Any]:
 def cancel(ctx: Context, request: Request) -> dict[str, Any]:
     """Stop a sync: a queued one is dropped, a running one is asked to stop.
 
-    ``name`` is a pair name or ``photos:<job>``, as in ``daemon.running``. The daemon
+    ``name`` is a pair name or ``photos:<job>``, as in ``running_jobs``. The daemon
     stops the run cleanly; files already synced stay, nothing is left half-written.
     """
     name = request.get("name")
@@ -114,7 +123,7 @@ def cancel(ctx: Context, request: Request) -> dict[str, Any]:
         record_event(Level.WARNING, source, "sync_cancelled",
                      "cancelled by the user before it started", paths=ctx.paths)  # fmt: skip
         return {"name": name, "cancelled": "queued"}
-    if read_status(ctx.paths).get("running") != name:
+    if name not in running_jobs(read_status(ctx.paths)):
         raise ApiError("not_running", name, status=409)
     request_cancel(ctx.paths, CancelRequest(name))
     return {"name": name, "cancelled": "running"}

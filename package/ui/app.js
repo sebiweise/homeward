@@ -4,7 +4,8 @@
 
 const API = "api.cgi";
 const REFRESH_MS = 10000;
-const REFRESH_RUNNING_MS = 3000; // while a job runs, so its progress moves
+const REFRESH_RUNNING_MS = 5000; // while a job runs, so its progress moves
+// Every refresh starts a CGI on the NAS: none while the window is hidden or minimized.
 const strings = {};
 let tokenRequest = null;
 let accountsCache = [];
@@ -451,7 +452,7 @@ function jobState(job) {
     const daemon = data.status?.daemon || {};
     const status = item.job;
     if (item.pending) return { cls: "busy", text: t("status:queued") };
-    if (daemon.running === job.run)
+    if (runningJobs(daemon).includes(job.run))
         return { cls: "busy", text: status?.started_at ? t("status:running_since", formatTime(status.started_at)) : t("ui:running") };
     const run = item.last_run;
     // A cancelled or interrupted run leaves no entry in the run history of a pair.
@@ -688,7 +689,7 @@ function cancelRun(job, running) {
 
 function jobActions(job) {
     const daemon = data.status?.daemon || {};
-    const running = daemon.running === job.run;
+    const running = runningJobs(daemon).includes(job.run);
     const busy = running || job.item.pending;
     const run = job.item.last_run;
     const photosBlocked = job.kind === "photos" && job.item.job?.result === "blocked";
@@ -865,7 +866,7 @@ async function jobRuns(job) {
     const history = await api("log.history", { source: job.key, limit: 50 });
     const runs = history.runs;
     if (!runs.length) return el("p", { class: "muted", text: t("run:none") });
-    const running = data.status?.daemon?.running === job.run;
+    const running = isRunning(job.run);
     const runKey = (run) => run.started_at ?? run.finished_at;
     const index = Math.max(0, runs.findIndex((run) => runKey(run) === view.run));
     const list = el(
@@ -994,10 +995,22 @@ const JOB_TABS = { overview: jobOverview, runs: jobRuns, settings: jobSettings, 
 
 // --- service ---------------------------------------------------------------------------
 
+// The jobs the daemon runs now (several at once, one per Apple ID).
+function runningJobs(daemon) {
+    if (!daemon) return [];
+    if (Array.isArray(daemon.running_jobs)) return daemon.running_jobs;
+    return daemon.running ? [daemon.running] : [];
+}
+
+function isRunning(run) {
+    return runningJobs(data.status?.daemon).includes(run);
+}
+
 function daemonState(daemon) {
-    if (daemon.running) {
-        const job = daemon.running.startsWith("photos:") ? t("event:src_photos", daemon.running.slice(7)) : daemon.running;
-        return { cls: "busy", text: t("status:daemon_running", job) };
+    const running = runningJobs(daemon);
+    if (running.length) {
+        const names = running.map((name) => (name.startsWith("photos:") ? t("event:src_photos", name.slice(7)) : name));
+        return { cls: "busy", text: t("status:daemon_running", names.join(", ")) };
     }
     return Object.keys(daemon).length ? { cls: "ok", text: t("status:daemon_idle") } : { cls: "warn", text: t("status:daemon_unknown") };
 }
@@ -1351,10 +1364,18 @@ function addClicked(event) {
 
 // --- start -----------------------------------------------------------------------------
 
+let refreshTimer = null;
+
+function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    if (document.hidden) return; // resumed by the visibilitychange listener
+    refreshTimer = setTimeout(autoRefresh, runningJobs(data.status?.daemon).length ? REFRESH_RUNNING_MS : REFRESH_MS);
+}
+
 async function autoRefresh() {
     const live = view.tab === "overview" || view.tab === "runs";
     if (live && !openMenu && !document.querySelector("dialog[open]")) await guarded(refresh);
-    setTimeout(autoRefresh, data.status?.daemon?.running ? REFRESH_RUNNING_MS : REFRESH_MS);
+    scheduleRefresh();
 }
 
 async function start() {
@@ -1374,8 +1395,12 @@ async function start() {
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") closeMenu();
     });
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) clearTimeout(refreshTimer);
+        else autoRefresh();
+    });
     await guarded(refresh);
-    setTimeout(autoRefresh, data.status?.daemon?.running ? REFRESH_RUNNING_MS : REFRESH_MS);
+    scheduleRefresh();
 }
 
 await start();

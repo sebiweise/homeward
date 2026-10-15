@@ -366,9 +366,15 @@ def test_status_shows_the_progress_of_the_running_job(client: Client, tmp_path: 
     write_progress(client.paths, "pair:docs", {"phase": "transferring", "done": 2, "total": 5})
     assert client.call("status.get")["pairs"][0]["progress"] is None  # not running
 
-    client.paths.status_file.write_text('{"running": "docs"}')
+    client.paths.status_file.write_text('{"running": "docs"}')  # an older daemon
     progress = client.call("status.get")["pairs"][0]["progress"]
     assert (progress["phase"], progress["done"], progress["total"]) == ("transferring", 2, 5)
+
+    # Runs of different Apple IDs side by side
+    client.paths.status_file.write_text('{"running": "docs", "running_jobs": ["docs", "photos:x"]}')
+    assert client.call("status.get")["pairs"][0]["progress"]["done"] == 2
+    request_cancel_ok = client.call("status.cancel", post=True, name="photos:x")
+    assert request_cancel_ok["cancelled"] == "running"
 
 
 def test_log_tail(client: Client) -> None:

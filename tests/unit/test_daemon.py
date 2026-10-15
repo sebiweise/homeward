@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 
 from homeward.core.config import ConfigError
 from homeward.daemon.scheduler import (
+    MAX_SLEEP_SECONDS,
     WAITING_RETRY_MINUTES,
     Daemon,
     Job,
@@ -223,11 +225,11 @@ def test_daemon_waits_for_a_valid_config(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     daemon = Daemon(config, _scheduler(tmp_path, recorder, Clock()), runner)
 
-    daemon.cycle()  # missing file
+    _cycle(daemon)  # missing file
     assert not daemon.config_ok
     assert recorder.calls == []
     _config(tmp_path)
-    daemon.cycle()
+    _cycle(daemon)
     assert daemon.config_ok
     assert recorder.calls == ["pair:docs"]
 
@@ -261,6 +263,12 @@ def test_take_requests(tmp_path: Path) -> None:
     assert list((tmp_path / "requests").iterdir()) == []
 
 
+def _cycle(daemon: Daemon) -> None:
+    """One daemon cycle, waiting for the runs it started (they run on threads)."""
+    daemon.cycle()
+    daemon.scheduler.wait()
+
+
 class ArgvRecorder:
     def __init__(self) -> None:
         self.argv: list[tuple[str, ...]] = []
@@ -275,13 +283,13 @@ def test_daemon_runs_requests(tmp_path: Path) -> None:
     config = _config(tmp_path, pairs=("a",))
     scheduler = Scheduler(tmp_path / "status.json", runner, clock)
     daemon = Daemon(config, scheduler, SubprocessRunner())
-    daemon.cycle()  # scheduled run
+    _cycle(daemon)  # scheduled run
     assert len(runner.argv) == 1
     scheduled_at = scheduler.status["pair:a"].started_at
 
     _request(tmp_path, "a", '{"pair": "a", "dry_run": true}')
     _request(tmp_path, "zzz", '{"pair": "missing"}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[1][-1] == "--dry-run"
     assert len(runner.argv) == 2
     # A dry run does not count as the scheduled run.
@@ -289,7 +297,7 @@ def test_daemon_runs_requests(tmp_path: Path) -> None:
 
     clock.now += 60
     _request(tmp_path, "a", '{"pair": "a", "allow_deletes": true}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[2][-1] == "--allow-deletes"
     assert scheduler.status["pair:a"].started_at == clock.now
     status = json.loads((tmp_path / "status.json").read_text())
@@ -316,14 +324,14 @@ target = "{tmp_path / "photos"}"
     daemon = Daemon(
         config, Scheduler(tmp_path / "status.json", runner, Clock()), SubprocessRunner()
     )
-    daemon.cycle()
+    _cycle(daemon)
     _request(tmp_path, "p", '{"pair": "photos:me", "dry_run": true, "allow_deletes": true}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[-1] == (
         "photos", "--config", str(config), "--job", "me", "--dry-run", "--allow-deletes"
     )  # fmt: skip
     _request(tmp_path, "p", '{"pair": "photos:me", "remove_gone": true}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[-1] == (
         "photos", "--config", str(config), "--job", "me", "--remove-gone"
     )  # fmt: skip
@@ -415,7 +423,7 @@ class StoppableRunner(SubprocessRunner):
         self.during()
         return 5 if self.terminated else 0
 
-    def terminate(self, timeout: float = 0.0) -> None:
+    def terminate(self, name: str | None = None, timeout: float = 0.0) -> None:
         self.terminated += 1
 
 
@@ -439,12 +447,12 @@ def test_cancelling_the_running_sync(tmp_path: Path) -> None:
         tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append(e)
     )
     daemon = Daemon(config, scheduler, runner)
-    daemon.cycle()
+    _cycle(daemon)
 
     assert runner.terminated == 1
     status = scheduler.status["pair:a"]
     assert (status.result, status.exit_code) == ("cancelled", 5)
-    assert scheduler.running is None and scheduler.cancelled is None
+    assert scheduler.running == set() and scheduler.cancelled == set()
     assert not list((tmp_path / "cancel").glob("*.json"))
     (event, _started) = read_events(paths)
     assert (event.level, event.code, event.source) == ("warning", "sync_cancelled", "pair:a")
@@ -458,25 +466,30 @@ def test_sigterm_without_a_cancel_is_an_interrupted_run(tmp_path: Path) -> None:
     assert scheduler.run(Job("pair:a", ())).result == "killed"
 
 
-def test_cancelling_a_request_the_daemon_already_took(tmp_path: Path) -> None:
-    from homeward.runtime import CancelRequest, Paths, read_events, request_cancel
+def test_a_request_waits_while_its_lane_is_busy_and_can_be_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from homeward.daemon import scheduler as module
+    from homeward.runtime import Paths, drop_request, pending_requests
 
+    monkeypatch.setattr(module, "MAX_PARALLEL_RUNS", 1)
     paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
     config = _config(tmp_path, pairs=("a", "b"))
+    release = threading.Event()
+    runner = StoppableRunner(lambda: release.wait(5))
     clock = Clock()
-    runner = StoppableRunner(lambda: request_cancel(paths, CancelRequest("b")))
     daemon = Daemon(config, Scheduler(tmp_path / "status.json", runner, clock), runner)
-    daemon.cycle()  # the scheduled runs of a and b
-    runner.calls.clear()
-    clock.now += 60
-    request_cancel(paths, CancelRequest("a"))  # stale: from before the requests below
-
+    assert daemon.reload()
     _request(tmp_path, "a", '{"pair": "a"}')
     _request(tmp_path, "b", '{"pair": "b"}')
-    daemon.cycle()  # a runs and, while it does, the user cancels the queued b
+
+    daemon.run_requests()
+    assert [r.pair for r in pending_requests(paths)] == ["b"]  # still shown as queued
+    assert drop_request(paths, "b")  # the user cancels it before it starts
+    release.set()
+    daemon.scheduler.wait()
+
     assert runner.calls == ["pair:a"]
-    assert runner.terminated == 0
-    assert read_events(paths)[0].code == "sync_cancelled"
 
 
 def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> None:
@@ -514,3 +527,32 @@ for i in range(30):
     current = log_file.read_text()
     assert "daemon line 29" in current
     assert "run output 29" in current
+
+
+def test_jobs_of_different_apple_ids_run_side_by_side(tmp_path: Path) -> None:
+    release = threading.Event()
+    started: list[str] = []
+
+    def runner(job: Job) -> int:
+        started.append(job.name)
+        release.wait(5)
+        return 0
+
+    scheduler = Scheduler(tmp_path / "status.json", runner, Clock())
+    photos_me = Job("photos:me", ("photos",), account="me")
+    drive_me = Job("pair:docs", ("sync",), account="me")
+    photos_anna = Job("photos:anna", ("photos",), account="anna")
+    folder_pair = Job("pair:local", ("sync",))
+    scheduler.jobs = [photos_me, drive_me, photos_anna, folder_pair]
+
+    assert scheduler.start_due() == [photos_me, photos_anna]  # one per Apple ID, two at most
+    assert scheduler.due() == [drive_me, folder_pair]
+    assert scheduler.seconds_until_next() == MAX_SLEEP_SECONDS  # woken when a run ends
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["running_jobs"] == ["photos:anna", "photos:me"]
+    release.set()
+    scheduler.wait()
+    assert sorted(started) == ["photos:anna", "photos:me"]
+    assert scheduler.start_due() == [drive_me, folder_pair]
+    scheduler.wait()
+    assert scheduler.running == set()
