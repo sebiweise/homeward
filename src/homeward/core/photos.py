@@ -1,8 +1,10 @@
 """iCloud Photos backup (iCloud -> NAS only): plan and apply one run of a photos job.
 
 Every original lands once below ``<target>/<scheme>/`` (Year/Month by default); the
-shared library goes below its own folder. Album folders hold hard links to those
-files, so a photo in several albums takes its disk space once.
+shared library and the shared albums go below their own folders unless
+``PhotoLayout.source_folders`` is off (for a job that backs up one of them alone).
+Album folders hold hard links to those files, so a photo in several albums takes its
+disk space once.
 
 A backup never deletes: photos removed in iCloud stay on the NAS, a changed original
 moves the old file to the trash first, and only album links (never the last copy of
@@ -124,17 +126,21 @@ class PhotoLayout:
     favorites_folder: str = "Favoriten"
     hidden_folder: str = "Ausgeblendet"
     shared_albums_folder: str = "Geteilte Alben"
+    # Off: shared library and shared albums skip their own folder (one-source jobs).
+    source_folders: bool = True
 
     def folder(self, item: PhotoItem) -> PurePosixPath:
         if item.library is Library.SHARED_ALBUMS:
-            album = safe_component(item.collection or "", "_")
+            album = PurePosixPath(safe_component(item.collection or "", "_"))
+            if not self.source_folders:
+                return album
             return PurePosixPath(safe_component(self.shared_albums_folder)) / album
         when = item.created.astimezone()
         parts = self.scheme.format(
             year=f"{when.year:04d}", month=f"{when.month:02d}", day=f"{when.day:02d}"
         )
         folder = safe_relative(parts)
-        if item.library is Library.SHARED:
+        if item.library is Library.SHARED and self.source_folders:
             folder = PurePosixPath(safe_component(self.shared_folder)) / folder
         if item.hidden:
             folder = PurePosixPath(safe_component(self.hidden_folder)) / folder

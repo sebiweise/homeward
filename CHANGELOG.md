@@ -5,6 +5,13 @@ All notable changes to Homeward are listed here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- Photos backups have a switch *Own folders for the Shared Library and shared albums*
+  (`source_folders`, on by default). Off, a backup of just the Shared Library or just
+  the shared albums puts its photos straight into the NAS folder. Photos already backed
+  up keep their place.
+
 ### Changed
 
 - The DSM app is laid out like Cloud Sync: a sidebar with every sync pair and photos

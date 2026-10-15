@@ -402,6 +402,32 @@ def test_shared_albums_are_stored_per_album(
     assert (tmp_path / "Geteilte Alben" / "Hochzeit" / "x.jpg").read_bytes() == b"w"
 
 
+def test_without_source_folders_a_shared_only_job_fills_the_target(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("s1", "a.jpg", b"family", created=at(2024, 5), library=Library.SHARED)
+    source.add("g:x", "x.jpg", b"w", library=Library.SHARED_ALBUMS, collection="Hochzeit")
+    run(source, tmp_path, pstate, layout=PhotoLayout(source_folders=False))
+    assert (tmp_path / "2024" / "05" / "a.jpg").read_bytes() == b"family"
+    assert (tmp_path / "Hochzeit" / "x.jpg").read_bytes() == b"w"
+    assert not (tmp_path / "Geteilte Mediathek").exists()
+    assert not (tmp_path / "Geteilte Alben").exists()
+
+
+def test_switching_source_folders_keeps_photos_in_place(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("s1", "a.jpg", b"old", created=at(2024, 5), library=Library.SHARED)
+    run(source, tmp_path, pstate)
+    source.add("s2", "b.jpg", b"new", created=at(2024, 5), library=Library.SHARED)
+
+    assert run(source, tmp_path, pstate, layout=PhotoLayout(source_folders=False)) == {
+        PhotoActionKind.DOWNLOAD: 1
+    }
+    assert (tmp_path / "Geteilte Mediathek" / "2024" / "05" / "a.jpg").read_bytes() == b"old"
+    assert (tmp_path / "2024" / "05" / "b.jpg").read_bytes() == b"new"
+
+
 def test_raw_jpeg_and_edited_versions_sit_side_by_side(
     source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
 ) -> None:

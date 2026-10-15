@@ -28,6 +28,7 @@ SWITCHES = {
     "edited": True,
     "xmp": True,
     "hidden": False,
+    "source_folders": True,  # own folders for the shared library and shared albums
 }
 FOLDERS = {
     "folder_scheme": "{year}/{month}",

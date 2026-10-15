@@ -205,6 +205,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         interval_minutes=_get_interval(entry, where),
         layout=PhotoLayout(
             scheme=scheme,
+            source_folders=_get_bool(entry, "source_folders", True, where),
             **{
                 name: _get(entry, name, str, getattr(defaults, name), where)
                 for name in FOLDER_OPTIONS

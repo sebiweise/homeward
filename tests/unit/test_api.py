@@ -453,6 +453,7 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
     defaults = client.call("photos.defaults")
     assert defaults["hidden"] is False
     assert defaults["xmp"] is True
+    assert defaults["source_folders"] is True
 
     created = client.call("photos.create", post=True, photos=_photos(tmp_path))
     assert created["libraries"] == ["personal", "shared", "shared_albums"]
@@ -464,6 +465,7 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
         hidden=True,
         videos=False,
         libraries=["shared", "personal"],
+        source_folders=False,
         folder_scheme="{year}/{month}/{day}",
         albums_folder="Meine Alben",
         interval_minutes=720,
@@ -473,12 +475,14 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
     assert updated["hidden"] is True
     assert updated["videos"] is False
     assert updated["libraries"] == ["personal", "shared"]
+    assert updated["source_folders"] is False
 
     raw = tomllib.loads(client.paths.config.read_text())
     (job,) = raw["photos"]
     assert updated["interval_minutes"] == 720
     assert job["apple_id"] == "a@b.de"
     assert job["albums_folder"] == "Meine Alben"
+    assert job["source_folders"] is False
     assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]
 
     with pytest.raises(ApiError) as excinfo:
@@ -505,7 +509,13 @@ def test_photos_validation(client: Client, tmp_path: Path) -> None:
         with pytest.raises(ApiError) as excinfo:
             client.call("photos.create", post=True, photos=job)
         assert _error(excinfo) == code, job
-    for bad in ({"hidden": "yes"}, {"albums_folder": "a/b"}, {"folder_scheme": "../{year}"}):
+    bad_values = (
+        {"hidden": "yes"},
+        {"source_folders": 0},
+        {"albums_folder": "a/b"},
+        {"folder_scheme": "../{year}"},
+    )
+    for bad in bad_values:
         invalid = _photos(tmp_path, **bad)
         with pytest.raises(ApiError):
             client.call("photos.create", post=True, photos=invalid)

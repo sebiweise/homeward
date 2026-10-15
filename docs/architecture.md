@@ -182,6 +182,7 @@ albums_folder = "Alben"
 favorites_folder = "Favoriten"
 hidden_folder = "Ausgeblendet"
 shared_albums_folder = "Geteilte Alben"
+source_folders = true                # false: no shared_folder / shared_albums_folder level
 ```
 
 Every switch is meant to become an option in the DSM UI (M6). Switching a feature off
