@@ -66,6 +66,7 @@ cancel_requested="{0} is being cancelled."
 cancel_dequeued="{0} will not run."
 job_cancelled="Cancelled by the user"
 job_waiting="Waiting for iCloud"
+job_login_required="Apple ID needs to sign in again"
 
 [schedule]
 title="Schedule"
@@ -222,6 +223,7 @@ conflict="Conflict: both versions were kept."
 file_failed="A file could not be transferred."
 config_error="The configuration is invalid; nothing runs until it is fixed."
 already_running="Another run for this Apple ID is still going on; this run was skipped."
+folder_missing="A folder of this run is missing (e.g. renamed, deleted, or its shared folder is not mounted). The run changed nothing; it runs again once the folder is back."
 notices_cleared="Notices cleared."
 sync_summary="Run summary."
 
@@ -263,7 +265,7 @@ invalid_interval="The interval must be a whole number of minutes ({0})."
 sync_failed="{0}: the last run finished with errors. Details are in Homeward's event log."
 delete_brake="{0} was stopped by the delete brake. Approve the deletions in Homeward."
 login_needed="Apple ID {0} needs to sign in again in Homeward."
-conflicts="{0}: conflict copies were created; both versions were kept."
+conflicts="{0}: {1} conflict copies were created; both versions were kept."
 
 [nav]
 jobs="Tasks"

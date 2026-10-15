@@ -60,6 +60,9 @@ class NasProvider(Provider):
         self.recycle_bin = recycle_bin
         self._today = today
 
+    def root_exists(self) -> bool:
+        return self.root.is_dir()
+
     def list_files(self) -> dict[str, FileMeta]:
         files: dict[str, FileMeta] = {}
         for dirpath, dirnames, filenames in os.walk(self.root):

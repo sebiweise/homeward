@@ -509,6 +509,13 @@ class ICloudPhotosSource(PhotoSource):
         members: dict[str, set[str]] = defaultdict(set)
         if self.options.albums:
             albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
+            if Library.PERSONAL not in self.wanted:
+                # Albums belong to the Apple ID, not to a library: they can hold
+                # Shared Library photos, which get their album folders this way.
+                log.info(
+                    "reading your %d albums for photos of the selected libraries "
+                    "(turn off albums as folders to skip this)", len(albums),
+                )  # fmt: skip
             self.progress.phase("albums", total=len(albums))
             for number, album in enumerate(albums, 1):
                 name = album.fullname

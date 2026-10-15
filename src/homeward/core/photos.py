@@ -26,6 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol
 
 from homeward.core.files import link_noreplace, rename_noreplace, temp_name
+from homeward.core.models import FolderMissing
 from homeward.core.photo_state import PhotoRecord, PhotoStateDB
 from homeward.core.planner import DeleteBrake
 from homeward.core.progress import Progress
@@ -35,6 +36,7 @@ log = logging.getLogger(__name__)
 
 _CHUNK = 1024 * 1024
 _UNSAFE = re.compile(r"[\x00-\x1f/\\:]+")
+_RESERVED_PREFIXES = (".", "@", "#")
 SCHEME_FIELDS = ("year", "month", "day")
 
 
@@ -142,25 +144,25 @@ class PhotoLayout:
 
     def folder(self, item: PhotoItem) -> PurePosixPath:
         if item.library is Library.SHARED_ALBUMS:
-            album = PurePosixPath(safe_component(item.collection or "", "_"))
+            album = PurePosixPath(safe_name(item.collection or "", "_"))
             if not self.source_folders:
                 return album
-            return PurePosixPath(safe_component(self.shared_albums_folder)) / album
+            return PurePosixPath(safe_name(self.shared_albums_folder)) / album
         when = item.created.astimezone()
         parts = self.scheme.format(
             year=f"{when.year:04d}", month=f"{when.month:02d}", day=f"{when.day:02d}"
         )
         folder = safe_relative(parts)
         if item.library is Library.SHARED and self.source_folders:
-            folder = PurePosixPath(safe_component(self.shared_folder)) / folder
+            folder = PurePosixPath(safe_name(self.shared_folder)) / folder
         if item.hidden:
-            folder = PurePosixPath(safe_component(self.hidden_folder)) / folder
+            folder = PurePosixPath(safe_name(self.hidden_folder)) / folder
         return folder
 
     def album_folder(self, album: str) -> PurePosixPath:
         if album == FAVORITES_ALBUM:
-            return PurePosixPath(safe_component(self.favorites_folder))
-        return PurePosixPath(safe_component(self.albums_folder)) / safe_relative(album)
+            return PurePosixPath(safe_name(self.favorites_folder))
+        return PurePosixPath(safe_name(self.albums_folder)) / safe_relative(album)
 
 
 def check_scheme(scheme: str) -> None:
@@ -179,8 +181,16 @@ def safe_component(value: str, fallback: str = "_") -> str:
     return fallback if cleaned in {"", ".", ".."} else cleaned
 
 
+def safe_name(value: str, fallback: str = "_") -> str:
+    """A folder or file name in the backup: also no hidden names (``.x``) and none DSM
+    treats as its own (``@eaDir``, ``#recycle``), which Synology Photos and File
+    Station would hide or the recycle bin would claim. Those get a ``_`` in front."""
+    cleaned = safe_component(value, fallback)
+    return f"_{cleaned}" if cleaned.startswith(_RESERVED_PREFIXES) else cleaned
+
+
 def safe_relative(value: str) -> PurePosixPath:
-    parts = [safe_component(p) for p in value.replace("\\", "/").split("/") if p not in {"", "."}]
+    parts = [safe_name(p) for p in value.replace("\\", "/").split("/") if p not in {"", "."}]
     return PurePosixPath(*[p for p in parts if p != ".."]) if parts else PurePosixPath()
 
 
@@ -515,7 +525,7 @@ def _new_path(item: PhotoItem, layout: PhotoLayout, assigned: dict[str, str]) ->
     beside = _sidecar_owner(item, assigned)
     if beside is not None:
         return beside.with_name(f"{beside.name}{PurePosixPath(item.filename).suffix}")
-    return layout.folder(item) / safe_component(item.filename, "photo")
+    return layout.folder(item) / safe_name(item.filename, "photo")
 
 
 def _record_action(root: Path, record: PhotoRecord, item: PhotoItem) -> PhotoActionKind | None:
@@ -924,6 +934,11 @@ def backup_photos(
     remove_gone: bool = False,
     recycle_bin: Path | None = None,
 ) -> PhotoOutcome:
+    if not root.is_dir() and state.records(job):
+        raise FolderMissing(
+            f"the backup folder {root} is missing, but earlier runs backed up photos "
+            "there; nothing was changed. Check that the folder (or its shared folder) exists."
+        )
     plan = build_photo_plan(
         job, source, root, state, layout, albums=albums, progress=progress, now=now,
         mirror_deletes=mirror_deletes, selection=selection, brake=brake,

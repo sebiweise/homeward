@@ -6,7 +6,7 @@ from datetime import date
 
 from homeward.core.config import PairConfig
 from homeward.core.executor import Executor, RunResult
-from homeward.core.models import Plan
+from homeward.core.models import FileMeta, FolderMissing, Plan
 from homeward.core.planner import build_plan
 from homeward.core.progress import Progress
 from homeward.core.provider import Provider
@@ -35,13 +35,17 @@ def sync_pair(
     progress.phase("listing")
     local_files = local.list_files()
     remote_files = remote.list_files()
+    records = state.records(pair.name)
+    if records:
+        _check_present(local, local_files, f"NAS folder {pair.local}", len(records))
+        _check_present(remote, remote_files, f"remote folder {pair.remote}", len(records))
     progress.phase("planning")
     plan = build_plan(
         pair.name,
         pair.mode,
         local_files,
         remote_files,
-        state.records(pair.name),
+        records,
         excludes=pair.exclude,
         brake=pair.delete_brake,
         today=today,
@@ -61,3 +65,17 @@ def sync_pair(
         blocked=plan.blocked if result is None or result.blocked else None,
     )
     return SyncOutcome(plan, result)
+
+
+def _check_present(provider: Provider, files: dict[str, FileMeta], what: str, known: int) -> None:
+    """Stop when a side lists nothing because its folder is gone (see ``FolderMissing``).
+
+    Providers that can tell a missing root from an empty one implement
+    ``root_exists()``; the others are trusted.
+    """
+    root_exists = getattr(provider, "root_exists", None)
+    if not files and root_exists is not None and not root_exists():
+        raise FolderMissing(
+            f"the {what} is missing, but {known} files were synced before; "
+            "nothing was changed. Check that the folder (or its shared folder) exists."
+        )

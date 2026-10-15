@@ -442,7 +442,7 @@ function currentJob() {
     return jobs().find((job) => job.key === view.key) || null;
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn" };
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn", login_required: "bad" };
 const JOB_UNFINISHED = ["killed", "cancelled"];
 
 // The state of a job as a badge class ("ok", "warn", "bad", "idle", "busy") and a text.

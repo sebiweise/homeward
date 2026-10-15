@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -350,6 +352,30 @@ def test_runs_write_events_and_notify_once(tmp_path: Path) -> None:
     assert sent == [("sync_failed", "docs"), ("delete_brake", "docs")]
 
 
+def test_a_needed_sign_in_notifies_once_per_apple_id(tmp_path: Path) -> None:
+    sent: list[tuple[str, ...]] = []
+    runner = Recorder(code=6)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, Clock(), notifier=lambda e, *a: sent.append((e, *a))
+    )
+    photos, drive = (
+        Job("photos:me", ("photos",), account="me"),
+        Job("pair:d", ("sync",), account="me"),
+    )
+    other = Job("photos:anna", ("photos",), account="anna")
+    scheduler.jobs = [photos, drive, other]
+    for job in (photos, drive, photos, other):
+        assert scheduler.run(job).result == "login_required"
+
+    assert sent == [("login_needed", "me"), ("login_needed", "anna")]
+    runner.code = 0
+    scheduler.run(photos)
+    scheduler.run(drive)
+    runner.code = 6
+    scheduler.run(photos)  # signed out again later
+    assert sent[-1] == ("login_needed", "me")
+
+
 def test_config_errors_become_events(tmp_path: Path) -> None:
     from homeward.runtime import Paths, read_events
 
@@ -465,3 +491,26 @@ def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> Non
     (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
     assert (event.level, event.code) == ("info", "sync_postponed")
     assert sent == []
+
+
+def test_the_log_rotates_with_the_output_of_the_runs(tmp_path: Path) -> None:
+    # In a separate process: the handler points fd 1 and 2 at the log file.
+    script = """
+import logging, subprocess, sys
+from pathlib import Path
+from homeward.daemon.scheduler import StdioRotatingHandler
+log_file = Path(sys.argv[1])
+logging.basicConfig(level=logging.INFO, handlers=[StdioRotatingHandler(log_file, 400, 2)])
+for i in range(30):
+    logging.info("daemon line %02d", i)
+    subprocess.run([sys.executable, "-c", f"print('run output {i:02d}')"], check=True)
+"""
+    log_file = tmp_path / "homeward.log"
+    subprocess.run([sys.executable, "-c", script, str(log_file)], check=True)
+
+    files = sorted(tmp_path.glob("homeward.log*"))
+    assert [f.name for f in files] == ["homeward.log", "homeward.log.1", "homeward.log.2"]
+    assert all(f.stat().st_size < 600 for f in files)
+    current = log_file.read_text()
+    assert "daemon line 29" in current
+    assert "run output 29" in current

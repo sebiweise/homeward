@@ -3,12 +3,15 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from homeward.core.config import PairConfig
-from homeward.core.models import ActionKind, SyncMode
+from homeward.core.models import ActionKind, FolderMissing, SyncMode
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
 from homeward.core.sync import sync_pair
 from homeward.providers.fake import FakeProvider
+from homeward.providers.nas import NasProvider
 
 TODAY = date(2026, 10, 11)
 
@@ -94,12 +97,12 @@ def test_delete_brake_by_count(state: StateDB, nas: FakeProvider, icloud: FakePr
 
 def test_delete_brake_by_ratio(state: StateDB, nas: FakeProvider, icloud: FakeProvider) -> None:
     _synced(state, nas, icloud, 20)
-    for i in range(3):
+    for i in range(6):
         icloud.remove(f"{i}.txt")
 
     outcome = sync_pair(_pair(), nas, icloud, state, dry_run=False)
 
-    assert outcome.plan.blocked == "3 of 20 files would be deleted, more than 10%"
+    assert outcome.plan.blocked == "6 of 20 files would be deleted, more than 10%"
     assert len(nas.files) == 20
 
 
@@ -107,15 +110,15 @@ def test_delete_brake_can_be_approved(
     state: StateDB, nas: FakeProvider, icloud: FakeProvider
 ) -> None:
     _synced(state, nas, icloud, 20)
-    for i in range(3):
+    for i in range(6):
         icloud.remove(f"{i}.txt")
 
     outcome = sync_pair(_pair(), nas, icloud, state, dry_run=False, allow_deletes=True)
 
     assert outcome.result is not None
     assert outcome.result.ok
-    assert len(nas.files) == 17
-    assert len(nas.trash) == 3
+    assert len(nas.files) == 14
+    assert len(nas.trash) == 6
 
 
 def test_delete_brake_allows_small_deletions(
@@ -129,6 +132,56 @@ def test_delete_brake_allows_small_deletions(
 
     assert outcome.plan.blocked is None
     assert len(icloud.files) == 90
+
+
+def test_delete_brake_ratio_starts_above_five_deletions() -> None:
+    brake = DeleteBrake()
+    assert brake.check(5, 6) is None  # a few files in a small folder
+    assert brake.check(6, 20) == "6 of 20 files would be deleted, more than 10%"
+    assert brake.check(6, 60) is None
+
+
+def test_an_emptied_side_is_held_back_by_the_brake(
+    state: StateDB, nas: FakeProvider, icloud: FakeProvider
+) -> None:
+    _synced(state, nas, icloud, 6)
+    for i in range(6):
+        nas.remove(f"{i}.txt")
+
+    outcome = sync_pair(_pair(), nas, icloud, state, dry_run=False)
+
+    assert outcome.plan.blocked == "6 of 6 files would be deleted, more than 10%"
+    assert len(icloud.files) == 6
+
+
+def test_a_missing_folder_stops_the_run_before_anything_changes(
+    state: StateDB, tmp_path: Path, icloud: FakeProvider
+) -> None:
+    root = tmp_path / "share" / "Docs"
+    root.mkdir(parents=True)
+    nas = NasProvider(root)
+    (root / "a.txt").write_text("a")
+    state.record("p", nas.list_files()["a.txt"], icloud.put("a.txt", "a"))
+    (root / "a.txt").unlink()
+    root.rmdir()  # e.g. the shared folder is not mounted
+
+    with pytest.raises(FolderMissing, match=r"NAS folder .* is missing, but 1 files"):
+        sync_pair(_pair(SyncMode.UPLOAD), nas, icloud, state, dry_run=False)
+
+    assert icloud.files.keys() == {"a.txt"}
+    assert icloud.trash == []
+
+
+def test_a_missing_folder_on_the_first_run_is_fine(
+    state: StateDB, tmp_path: Path, nas: FakeProvider
+) -> None:
+    remote = NasProvider(tmp_path / "not-yet")
+    nas.put("a.txt", "a")
+
+    outcome = sync_pair(_pair(SyncMode.UPLOAD), nas, remote, state, dry_run=False)
+
+    assert outcome.result is not None and outcome.result.ok
+    assert (tmp_path / "not-yet" / "a.txt").read_text() == "a"
 
 
 def test_delete_brake_is_configurable() -> None:

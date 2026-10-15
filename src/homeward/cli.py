@@ -24,13 +24,14 @@ from homeward.core.config import (
     PhotosConfig,
     load_config,
 )
-from homeward.core.models import ActionKind, SyncMode
+from homeward.core.models import ActionKind, FolderMissing, SyncMode
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import PhotoOutcome, PhotoSource, backup_photos
 from homeward.core.progress import Progress, ProgressLogHandler
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
+from homeward.dsm.notify import Event, notify
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
 from homeward.providers.icloud_photos import ICloudPhotosSource, PhotoOptions, PhotosNotReady
@@ -47,8 +48,11 @@ EXIT_USAGE = 2
 EXIT_BLOCKED = 3
 EXIT_WAITING = 4  # iCloud is not ready yet (e.g. still indexing); the next run tries again
 EXIT_CANCELLED = 5  # ended on SIGTERM (cancelled, or the service stops)
+EXIT_LOGIN = 6  # the Apple ID needs a new sign-in (the daemon notifies the admins)
 # how bad an exit code is, to report the worst one when a command runs several jobs
-_SEVERITY = {EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_BLOCKED: 3, EXIT_USAGE: 4}
+_SEVERITY = {
+    EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_LOGIN: 3, EXIT_BLOCKED: 4, EXIT_USAGE: 5,
+}  # fmt: skip
 
 
 def _worst(a: int, b: int) -> int:
@@ -80,11 +84,7 @@ def _version() -> str:
 
 def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
     """Sign in with the account's stored trusted session (see ``homeward login``)."""
-    try:
-        service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
-    except LoginRequired as exc:
-        _log_login_required(exc, pair.account)
-        raise ConfigError(f"pair {pair.name!r}: {exc}") from exc
+    service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
     return PyiCloudDriveApi(service.drive)
 
 
@@ -103,6 +103,8 @@ def _pair_apple_id(pair: PairConfig) -> str:
 
 # Returns a signed-in Drive API for the pair's account; tests replace it.
 drive_api_factory: Callable[[PairConfig, Config], DriveApi] = _icloud_drive_api
+# Sends a DSM notification (see homeward.dsm.notify); tests replace it.
+notifier: Callable[..., bool] = notify
 
 
 def _remote_provider(pair: PairConfig, config: Config) -> Provider:
@@ -181,15 +183,24 @@ def _reported(run: Callable[[], int], account: str) -> int:
         return run()
     except ConfigError:
         raise
+    except LoginRequired as exc:
+        print(f"homeward: {exc}", file=sys.stderr)
+        _log_login_required(exc, exc.account)
+        return EXIT_LOGIN
     except PhotosNotReady as exc:
         print(f"homeward: {exc}", file=sys.stderr)
         log.warning("%s", exc, extra={"event": "icloud_indexing"})
         return EXIT_WAITING
+    except FolderMissing as exc:
+        print(f"homeward: {exc}", file=sys.stderr)
+        log.error("%s", exc, extra={"event": "folder_missing"})
+        return EXIT_FAILED
     except Exception as exc:
         if session_rejected(exc):
             required = LoginRequired(account, _describe(exc))
             print(f"homeward: {required}", file=sys.stderr)
             _log_login_required(required, account)
+            return EXIT_LOGIN
         else:
             log.exception("the run stopped: %s", _describe(exc))
         return EXIT_FAILED
@@ -232,11 +243,19 @@ def _sync_one(
                 pair, local, remote, state, dry_run=args.dry_run,
                 allow_deletes=args.allow_deletes, progress=progress,
             )  # fmt: skip
+    except (FolderMissing, LoginRequired):
+        raise  # reported on their own, without a traceback
     except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
+        if session_rejected(exc):
+            raise  # _reported asks for a new sign-in
         print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
         log.exception("%s: %s", type(exc).__name__, exc, extra={"event": "sync_failed"})
         return EXIT_FAILED
     _print_outcome(outcome, args.dry_run)
+    if outcome.result:
+        conflicts = sum(1 for a in outcome.result.done if a.kind is ActionKind.CONFLICT)
+        if conflicts:
+            notifier(Event.CONFLICTS, pair.name, str(conflicts))
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     _log_summary(f"pair {pair.name}", counts, failed)
@@ -344,12 +363,7 @@ def _photos_one(
             return EXIT_FAILED
         progress.phase("connecting")
         log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
-        try:
-            source = _photo_source(config, job, progress)
-        except LoginRequired as exc:
-            print(f"homeward: {exc}", file=sys.stderr)
-            _log_login_required(exc, job.account)
-            return EXIT_FAILED
+        source = _photo_source(config, job, progress)  # LoginRequired: see _reported
         with PhotoStateDB(state_path) as state:
             outcome = backup_photos(
                 job.name, source, job.target, state, job.layout,
@@ -363,8 +377,9 @@ def _photos_one(
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     counts["up_to_date"] = outcome.plan.up_to_date
     _log_summary(f"photos {job.name}", counts, failed)
-    if (job.mirror_deletes or args.remove_gone) and not args.dry_run:
-        # Only the backup's own trash: DSM empties #recycle on its own schedule.
+    if not args.dry_run:
+        # Also without mirror_deletes: replaced files land there too. Only the
+        # backup's own trash: DSM empties #recycle on its own schedule.
         purged = NasProvider(job.target).purge_trash(job.trash_days)
         if purged:
             print(f"  Emptied {purged} day folder(s) older than {job.trash_days} days "

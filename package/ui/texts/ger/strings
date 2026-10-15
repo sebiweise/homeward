@@ -66,6 +66,7 @@ cancel_requested="{0} wird abgebrochen."
 cancel_dequeued="{0} läuft nicht mehr an."
 job_cancelled="Vom Benutzer abgebrochen"
 job_waiting="Wartet auf iCloud"
+job_login_required="Apple-ID muss neu angemeldet werden"
 
 [schedule]
 title="Zeitplan"
@@ -222,6 +223,7 @@ conflict="Konflikt: beide Versionen wurden behalten."
 file_failed="Eine Datei konnte nicht übertragen werden."
 config_error="Die Konfiguration ist ungültig; bis zur Korrektur läuft nichts."
 already_running="Für diese Apple-ID läuft noch ein anderer Lauf; dieser wurde übersprungen."
+folder_missing="Ein Ordner dieses Laufs fehlt (z. B. umbenannt, gelöscht oder der freigegebene Ordner ist nicht eingebunden). Der Lauf hat nichts verändert; er läuft wieder, sobald der Ordner da ist."
 notices_cleared="Hinweise ausgeblendet."
 sync_summary="Zusammenfassung des Laufs."
 
@@ -263,7 +265,7 @@ invalid_interval="Das Intervall muss eine ganze Zahl von Minuten sein ({0})."
 sync_failed="{0}: Der letzte Lauf endete mit Fehlern. Details im Ereignis-Protokoll von Homeward."
 delete_brake="{0} wurde von der Löschbremse gestoppt. Gib die Löschungen in Homeward frei."
 login_needed="Apple-ID {0} muss in Homeward neu angemeldet werden."
-conflicts="{0}: Konfliktkopien wurden angelegt; beide Versionen bleiben erhalten."
+conflicts="{0}: {1} Konfliktkopien angelegt; beide Versionen bleiben erhalten."
 
 [nav]
 jobs="Aufgaben"

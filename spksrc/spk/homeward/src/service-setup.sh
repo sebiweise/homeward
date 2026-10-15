@@ -18,23 +18,14 @@ HOMEWARD_CONFIG="${SYNOPKG_PKGVAR}/config.toml"
 HOMEWARD_VAR="${SYNOPKG_PKGVAR}"
 export HOME HOMEWARD_CONFIG HOMEWARD_VAR
 
-LOG_MAX_BYTES=5242880
-
-SERVICE_COMMAND="${SYNOPKG_PKGDEST}/env/bin/homeward-daemon --config ${HOMEWARD_CONFIG}"
+SERVICE_COMMAND="${SYNOPKG_PKGDEST}/env/bin/homeward-daemon --config ${HOMEWARD_CONFIG} --log-file ${SYNOPKG_PKGVAR}/homeward.log"
 SVC_BACKGROUND=y
 SVC_WRITE_PID=y
-# The DSM app shows homeward.log; keep it across restarts (rotated in service_prestart).
+# The DSM app shows homeward.log; keep it across restarts (the daemon rotates it).
 SVC_KEEP_LOG=y
 SVC_CWD="${SYNOPKG_PKGVAR}"
 # A running sync records its finished steps on SIGTERM before it exits.
 SVC_WAIT_TIMEOUT=45
-
-service_prestart ()
-{
-    if [ -f "${LOG_FILE}" ] && [ "$(wc -c < "${LOG_FILE}")" -gt "${LOG_MAX_BYTES}" ]; then
-        mv -f "${LOG_FILE}" "${LOG_FILE}.1"
-    fi
-}
 
 service_postinst ()
 {

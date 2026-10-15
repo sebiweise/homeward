@@ -23,7 +23,6 @@ WHEELHOUSE="${PKG_DEST}/wheelhouse"
 CONFIG="${PKG_VAR}/config.toml"
 PID_FILE="${PKG_VAR}/homeward.pid"
 LOG_FILE="${PKG_VAR}/homeward.log"
-LOG_MAX_BYTES=5242880
 STOP_TIMEOUT=45
 
 # Messages for the user. DSM shows the content of SYNOPKG_TEMP_LOGFILE in Package
@@ -120,21 +119,18 @@ daemon_running() {
     [ -r "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null
 }
 
-rotate_log() {
-    if [ -f "${LOG_FILE}" ] && [ "$(wc -c < "${LOG_FILE}")" -gt "${LOG_MAX_BYTES}" ]; then
-        mv -f "${LOG_FILE}" "${LOG_FILE}.1"
-    fi
-}
-
 service_start() {
     if daemon_running; then
         return 0
     fi
-    rotate_log
+    # The daemon rotates the log itself (--log-file, 5 MB x 3).
     # HOME points into var/ so libraries that write to ~ (cookies, caches) stay
     # inside the package and survive upgrades.
+    # The redirect only catches output from before the log file is opened.
+    # shellcheck disable=SC2094
     HOME="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" \
-        nohup "${VENV}/bin/homeward-daemon" --config "${CONFIG}" >> "${LOG_FILE}" 2>&1 &
+        nohup "${VENV}/bin/homeward-daemon" --config "${CONFIG}" --log-file "${LOG_FILE}" \
+        >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"
     sleep 1
     daemon_running || { rm -f "${PID_FILE}"; fail "Homeward did not start, see ${LOG_FILE}."; }

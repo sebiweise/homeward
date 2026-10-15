@@ -34,6 +34,7 @@ from homeward.auth.twofa import LoginFlow
 from homeward.core.photos import safe_component
 from homeward.runtime import Paths, read_events, write_json_atomic
 
+HELPER_MODULE = "homeward.api.login"
 HELPER_TIMEOUT = 600.0
 ANSWER_TIMEOUT = 90.0
 POLL_SECONDS = 0.2
@@ -94,9 +95,19 @@ class Channel:
 
     def stop_helper(self) -> None:
         pid = self.pid
-        if pid is not None and self.helper_alive():
+        # A stale pid file may name an unrelated process by now: only signal ours.
+        if pid is not None and self.helper_alive() and is_helper_process(pid, self.dir):
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGTERM)
+
+
+def is_helper_process(pid: int, channel_dir: Path, proc: Path = Path("/proc")) -> bool:
+    """Whether ``pid`` runs ``homeward.api.login`` for this channel (Linux ``/proc``)."""
+    try:
+        argv = (proc / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return HELPER_MODULE.encode() in argv and os.fsencode(channel_dir) in argv
 
 
 def run_helper(
@@ -161,7 +172,7 @@ class PyiCloudBackend(AccountBackend):
             "state_dir": str(self._state_dir()),
             "password": password,
         }
-        command = [sys.executable, "-m", "homeward.api.login", str(channel.dir)]
+        command = [sys.executable, "-m", HELPER_MODULE, str(channel.dir)]
         self._spawn(command, json.dumps(args).encode())
         answer = channel.wait_for("result", 0, self.answer_timeout)
         if answer is None:

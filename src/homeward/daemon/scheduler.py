@@ -25,6 +25,7 @@ the last result and next run of every job.
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import subprocess
@@ -58,8 +59,15 @@ CANCEL_POLL_SECONDS = 1.0
 # instead of after the whole interval.
 WAITING_RETRY_MINUTES = 15
 
+# homeward.log is rotated at this size, keeping this many old files (homeward.log.1 ...).
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUPS = 3
+
 # Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
-_RESULTS = {0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed"}
+_RESULTS = {
+    0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed",
+    6: "login_required",
+}  # fmt: skip
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
     "ok": (Level.INFO, "sync_finished"),
@@ -68,11 +76,13 @@ _EVENTS = {
     "killed": (Level.WARNING, "sync_stopped"),
     "cancelled": (Level.WARNING, "sync_cancelled"),
     "waiting": (Level.INFO, "sync_postponed"),
+    "login_required": (Level.ERROR, "sync_failed"),
 }
 _MESSAGES = {
     "killed": "stopped, runs again shortly",
     "waiting": f"iCloud is not ready yet, trying again in {WAITING_RETRY_MINUTES} minutes",
     "cancelled": "cancelled by the user, finished steps are kept",
+    "login_required": "the Apple ID needs a new sign-in",
 }
 # results that send a DSM notification when they first occur
 _NOTIFY = {"failed": Event.SYNC_FAILED, "blocked": Event.DELETE_BRAKE}
@@ -85,6 +95,7 @@ class Job:
     name: str
     argv: tuple[str, ...]
     interval_minutes: int | None = None  # None: the global interval
+    account: str = ""  # the Apple ID account the job signs in with
 
 
 @dataclass(slots=True)
@@ -151,6 +162,7 @@ def load_plan(config_path: Path) -> Plan:
             f"pair:{pair.name}",
             ("sync", "--config", str(config_path), "--pair", pair.name),
             pair.interval_minutes,
+            pair.account if pair.remote_provider == "icloud_drive" else "",
         )
         for pair in config.pairs
     ]
@@ -159,6 +171,7 @@ def load_plan(config_path: Path) -> Plan:
             f"photos:{photos.name}",
             ("photos", "--config", str(config_path), "--job", photos.name),
             photos.interval_minutes,
+            photos.account,
         )
         for photos in config.photos
     ]
@@ -251,10 +264,24 @@ class Scheduler:
                      dry_run=dry_run, exit_code=code)  # fmt: skip
         if status.result in _NOTIFY and status.result != previous and not dry_run:
             self._notify(_NOTIFY[status.result], job.name.split(":", 1)[-1])
+        elif status.result == "login_required" and self._first_login_needed(job, previous):
+            self._notify(Event.LOGIN_NEEDED, job.account or job.name.split(":", 1)[-1])
         self.running = None
         self.cancelled = None
         self.save()
         return status
+
+    def _first_login_needed(self, job: Job, previous: str | None) -> bool:
+        """Notify once per account: not again while this or another job of the same
+        Apple ID still waits for the new sign-in."""
+        if previous == "login_required":
+            return False
+        return not any(
+            other.name != job.name
+            and other.account == job.account
+            and self.status.get(other.name, JobStatus()).result == "login_required"
+            for other in self.jobs
+        )
 
     def run_due(self, stop: threading.Event | None = None) -> list[Job]:
         ran = []
@@ -475,6 +502,40 @@ class Daemon:
         log.info("daemon stopped")
 
 
+class StdioRotatingHandler(logging.handlers.RotatingFileHandler):
+    """Rotates the log file while the daemon runs and keeps stdout and stderr on it.
+
+    The runs are child processes that write straight to the inherited stdout and
+    stderr; pointing those at the current file after every rollover means their
+    output rotates with the daemon's own (a size check sees all of it).
+    """
+
+    def __init__(self, path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUPS):
+        super().__init__(path, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+        self._redirect()
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        self._redirect()
+
+    def _redirect(self) -> None:
+        if self.stream is None:
+            self.stream = self._open()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        for fd in (1, 2):
+            os.dup2(self.stream.fileno(), fd)
+
+
+def _setup_logging(log_file: Path | None) -> None:
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    handler: logging.Handler = (
+        StdioRotatingHandler(log_file) if log_file else logging.StreamHandler(sys.stdout)
+    )
+    handler.setFormatter(fmt)
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="homeward-daemon", description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -487,13 +548,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--status", type=Path, help="status file (default: status.json next to the config)"
     )
     parser.add_argument("--once", action="store_true", help="run the due jobs once and exit")
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        help="log here, rotated at 5 MB (3 old files); also takes stdout and stderr",
+    )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
+    _setup_logging(args.log_file)
     status_path = args.status or args.config.parent / "status.json"
     runner = SubprocessRunner()
     daemon = Daemon(args.config, Scheduler(status_path, runner), runner)
