@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from homeward.core.limits import TimeWindow
 from homeward.core.models import SyncMode
 from homeward.core.photos import (
     DEFAULT_WORKERS,
@@ -46,6 +47,8 @@ class PairConfig:
     delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
     trash_days: int = DEFAULT_TRASH_DAYS
     interval_minutes: int | None = None  # None: the global interval
+    window: TimeWindow | None = None  # scheduled runs start only in these hours
+    max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
 
 
 FOLDER_OPTIONS = (
@@ -82,6 +85,8 @@ class PhotosConfig:
     trash_days: int = DEFAULT_TRASH_DAYS  # with mirror_deletes: how long the trash keeps them
     layout: PhotoLayout = field(default_factory=PhotoLayout)
     interval_minutes: int | None = None  # None: the global interval
+    window: TimeWindow | None = None  # scheduled runs start only in these hours
+    max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +171,30 @@ def _get_interval(table: Mapping[str, Any], where: str) -> int | None:
     return None if value is None else check_interval(value, where)
 
 
+MAX_RATE_KB = 10_000_000
+
+
+def _get_window(table: Mapping[str, Any], where: str) -> TimeWindow | None:
+    value = table.get("window")
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{where}: 'window' must be a text like \"22:00-06:00\"")
+    try:
+        return TimeWindow.parse(value)
+    except ValueError as exc:
+        raise ConfigError(f"{where}: {exc}") from None
+
+
+def _get_rate(table: Mapping[str, Any], where: str) -> int | None:
+    value = table.get("max_rate_kb")
+    if value is None or value == 0:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_RATE_KB:
+        raise ConfigError(f"{where}: 'max_rate_kb' must be a whole number from 1 to {MAX_RATE_KB}")
+    return value
+
+
 def _parse_photos(entry: object, index: int) -> PhotosConfig:
     if not isinstance(entry, dict):
         raise ConfigError(f"photos #{index} must be a table")
@@ -216,6 +245,8 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         delete_brake=brake,
         trash_days=trash_days,
         interval_minutes=_get_interval(entry, where),
+        window=_get_window(entry, where),
+        max_rate_kb=_get_rate(entry, where),
         layout=PhotoLayout(
             scheme=scheme,
             source_folders=_get_bool(entry, "source_folders", True, where),
@@ -276,6 +307,8 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         delete_brake=brake,
         trash_days=trash_days,
         interval_minutes=_get_interval(entry, where),
+        window=_get_window(entry, where),
+        max_rate_kb=_get_rate(entry, where),
     )
 
 

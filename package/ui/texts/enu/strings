@@ -24,6 +24,7 @@ none="Nothing here yet."
 version="Version {0}"
 
 [status]
+job_window_closed="Time window closed, goes on later"
 safe_title="Is everything backed up?"
 safe_job="Job"
 safe_last="Last success"
@@ -78,6 +79,13 @@ job_waiting="Waiting for iCloud"
 job_login_required="Apple ID needs to sign in again"
 
 [schedule]
+window="Time window"
+window_hint="Scheduled runs start only in these hours (NAS time), e.g. 22:00-06:00. When the window closes, the run pauses and goes on when it opens again. “Sync now” always works. Empty: any time."
+window_none="Any time"
+rate="Bandwidth (KB/s)"
+rate_hint="At most this many kilobytes per second for this job's downloads and uploads. Empty: no limit."
+rate_none="No limit"
+rate_value="{0} KB/s"
 title="Schedule"
 change="Change"
 interval="Interval in minutes"
@@ -215,6 +223,7 @@ source="About"
 event="Event"
 
 [event]
+sync_paused="The time window closed. The run paused and keeps the files already transferred; it goes on when the window opens again."
 not_backed_up="No successful run for more than 3 days. Check this job's notices and log."
 level_info="Info"
 level_warning="Warning"
@@ -245,6 +254,7 @@ notices_cleared="Notices cleared."
 sync_summary="Run summary."
 
 [error]
+invalid_window="The time window needs the form HH:MM-HH:MM, e.g. 22:00-06:00 ({0})."
 not_running="This run has already finished."
 not_authenticated="Your DSM session has expired. Please sign in to DSM again."
 not_admin="Only administrators can use Homeward."
@@ -324,6 +334,7 @@ add="+ Add"
 service="⚙ Service"
 
 [run]
+sync_paused="Paused (time window)"
 title="Run"
 result="Result"
 finished="Ended"

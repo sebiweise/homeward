@@ -12,10 +12,12 @@ from homeward.api.store import RawConfig
 from homeward.core.config import (
     DEFAULT_INTERVAL_MINUTES,
     MAX_INTERVAL_MINUTES,
+    MAX_RATE_KB,
     MIN_INTERVAL_MINUTES,
     ConfigError,
     check_interval,
 )
+from homeward.core.limits import TimeWindow
 
 
 def get(ctx: Context, request: Request) -> dict[str, Any]:
@@ -49,6 +51,30 @@ def parse_interval(value: object) -> int | None:
         return check_interval(value, "interval")
     except ConfigError:
         raise ApiError("invalid_interval", _range()) from None
+
+
+def parse_limits(data: dict[str, Any]) -> dict[str, Any]:
+    """A job's time window ("22:00-06:00") and transfer limit (KB/s) from a request;
+    empty values are None (no limit)."""
+    window = data.get("window")
+    if window is None or (isinstance(window, str) and not window.strip()):
+        window = None
+    else:
+        try:
+            window = str(TimeWindow.parse(str(window)))
+        except ValueError:
+            raise ApiError("invalid_window", str(window)) from None
+    rate = data.get("max_rate_kb")
+    if rate is None or rate == "" or rate == 0:
+        rate = None
+    else:
+        try:
+            rate = int(str(rate).strip())
+        except ValueError:
+            raise ApiError("invalid_param", "max_rate_kb") from None
+        if not 1 <= rate <= MAX_RATE_KB:
+            raise ApiError("invalid_param", "max_rate_kb")
+    return {"window": window, "max_rate_kb": rate}
 
 
 def _range() -> str:

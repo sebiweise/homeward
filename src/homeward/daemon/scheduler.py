@@ -45,6 +45,7 @@ from homeward.core.config import (
     check_interval,
     load_config,
 )
+from homeward.core.limits import TimeWindow
 from homeward.dsm.notify import Event, notify
 from homeward.runtime import Level, Paths, record_event, take_cancels
 
@@ -79,6 +80,7 @@ _EVENTS = {
     "config_error": (Level.ERROR, "config_error"),
     "killed": (Level.WARNING, "sync_stopped"),
     "cancelled": (Level.WARNING, "sync_cancelled"),
+    "window_closed": (Level.INFO, "sync_paused"),
     "waiting": (Level.INFO, "sync_postponed"),
     "login_required": (Level.ERROR, "sync_failed"),
 }
@@ -86,6 +88,7 @@ _MESSAGES = {
     "killed": "stopped, runs again shortly",
     "waiting": f"iCloud is not ready yet, trying again in {WAITING_RETRY_MINUTES} minutes",
     "cancelled": "cancelled by the user, finished steps are kept",
+    "window_closed": "the time window closed, finished steps are kept; goes on when it opens",
     "login_required": "the Apple ID needs a new sign-in",
 }
 # results that send a DSM notification when they first occur
@@ -100,6 +103,7 @@ class Job:
     argv: tuple[str, ...]
     interval_minutes: int | None = None  # None: the global interval
     account: str = ""  # the Apple ID account the job signs in with
+    window: TimeWindow | None = None  # scheduled runs start only in these hours
 
 
 @dataclass(slots=True)
@@ -175,6 +179,7 @@ def load_plan(config_path: Path) -> Plan:
             ("sync", "--config", str(config_path), "--pair", pair.name),
             pair.interval_minutes,
             pair.account if pair.remote_provider == "icloud_drive" else "",
+            pair.window,
         )
         for pair in config.pairs
     ]
@@ -184,6 +189,7 @@ def load_plan(config_path: Path) -> Plan:
             ("photos", "--config", str(config_path), "--job", photos.name),
             photos.interval_minutes,
             photos.account,
+            photos.window,
         )
         for photos in config.photos
     ]
@@ -221,6 +227,10 @@ class Scheduler:
         self.running: set[str] = set()
         # The running jobs (in the format of ``running``) the user asked to stop.
         self.cancelled: set[str] = set()
+        # The running jobs the schedule started (not a "sync now"), and those of
+        # them stopped because their time window closed.
+        self.scheduled: set[str] = set()
+        self.closing: set[str] = set()
         self._lock = threading.RLock()
         self._lanes: set[str] = set()  # see ``lane``
         self._threads: list[threading.Thread] = []
@@ -235,11 +245,42 @@ class Scheduler:
 
     def next_due(self, job: Job) -> float:
         if job.name in self._forced:
-            return 0.0
+            return 0.0  # "run all now" ignores the time window, as "sync now" does
         status = self.status.get(job.name, JobStatus())
-        if status.started_at is None or status.finished_at is None or status.result == "killed":
-            return 0.0  # never ran, or a stop or crash interrupted the last run
-        return status.started_at + self._minutes_after(job, status) * 60.0
+        if (
+            status.started_at is None
+            or status.finished_at is None
+            or status.result
+            in (
+                "killed",
+                "window_closed",
+            )
+        ):
+            due = 0.0  # never ran, or a stop or crash interrupted the last run
+        else:
+            due = status.started_at + self._minutes_after(job, status) * 60.0
+        if job.window is not None:
+            due = job.window.next_open(max(due, self._clock()))
+        return due
+
+    def window_closed(self) -> list[str]:
+        """The running jobs (as in ``running``) the schedule started that must stop
+        now that their time window has closed; marks them as closing. A "sync now"
+        is left alone."""
+        now = self._clock()
+        result = []
+        with self._lock:
+            for job in self.jobs:
+                name = _running_name(job)
+                if (
+                    job.window is not None
+                    and name in self.scheduled
+                    and name not in self.cancelled | self.closing
+                    and not job.window.contains(now)
+                ):
+                    self.closing.add(name)
+                    result.append(name)
+        return result
 
     def due(self) -> list[Job]:
         """The jobs whose time has come and that do not run right now."""
@@ -282,13 +323,13 @@ class Scheduler:
                 and _running_name(job) not in self.running
             )
 
-    def run(self, job: Job, *, record: bool = True) -> JobStatus:
+    def run(self, job: Job, *, record: bool = True, scheduled: bool = False) -> JobStatus:
         """Run one job and wait for it; ``record=False`` (dry runs) leaves its
-        schedule alone."""
+        schedule alone, ``scheduled`` runs stop when their time window closes."""
         lane = self.lane(job)
         with self._lock:
             self._lanes.add(lane)
-        status, previous = self._begin(job, record)
+        status, previous = self._begin(job, record, scheduled)
         try:
             self._execute(job, status, previous)
         finally:
@@ -296,7 +337,7 @@ class Scheduler:
                 self._lanes.discard(lane)
         return status
 
-    def start(self, job: Job, *, record: bool = True) -> bool:
+    def start(self, job: Job, *, record: bool = True, scheduled: bool = False) -> bool:
         """Start one job on its own thread, unless its lane is busy or
         ``MAX_PARALLEL_RUNS`` already run. Returns whether it started."""
         lane = self.lane(job)
@@ -304,7 +345,7 @@ class Scheduler:
             if not self.can_start(job):
                 return False
             self._lanes.add(lane)
-            status, previous = self._begin(job, record)
+            status, previous = self._begin(job, record, scheduled)
 
         def work() -> None:
             try:
@@ -329,7 +370,7 @@ class Scheduler:
         for job in self.due():
             if stop is not None and stop.is_set():
                 break
-            if self.start(job):
+            if self.start(job, scheduled=True):
                 started.append(job)
         return started
 
@@ -345,7 +386,7 @@ class Scheduler:
         with self._lock:
             return bool(self._lanes)
 
-    def _begin(self, job: Job, record: bool) -> tuple[JobStatus, str | None]:
+    def _begin(self, job: Job, record: bool, scheduled: bool) -> tuple[JobStatus, str | None]:
         """Mark the job as running; returns its new status and its previous result."""
         now = self._clock()
         name = _running_name(job)
@@ -362,6 +403,8 @@ class Scheduler:
                 self._forced.discard(job.name)
                 self.status[job.name] = status
             self.running.add(name)
+            if scheduled:
+                self.scheduled.add(name)
             self.cancelled.discard(name)
             self.save()
         dry_run = "--dry-run" in job.argv
@@ -383,6 +426,8 @@ class Scheduler:
             status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
             if status.result == "killed" and name in self.cancelled:
                 status.result = "cancelled"
+            elif status.result == "killed" and name in self.closing:
+                status.result = "window_closed"
             if status.result == "ok" and not dry_run:
                 status.last_success = status.finished_at
                 status.stale_notified = False
@@ -401,6 +446,8 @@ class Scheduler:
         with self._lock:
             self.running.discard(name)
             self.cancelled.discard(name)
+            self.closing.discard(name)
+            self.scheduled.discard(name)
             self.save()
 
     def check_stale(self) -> list[Job]:
@@ -447,7 +494,7 @@ class Scheduler:
         for job in self.due():
             if stop is not None and stop.is_set():
                 break
-            self.run(job)
+            self.run(job, scheduled=True)
             ran.append(job)
         return ran
 
@@ -492,7 +539,10 @@ class Scheduler:
         status = self.status[job.name]
         if job.name in self._forced or status.started_at is None:
             return None
-        return status.started_at + self._minutes_after(job, status) * 60.0
+        due = status.started_at + self._minutes_after(job, status) * 60.0
+        if job.window is not None:
+            due = job.window.next_open(max(due, self._clock()))
+        return due
 
     def _load_status(self) -> dict[str, JobStatus]:
         try:
@@ -600,8 +650,12 @@ class Daemon:
         self._wake.set()
 
     def check_cancels(self) -> None:
-        """Act on cancel requests: stop the running sync, or drop a queued request."""
+        """Act on cancel requests: stop the running sync, or drop a queued request.
+        Also stops the scheduled runs whose time window has closed."""
         with self._cancel_lock:
+            for name in self.scheduler.window_closed():
+                log.info("time window of %s closed, stopping it", name)
+                self.runner.terminate(_job_name(name))
             for request in take_cancels(self.paths):
                 name = request.pair
                 if name in self.scheduler.running:

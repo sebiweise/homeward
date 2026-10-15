@@ -6,6 +6,7 @@ from datetime import date
 
 from homeward.core.config import PairConfig
 from homeward.core.executor import Executor, RunResult
+from homeward.core.limits import throttle_for
 from homeward.core.models import FileMeta, FolderMissing, Plan
 from homeward.core.planner import build_plan
 from homeward.core.progress import Progress
@@ -54,7 +55,8 @@ def sync_pair(
     )
     result = None
     if not dry_run:
-        executor = Executor(local, remote, state, pair.name, progress)
+        throttle = throttle_for(pair.max_rate_kb)
+        executor = Executor(local, remote, state, pair.name, progress, throttle)
         result = executor.run(plan, allow_deletes=allow_deletes)
     state.log_run(
         pair.name,

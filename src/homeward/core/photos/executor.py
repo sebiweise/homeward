@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 from homeward.core.files import link_noreplace, rename_noreplace, temp_name
+from homeward.core.limits import Throttle, throttle_for, throttled
 from homeward.core.models import FolderMissing
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos.model import (
@@ -55,8 +56,10 @@ class PhotoExecutor:
         workers: int = 1,
         progress: Progress | None = None,
         recycle_bin: Path | None = None,
+        throttle: Throttle | None = None,
     ) -> None:
         self.source = source
+        self.throttle = throttle
         self.trash = Trash(root, recycle_bin=recycle_bin, today=today)
         self.progress = progress or Progress()
         self.root = root
@@ -215,8 +218,8 @@ class PhotoExecutor:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = temp_name(target)
         try:
-            with self.source.open_read(item) as stream, tmp.open("xb") as out:
-                shutil.copyfileobj(stream, out, CHUNK)
+            with self.source.open_read(item) as raw, tmp.open("xb") as out:
+                shutil.copyfileobj(throttled(raw, self.throttle), out, CHUNK)
                 out.flush()
                 os.fsync(out.fileno())
             size = tmp.stat().st_size
@@ -346,6 +349,7 @@ def backup_photos(
     allow_deletes: bool = False,
     remove_gone: bool = False,
     recycle_bin: Path | None = None,
+    max_rate_kb: int | None = None,
 ) -> PhotoOutcome:
     if not root.is_dir() and state.records(job):
         raise FolderMissing(
@@ -361,7 +365,7 @@ def backup_photos(
         return PhotoOutcome(plan, None)
     executor = PhotoExecutor(
         source, root, state, job, today=today, workers=workers, progress=progress,
-        recycle_bin=recycle_bin,
+        recycle_bin=recycle_bin, throttle=throttle_for(max_rate_kb),
     )  # fmt: skip
     result = executor.run(plan, allow_deletes=allow_deletes)
     return PhotoOutcome(plan, result)

@@ -373,6 +373,7 @@ def _photos_one(
                 progress=progress, mirror_deletes=job.mirror_deletes, selection=_selection(job),
                 brake=job.delete_brake, allow_deletes=args.allow_deletes,
                 remove_gone=args.remove_gone, recycle_bin=find_recycle_bin(job.target),
+                max_rate_kb=job.max_rate_kb,
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0

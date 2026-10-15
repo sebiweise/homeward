@@ -445,8 +445,8 @@ function currentJob() {
     return jobs().find((job) => job.key === view.key) || null;
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn", login_required: "bad" };
-const JOB_UNFINISHED = ["killed", "cancelled"];
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn", login_required: "bad", window_closed: "idle" };
+const JOB_UNFINISHED = ["killed", "cancelled", "window_closed"];
 
 // The state of a job as a badge class ("ok", "warn", "bad", "idle", "busy") and a text.
 function jobState(job) {
@@ -843,6 +843,7 @@ const RUN_BADGE = {
     sync_cancelled: "warn",
     sync_stopped: "idle",
     sync_postponed: "idle",
+    sync_paused: "idle",
 };
 
 function runState(run, running) {
@@ -953,6 +954,7 @@ function jobSettings(job) {
                   [t("photos:source_folders"), onOff(c.source_folders)],
                   ...PHOTO_FOLDERS.map((key) => [t("photos:" + key), c[key]]),
                   [t("ui:schedule"), scheduleText(job)],
+                  ...limitRows(c),
               ]
             : [
                   [t("pair:provider"), providerText(c)],
@@ -964,6 +966,7 @@ function jobSettings(job) {
                   [t("pair:brake_ratio"), Math.round(c.max_delete_ratio * 100) + " %"],
                   [t("pair:brake_count"), String(c.max_delete_count)],
                   [t("ui:schedule"), scheduleText(job)],
+                  ...limitRows(c),
               ];
     const edit = () => (job.kind === "photos" ? void guarded(() => photosDialog(c)) : pairDialog(c));
     const remove = () =>
@@ -1119,6 +1122,27 @@ function jobIntervalField(value) {
         t("schedule:job_hint", s.interval_minutes, s.min_interval_minutes));
 }
 
+// Time window and transfer limit of a pair or photos dialog; empty means none.
+function limitFields(c) {
+    return [
+        field(t("schedule:window"), el("input", { name: "window", type: "text", placeholder: "22:00-06:00",
+            pattern: "\\s*\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}\\s*", value: c.window || "" }), t("schedule:window_hint")),
+        field(t("schedule:rate"), el("input", { name: "max_rate_kb", type: "number", min: 1, step: 1,
+            placeholder: t("schedule:rate_none"), value: c.max_rate_kb ?? "" }), t("schedule:rate_hint")),
+    ];
+}
+
+function limitValues(v) {
+    return { window: v.window.trim() || null, max_rate_kb: v.max_rate_kb === "" ? null : Number(v.max_rate_kb) };
+}
+
+function limitRows(c) {
+    return [
+        [t("schedule:window"), c.window || t("schedule:window_none")],
+        [t("schedule:rate"), c.max_rate_kb ? t("schedule:rate_value", formatNumber(c.max_rate_kb)) : t("schedule:rate_none")],
+    ];
+}
+
 function jobInterval(value) {
     return value === "" || value === undefined ? null : Number(value);
 }
@@ -1204,6 +1228,7 @@ function pairDialog(pair) {
             )
         ),
         jobIntervalField(p.interval_minutes),
+        ...limitFields(p),
         editing ? el("p", { class: "hint", text: t("pair:reset_hint") }) : null,
     ];
     openDialog(t(editing ? "pair:edit_title" : "pair:add_title"), fields, t("common:save"), async (v) => {
@@ -1218,6 +1243,7 @@ function pairDialog(pair) {
             max_delete_ratio: Number(v.ratio) / 100,
             max_delete_count: Number(v.count),
             interval_minutes: jobInterval(v.interval),
+            ...limitValues(v),
         };
         await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(pair) }, true);
         view.key = "pair:" + pair.name;
@@ -1259,6 +1285,7 @@ async function photosDialog(job) {
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
         jobIntervalField(j.interval_minutes),
+        ...limitFields(j),
         el("details", { class: "advanced" }, el("summary", { text: t("photos:advanced") }),
             el("div", { class: "row" },
                 field(t("pair:brake_ratio"), el("input", { name: "ratio", type: "number", min: 0, max: 100, step: 1, value: Math.round(j.max_delete_ratio * 100) })),
@@ -1270,7 +1297,7 @@ async function photosDialog(job) {
                     t("photos:workers_hint")))),
     ];
     openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
-        const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
+        const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval), ...limitValues(v) };
         photos.album_names = v.album_names.split("\n").map((s) => s.trim()).filter(Boolean);
         photos.max_delete_ratio = Number(v.ratio) / 100;
         photos.max_delete_count = Number(v.count);

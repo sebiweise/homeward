@@ -923,3 +923,26 @@ def test_photos_cleanup_shows_the_count_and_queues_a_request(
     assert request.pair == "photos:fotos"
     assert request.remove_gone
     assert not request.allow_deletes
+
+
+def test_time_window_and_bandwidth(client: Client, tmp_path: Path) -> None:
+    pair = _pair(tmp_path, window=" 22:00 - 6:00 ", max_rate_kb="800")
+    created = client.call("pairs.create", post=True, pair=pair)
+    assert (created["window"], created["max_rate_kb"]) == ("22:00-06:00", 800)
+    cleared = _pair(tmp_path, window="", max_rate_kb="")
+    updated = client.call("pairs.update", post=True, pair=cleared)
+    assert (updated["window"], updated["max_rate_kb"]) == (None, None)
+    assert "window" not in tomllib.loads(client.paths.config.read_text())["pair"][0]
+
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    night = _photos(tmp_path, window="01:00-05:00", max_rate_kb=100)
+    photos = client.call("photos.create", post=True, photos=night)
+    assert (photos["window"], photos["max_rate_kb"]) == ("01:00-05:00", 100)
+
+    for bad, code in (({"window": "abends"}, "invalid_window"),
+                      ({"max_rate_kb": "viel"}, "invalid_param"),
+                      ({"max_rate_kb": 0.5}, "invalid_param"),
+                      ({"max_rate_kb": -3}, "invalid_param")):  # fmt: skip
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.update", post=True, pair=_pair(tmp_path, **bad))
+        assert _error(excinfo) == code, bad

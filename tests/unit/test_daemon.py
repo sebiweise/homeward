@@ -606,3 +606,47 @@ def test_a_job_that_never_succeeded_warns_after_days(tmp_path: Path) -> None:
     scheduler.run(job)
     assert scheduler.status[job.name].tracked_since == 1_000_000.0
     assert scheduler.check_stale() == [job]
+
+
+def test_a_time_window_limits_scheduled_runs(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from homeward.core.limits import TimeWindow
+
+    def at(hour: int, day: int = 15) -> float:
+        return datetime(2026, 10, day, hour).timestamp()
+
+    clock = Clock()
+    clock.now = at(12)
+    release = threading.Event()
+    codes = {"photos:night": -15, "pair:docs": 0}
+
+    def runner(job: Job) -> int:
+        release.wait(5)
+        return codes[job.name]
+
+    scheduler = Scheduler(tmp_path / "status.json", runner, clock, notifier=lambda *a: True)
+    night = Job("photos:night", ("photos",), account="a", window=TimeWindow.parse("22:00-06:00"))
+    now = Job("pair:docs", ("sync",), window=TimeWindow.parse("22:00-06:00"))
+    scheduler.jobs = [night, now]
+    assert scheduler.due() == [] and scheduler.next_due(night) == at(22)
+
+    clock.now = at(23)
+    assert scheduler.start_due() == [night, now]
+    clock.now = at(5)
+    assert scheduler.window_closed() == []  # still open
+    clock.now = at(6, day=16)
+    assert sorted(scheduler.window_closed()) == ["docs", "photos:night"]
+    assert scheduler.window_closed() == []  # already stopping
+    release.set()
+    scheduler.wait()
+    assert scheduler.status["photos:night"].result == "window_closed"
+    assert scheduler.status["pair:docs"].result == "ok"  # finished before the stop landed
+    assert scheduler.next_due(night) == at(22, day=16)  # goes on when the window opens
+
+    # "sync now" ignores the window and is not stopped when it closes
+    release.clear()
+    assert scheduler.start(now)
+    assert scheduler.window_closed() == []
+    release.set()
+    scheduler.wait()

@@ -24,6 +24,7 @@ none="Noch nichts vorhanden."
 version="Version {0}"
 
 [status]
+job_window_closed="Zeitfenster geschlossen, geht später weiter"
 safe_title="Ist alles gesichert?"
 safe_job="Job"
 safe_last="Zuletzt erfolgreich"
@@ -78,6 +79,13 @@ job_waiting="Wartet auf iCloud"
 job_login_required="Apple-ID muss neu angemeldet werden"
 
 [schedule]
+window="Zeitfenster"
+window_hint="Geplante Läufe starten nur in diesen Stunden (NAS-Zeit), z. B. 22:00-06:00. Schließt das Fenster, hält der Lauf an und macht beim nächsten Öffnen weiter. „Jetzt synchronisieren“ geht immer. Leer: jederzeit."
+window_none="Jederzeit"
+rate="Bandbreite (KB/s)"
+rate_hint="Höchstens so viele Kilobyte pro Sekunde für Downloads und Uploads dieses Jobs. Leer: unbegrenzt."
+rate_none="Unbegrenzt"
+rate_value="{0} KB/s"
 title="Zeitplan"
 change="Ändern"
 interval="Intervall in Minuten"
@@ -215,6 +223,7 @@ source="Betrifft"
 event="Ereignis"
 
 [event]
+sync_paused="Das Zeitfenster hat sich geschlossen. Der Lauf hat angehalten, bereits übertragene Dateien bleiben erhalten; er geht weiter, sobald das Fenster wieder öffnet."
 not_backed_up="Seit mehr als 3 Tagen kein erfolgreicher Lauf. Prüfe die Hinweise und das Protokoll dieses Jobs."
 level_info="Info"
 level_warning="Warnung"
@@ -245,6 +254,7 @@ notices_cleared="Hinweise ausgeblendet."
 sync_summary="Zusammenfassung des Laufs."
 
 [error]
+invalid_window="Das Zeitfenster braucht die Form HH:MM-HH:MM, z. B. 22:00-06:00 ({0})."
 not_running="Dieser Lauf ist schon beendet."
 not_authenticated="Deine DSM-Sitzung ist abgelaufen. Bitte melde dich erneut bei DSM an."
 not_admin="Nur Administratoren können Homeward verwenden."
@@ -324,6 +334,7 @@ add="+ Hinzufügen"
 service="⚙ Dienst"
 
 [run]
+sync_paused="Angehalten (Zeitfenster)"
 title="Lauf"
 result="Ergebnis"
 finished="Beendet"

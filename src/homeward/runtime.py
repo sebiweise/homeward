@@ -219,6 +219,7 @@ EVENT_CODES = (
     "sync_failed",
     "sync_stopped",  # the service stopped (e.g. package update); the run is repeated
     "sync_cancelled",  # the user cancelled the run in the DSM UI
+    "sync_paused",  # the job's time window closed; it goes on when the window opens
     "sync_postponed",  # iCloud was not ready (e.g. indexing); the next scheduled run retries
     "delete_brake",
     "conflict",

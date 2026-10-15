@@ -11,7 +11,7 @@ from typing import Any
 
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import check_name, without_none
-from homeward.api.handlers.settings import parse_interval
+from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 from homeward.core.config import DEFAULT_TRASH_DAYS
@@ -62,6 +62,8 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
         "target": entry.get("target", ""),
         "libraries": list(entry.get("libraries", LIBRARIES)),
         "interval_minutes": entry.get("interval_minutes"),
+        "window": entry.get("window"),
+        "max_rate_kb": entry.get("max_rate_kb"),
         "album_names": list(entry.get("album_names", [])),
     }
     result |= {key: entry.get(key, default) for key, default in SWITCHES.items()}
@@ -182,6 +184,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "target": str(target),
         "libraries": _libraries(data),
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
+        **parse_limits(data),
     }
     for key, switch in SWITCHES.items():
         enabled = data.get(key, switch)
