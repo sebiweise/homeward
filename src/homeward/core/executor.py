@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field, replace
 
 from homeward.core.models import Action, ActionKind, FileMeta, Plan
+from homeward.core.progress import Progress
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 
@@ -34,7 +35,15 @@ class Executor:
     the next run plans it again from what both sides then hold.
     """
 
-    def __init__(self, local: Provider, remote: Provider, state: StateDB, pair: str) -> None:
+    def __init__(
+        self,
+        local: Provider,
+        remote: Provider,
+        state: StateDB,
+        pair: str,
+        progress: Progress | None = None,
+    ) -> None:
+        self.progress = progress or Progress()
         self.local = local
         self.remote = remote
         self.state = state
@@ -45,10 +54,13 @@ class Executor:
             return RunResult(blocked=plan.blocked)
         result = RunResult()
         failed_paths: set[str] = set()
+        self.progress.phase("transferring", total=len(plan.actions))
         for action in plan.actions:
+            self.progress.advance(0, current=action.path)
             if action.renamed_to in failed_paths:
                 # The new name did not arrive; keep the old file until a later run.
                 log.info("keeping %s: its renamed copy %s failed", action.path, action.renamed_to)
+                self.progress.advance()
                 continue
             try:
                 self._apply(action)
@@ -57,8 +69,10 @@ class Executor:
                 log.warning("%s %s failed: %s", action.kind, action.path, exc, extra=failed)
                 result.failed.append(Failure(action, f"{type(exc).__name__}: {exc}"))
                 failed_paths.add(action.path)
+                self.progress.advance(failed=True)
             else:
                 result.done.append(action)
+                self.progress.advance()
         return result
 
     def _apply(self, action: Action) -> None:

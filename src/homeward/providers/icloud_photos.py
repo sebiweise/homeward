@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 from typing import Any, BinaryIO, cast
 
 from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem, PhotoSource
+from homeward.core.progress import Progress
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +43,13 @@ RETRY_DELAY = 10.0
 # Apple sometimes re-indexes a library (seen on the Shared Library); pyicloud then refuses
 # to open it until indexing has finished.
 INDEXING_ERROR = "PyiCloudServiceNotActivatedException"
-INDEXING_WAITS = (60.0, 120.0, 300.0)
+# Short waits within a run: the daemon tries a waiting job again soon anyway, and a
+# run that sleeps holds up every other job.
+INDEXING_WAITS = (60.0, 120.0)
 PROGRESS_EVERY = 500
+# Changed records a quick run can handle on its own. Anything else (album memberships,
+# albums, unknown types) makes it read the whole library instead.
+CHANGE_TYPES = frozenset({"CPLAsset", "CPLMaster"})
 
 # Edited renders live on the asset record (the master record holds the originals).
 EDITED_PREFIXES = (("edited", "resJPEGFull"), ("edited_video", "resVidFull"))
@@ -54,10 +60,20 @@ XMP_WORTH_KEEPING = (
 XmpBuilder = Callable[[Any], bytes | None]
 # (library, asset ids, master ids) -> fresh assets of that library
 Lookup = Callable[[Any, list[str], list[str]], Iterable[Any]]
+# photos service -> (the libraries that opened, by key; the ones still indexing, by key)
+ZoneOpener = Callable[[Any], tuple[dict[str, Any], dict[str, "Indexing"]]]
 
 
 class PhotosNotReady(Exception):
     """iCloud kept refusing the photo library while it indexes; try again later."""
+
+
+@dataclass(frozen=True, slots=True)
+class Indexing:
+    """What Apple reports for a library it is still indexing."""
+
+    state: str | None = None  # e.g. RUNNING
+    progress: int | None = None  # percent, when Apple says
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,16 +117,21 @@ class ICloudPhotosSource(PhotoSource):
         *,
         xmp_builder: XmpBuilder | None = None,
         lookup: Lookup | None = None,
+        open_zones: ZoneOpener | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         name: str = "icloud-photos",
+        progress: Progress | None = None,
     ) -> None:
         self.name = name
+        self.progress = progress or Progress()
         self.service = service
         self.wanted = tuple(libraries)
         self.options = options or PhotoOptions()
         self._xmp_builder = xmp_builder or pyicloud_xmp
         self._lookup = lookup or pyicloud_lookup
+        self._open_zones = open_zones or pyicloud_open_zones
+        self._opened: dict[str, Any] | None = None  # libraries opened around an indexing zone
         self._clock = clock
         self._sleep = sleep
         # Downloads run on several threads. pyicloud's session rewrites its session files on
@@ -159,9 +180,12 @@ class ICloudPhotosSource(PhotoSource):
         # (pyicloud 2.7 cannot read the Shared Library's own albums.)
         members = self._album_members(personal)
         unmatched = set(members)
-        for lib, key, library in self._libraries():
+        libraries = self._libraries()
+        self.progress.phase("listing", total=_photo_count(libraries))
+        for lib, key, library in libraries:
             count = 0
             for count, asset in enumerate(library.all.photos, 1):
+                self.progress.advance()
                 unmatched.discard(asset.id)
                 yield from self._items(asset, lib, members.get(asset.id, ()), origin=library)
                 if count % PROGRESS_EVERY == 0:
@@ -173,6 +197,108 @@ class ICloudPhotosSource(PhotoSource):
             yield from self._hidden_items(personal, members)
         if Library.SHARED_ALBUMS in self.wanted:
             yield from self._shared_album_items()
+
+    def list_changes(self, since: str) -> list[PhotoItem] | None:
+        """The files of the photos added or changed since the cursor ``since``, from
+        each library's CloudKit change feed; None when that is not enough to be sure."""
+        reason = self._no_changes_reason(since)
+        if reason is not None:
+            log.info("cannot read only the changes: %s", reason)
+            return None
+        self._urls.clear()
+        self._blobs.clear()
+        self._origins.clear()
+        self._fetched_at.clear()
+        tokens = _cursor_parts(since)
+        items: list[PhotoItem] = []
+        self.progress.phase("listing")
+        for lib, key, library in self._libraries():
+            changed = self._changed_assets(key, library, tokens[key])
+            if changed is None:
+                return None
+            for asset in changed:
+                items.extend(self._changed_items(asset, lib, library))
+                self.progress.advance()
+        return items
+
+    def _no_changes_reason(self, since: str) -> str | None:
+        current = self.cursor()
+        if current is None:
+            return "iCloud gave no sync token"
+        old, new = _cursor_parts(since), _cursor_parts(current)
+        if old.get("options") != new.get("options"):
+            return "the backup settings changed"
+        if old.get("shared_albums") != new.get("shared_albums"):
+            return "the shared albums changed"
+        missing = [key for _lib, key, _library in self._libraries() if key not in old]
+        if missing:
+            return f"no earlier sync token for {', '.join(missing)}"
+        return None
+
+    def _changed_assets(self, key: str, library: Any, since: str) -> list[Any] | None:
+        """Fresh assets of every photo the change feed of one library reports."""
+        pairs: dict[str, str] = {}  # asset record -> master record
+        masters: set[str] = set()
+        types: dict[str, int] = defaultdict(int)
+        removed = 0
+        client = getattr(library, "_client", None)
+        if client is None:
+            log.info("library %s: this pyicloud session has no CloudKit client", key)
+            return None
+        try:
+            with self._api_lock:
+                for zone in client.iter_changes(zone_req=_zone_req(library, since)):
+                    for record in zone.records:
+                        error = getattr(record, "serverErrorCode", None)
+                        if error is not None:
+                            log.info("library %s: the change feed reported %s", key, error)
+                            return None
+                        record_type = getattr(record, "recordType", None)
+                        if record_type is None or getattr(record, "deleted", False):
+                            removed += 1  # deletions: the next full reading marks them
+                            continue
+                        types[record_type] += 1
+                        if record_type == "CPLAsset":
+                            ref = _field(record, "masterRef")
+                            master = getattr(ref, "recordName", None)
+                            if master is None and isinstance(ref, dict):
+                                master = ref.get("recordName")
+                            if master is None:
+                                log.info("library %s: a changed photo has no master", key)
+                                return None
+                            pairs[record.recordName] = master
+                        elif record_type == "CPLMaster":
+                            masters.add(record.recordName)
+        except Exception as exc:  # e.g. an expired sync token
+            log.info("library %s: could not read the changes: %s", key, exc)
+            return None
+        summary = ", ".join(f"{n} {t}" for t, n in sorted(types.items())) or "none"
+        log.info("library %s changes: %s; %d removed", key, summary, removed)
+        unknown = set(types) - CHANGE_TYPES
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            log.info("library %s: changes of %s need a full reading", key, names)
+            return None
+        if masters - set(pairs.values()):
+            log.info("library %s: an original changed without its photo", key)
+            return None
+        assets: list[Any] = []
+        ids = sorted(pairs)
+        for start in range(0, len(ids), LOOKUP_BATCH):
+            batch = ids[start : start + LOOKUP_BATCH]
+            with self._api_lock:
+                found = list(self._lookup(library, batch, [pairs[i] for i in batch]))
+            assets.extend(found)
+        return assets
+
+    def _changed_items(self, asset: Any, lib: Library, library: Any) -> Iterator[PhotoItem]:
+        record = getattr(asset, "asset_record", None)
+        if _field(record, "isDeleted") == 1 or _field(record, "isExpunged") == 1:
+            return  # in "Recently Deleted": a backup keeps what it has
+        hidden = _field(record, "isHidden") == 1
+        if hidden and not (self.options.hidden and lib is Library.PERSONAL):
+            return
+        yield from self._items(asset, lib, (), hidden=hidden, origin=library)
 
     def open_read(self, item: PhotoItem) -> BinaryIO:
         blob = self._blobs.get(item.key)
@@ -314,24 +440,63 @@ class ICloudPhotosSource(PhotoSource):
         return result
 
     def _photo_libraries(self) -> dict[str, Any]:
-        """pyicloud's libraries, waiting while iCloud is still indexing one of them."""
+        """pyicloud's libraries, waiting while iCloud is still indexing one this backup
+        needs. A library it does not need (another library or zone) is left out."""
+        if self._opened is not None:
+            return self._opened
         for wait in (*INDEXING_WAITS, None):
             try:
                 return cast(dict[str, Any], self.service.photos.libraries)
             except Exception as exc:
                 if not _indexing(exc):
                     raise
+                waiting = self._indexing_zones()
+                if waiting is not None and not waiting:
+                    return cast(dict[str, Any], self._opened)
+                what = _describe_indexing(waiting)
                 if wait is None:
                     raise PhotosNotReady(
-                        "iCloud is still indexing the photo library; the next run will try again"
+                        f"iCloud is still indexing {what}; the next run will try again"
                     ) from exc
                 log.info(
-                    "iCloud is still indexing the photo library, waiting %d s and trying again",
+                    "iCloud is still indexing %s, waiting %d s and trying again",
+                    what,
                     wait,
                     extra={"event": "icloud_indexing", "until": time.time() + wait},
                 )
                 self._sleep(wait)
         raise AssertionError("unreachable")
+
+    def _indexing_zones(self) -> dict[str, Indexing] | None:
+        """Which libraries this backup needs are still indexing (None: unknown). When
+        none are, the ones that opened are kept for this run."""
+        try:
+            photos = self.service.photos
+        except Exception as exc:  # the personal library refused before anything else
+            if _indexing(exc):
+                return {PERSONAL_KEY: Indexing()}
+            raise
+        try:
+            opened, waiting = self._open_zones(photos)
+        except Exception as exc:
+            log.debug("could not check the libraries one by one: %s", exc)
+            return None
+        needed = {key: state for key, state in waiting.items() if self._needs(key)}
+        if needed:
+            return needed
+        for key, state in sorted(waiting.items()):
+            log.info(
+                "iCloud is still indexing %s, which this backup does not include; "
+                "going on without it",
+                _describe_indexing({key: state}),
+            )
+        self._opened = opened
+        return {}
+
+    def _needs(self, key: str) -> bool:
+        if key == PERSONAL_KEY:
+            return True  # albums and the shared albums' lookups go through it
+        return key.startswith(SHARED_PREFIX) and Library.SHARED in self.wanted
 
     def _shared_albums(self) -> list[Any]:
         try:
@@ -344,11 +509,13 @@ class ICloudPhotosSource(PhotoSource):
         members: dict[str, set[str]] = defaultdict(set)
         if self.options.albums:
             albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
+            self.progress.phase("albums", total=len(albums))
             for number, album in enumerate(albums, 1):
                 name = album.fullname
                 log.info("reading album %d of %d: %s", number, len(albums), name)
                 for asset in album.photos:
                     members[asset.id].add(name)
+                self.progress.advance(current=name)
         return {asset_id: tuple(sorted(names)) for asset_id, names in members.items()}
 
     def _hidden_items(
@@ -492,6 +659,27 @@ class ICloudPhotosSource(PhotoSource):
         return item
 
 
+def _cursor_parts(cursor: str) -> dict[str, str]:
+    """``key=value|key=value`` as written by ``cursor()``."""
+    return dict(part.split("=", 1) for part in cursor.split("|") if "=" in part)
+
+
+def _zone_req(library: Any, since: str) -> Any:
+    models = importlib.import_module("pyicloud.common.cloudkit.models")
+    return models.CKZoneChangesZoneReq(
+        zoneID=models.CKZoneID(**library.zone_id), syncToken=since, reverse=False
+    )
+
+
+def _photo_count(libraries: list[tuple[Library, str, Any]]) -> int | None:
+    """How many photos the libraries hold (one count query each), None if unknown."""
+    try:
+        return sum(len(library.all) for _lib, _key, library in libraries)
+    except Exception as exc:  # only the progress bar needs it
+        log.debug("could not count the photos: %s", exc)
+        return None
+
+
 def _resources(asset: Any) -> dict[str, _Resource]:
     """Downloadable files of an asset: CloudKit ``resources`` or legacy ``versions``."""
     result: dict[str, _Resource] = {}
@@ -631,6 +819,77 @@ def pyicloud_lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -
         for master in masters
         if master.recordName in assets_by_master
     ]
+
+
+def pyicloud_open_zones(photos: Any) -> tuple[dict[str, Any], dict[str, Indexing]]:
+    """Open the libraries of pyicloud's photos service one by one, the way
+    ``photos.libraries`` does, but keep going past one that is still indexing.
+
+    pyicloud opens every zone of the private database and gives up on the first one
+    Apple is still indexing, even one no backup reads.
+    """
+    service_module = importlib.import_module("pyicloud.services.photos_cloudkit.service")
+    models = importlib.import_module("pyicloud.common.cloudkit.models")
+    queries = importlib.import_module("pyicloud.services.photos_cloudkit.queries")
+    client = photos.private_client
+    opened: dict[str, Any] = {PERSONAL_KEY: photos._root_library}
+    waiting: dict[str, Indexing] = {}
+    for zone in client.zones_list().zones:
+        name = zone.zoneID.zoneName
+        if zone.deleted:
+            continue
+        if name == service_module.PRIMARY_ZONE["zoneName"]:
+            opened[PERSONAL_KEY].current_sync_token = zone.syncToken
+            continue
+        shared = service_module._is_shared_library_zone_name(name)
+        key = f"{SHARED_PREFIX}{name}" if shared else name
+        zone_id = zone.zoneID.model_dump(exclude_none=True)
+        try:
+            opened[key] = service_module.PhotoLibrary(
+                photos, zone_id=zone_id, client=client,
+                scope="shared-library" if shared else "private",
+            )  # fmt: skip
+        except Exception as exc:
+            if not _indexing(exc):
+                raise
+            waiting[key] = _indexing_state(client, models, queries, zone_id)
+    return opened, waiting
+
+
+def _indexing_state(client: Any, models: Any, queries: Any, zone_id: dict[str, Any]) -> Indexing:
+    try:
+        response = client.query(
+            query=queries.check_indexing_state_query(),
+            zone_id=models.CKZoneIDReq(**zone_id),
+            results_limit=1,
+        )
+        for record in response.records:
+            if isinstance(record, models.CKRecord):
+                state = record.fields.get_value("state")
+                progress = record.fields.get_value("progress")
+                return Indexing(
+                    None if state is None else str(state),
+                    int(progress) if isinstance(progress, int | float) else None,
+                )
+    except Exception as exc:
+        log.debug("could not read the indexing state: %s", exc)
+    return Indexing()
+
+
+def _describe_indexing(waiting: dict[str, Indexing] | None) -> str:
+    """E.g. "the Shared Library (73 %)"."""
+    if not waiting:
+        return "the photo library"
+    parts = []
+    for key, state in sorted(waiting.items()):
+        if key == PERSONAL_KEY:
+            name = "the personal library"
+        elif key.startswith(SHARED_PREFIX):
+            name = "the Shared Library"
+        else:
+            name = f"the library zone {key}"
+        parts.append(name if state.progress is None else f"{name} ({state.progress} %)")
+    return ", ".join(parts)
 
 
 def download_session(icloud_session: Any) -> Any:

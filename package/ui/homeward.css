@@ -72,6 +72,7 @@ body {
 .state-icon.warn { background: var(--warn); }
 .state-icon.bad { background: var(--bad); }
 .state-icon.busy { background: var(--accent); }
+.progress-card progress { display: block; width: 100%; height: 10px; margin: 4px 0 14px; accent-color: var(--accent); }
 .card.empty { text-align: center; }
 .card.empty .toolbar { justify-content: center; }
 dl.info { display: grid; grid-template-columns: minmax(140px, max-content) 1fr; gap: 6px 24px; margin: 0; }

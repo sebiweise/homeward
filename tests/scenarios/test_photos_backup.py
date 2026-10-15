@@ -15,6 +15,7 @@ from homeward.core.photos import (
     backup_photos,
     check_scheme,
 )
+from homeward.core.progress import Progress
 from homeward.providers.fake_photos import FakePhotoSource
 
 TODAY = date(2026, 10, 11)
@@ -540,3 +541,26 @@ def test_cancelled_run_drops_queued_downloads(
     source.open_read = open_read  # type: ignore[method-assign]
     done = len(pstate.records("photos"))
     assert run(source, tmp_path, pstate)[PhotoActionKind.DOWNLOAD] == 20 - done
+
+
+def test_progress_follows_the_phases(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    for n in range(3):
+        source.add(f"a{n}", f"IMG_{n}.HEIC", b"x" * 10, created=at(2022, 1 + n), albums=("A",))
+    snapshots: list[dict[str, object]] = []
+    progress = Progress(snapshots.append, interval=0.0)
+
+    backup_photos("photos", source, tmp_path, pstate, workers=2, progress=progress)
+
+    phases = [s["phase"] for s in snapshots]
+    assert [p for i, p in enumerate(phases) if i == 0 or phases[i - 1] != p] == [
+        "checking",
+        "listing",
+        "planning",
+        "downloading",
+        "linking",
+    ]
+    downloading = [s for s in snapshots if s["phase"] == "downloading"][-1]
+    assert (downloading["done"], downloading["total"], downloading["bytes"]) == (3, 3, 30)
+    assert snapshots[-1]["done"] == snapshots[-1]["total"] == 3  # the album links

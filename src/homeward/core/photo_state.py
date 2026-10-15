@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS cursors (
     job TEXT PRIMARY KEY,
     cursor TEXT
 );
+CREATE TABLE IF NOT EXISTS full_listings (
+    job TEXT PRIMARY KEY,
+    finished_at REAL NOT NULL,
+    selection TEXT
+);
 """
 
 
@@ -57,6 +62,9 @@ class PhotoStateDB:
         if version > SCHEMA_VERSION:
             raise RuntimeError(f"photo state database {path} is newer than this Homeward version")
         self._conn.executescript(_SCHEMA)
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(full_listings)")}
+        if "selection" not in columns:  # test builds 0.2.0-3 created it without
+            self._conn.execute("ALTER TABLE full_listings ADD COLUMN selection TEXT")
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -86,6 +94,10 @@ class PhotoStateDB:
             (job, key, path, size, checksum, time.time()),
         )
 
+    def forget(self, job: str, key: str) -> None:
+        """The photo was removed on the NAS too: if it comes back, it is new."""
+        self._conn.execute("DELETE FROM photos WHERE job = ? AND key = ?", (job, key))
+
     def mark_gone(self, job: str, key: str) -> None:
         self._conn.execute(
             "UPDATE photos SET gone_at = ? WHERE job = ? AND key = ?", (time.time(), job, key)
@@ -110,3 +122,47 @@ class PhotoStateDB:
 
     def set_cursor(self, job: str, cursor: str | None) -> None:
         self._conn.execute("INSERT OR REPLACE INTO cursors VALUES (?, ?)", (job, cursor))
+
+    def full_listing_at(self, job: str) -> float | None:
+        """When a run that read the whole library last finished without errors."""
+        row = self._conn.execute(
+            "SELECT finished_at FROM full_listings WHERE job = ?", (job,)
+        ).fetchone()
+        return None if row is None else float(row[0])
+
+    def full_listing_selection(self, job: str) -> str | None:
+        """What that run selected (libraries and file types), see ``set_full_listing``."""
+        row = self._conn.execute(
+            "SELECT selection FROM full_listings WHERE job = ?", (job,)
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def set_full_listing(self, job: str, at: float, selection: str | None = None) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO full_listings VALUES (?, ?, ?)", (job, at, selection)
+        )
+
+    def clear_full_listing(self, job: str) -> None:
+        """Make the next run read the whole library (its selection still counts)."""
+        self._conn.execute("UPDATE full_listings SET finished_at = 0 WHERE job = ?", (job,))
+
+
+def gone_counts(path: Path) -> dict[str, int]:
+    """Per job, the photos still on the NAS that iCloud no longer has.
+
+    Opens the database read-only (for the UI, also while a run writes to it); a
+    missing or unreadable database counts as none.
+    """
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT job, COUNT(*) FROM photos WHERE gone_at IS NOT NULL GROUP BY job"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {str(job): int(count) for job, count in rows}

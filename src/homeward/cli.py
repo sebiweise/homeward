@@ -27,6 +27,7 @@ from homeward.core.config import (
 from homeward.core.models import ActionKind, SyncMode
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import PhotoOutcome, PhotoSource, backup_photos
+from homeward.core.progress import Progress, ProgressLogHandler
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
@@ -34,7 +35,7 @@ from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
 from homeward.providers.icloud_photos import ICloudPhotosSource, PhotoOptions, PhotosNotReady
 from homeward.providers.nas import NasProvider, find_recycle_bin
-from homeward.runtime import EventLogHandler, Paths
+from homeward.runtime import EventLogHandler, Paths, clear_progress, write_progress
 
 # Named explicitly: the daemon runs this module as __main__ (python -m homeward.cli),
 # and only loggers below "homeward" reach the event log.
@@ -153,6 +154,25 @@ def _events(config_path: Path, source: str) -> Iterator[None]:
         logger.removeHandler(handler)
 
 
+@contextlib.contextmanager
+def _progress(config_path: Path, source: str) -> Iterator[Progress]:
+    """Keep ``progress/<source>.json`` next to the config up to date while the run lasts,
+    with the latest log line as the current activity."""
+    paths = Paths(var_dir=config_path.parent, config=config_path)
+    progress = Progress(functools.partial(write_progress, paths, source))
+    handler = ProgressLogHandler(progress)
+    logger = logging.getLogger("homeward")
+    logger.addHandler(handler)
+    try:
+        yield progress
+    finally:
+        logger.removeHandler(handler)
+        try:
+            clear_progress(paths, source)
+        except OSError as exc:
+            log.debug("could not remove the progress file: %s", exc)
+
+
 def _reported(run: Callable[[], int], account: str) -> int:
     """Run one pair or job; an error that ends it becomes a readable event, not only
     a traceback in the log. When Apple rejects the account's session mid-run, the
@@ -192,21 +212,25 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         raise ConfigError("no sync pairs configured")
     status = EXIT_OK
     for pair in pairs:
-        with _events(args.config, f"pair:{pair.name}"):
-            run = functools.partial(_sync_one, args, config, pair)
+        source = f"pair:{pair.name}"
+        with _events(args.config, source), _progress(args.config, source) as progress:
+            run = functools.partial(_sync_one, args, config, pair, progress)
             status = _worst(status, _reported(run, pair.account))
     return status
 
 
-def _sync_one(args: argparse.Namespace, config: Config, pair: PairConfig) -> int:
+def _sync_one(
+    args: argparse.Namespace, config: Config, pair: PairConfig, progress: Progress
+) -> int:
     status = EXIT_OK
+    progress.phase("connecting")
     remote = _remote_provider(pair, config)
     local = NasProvider(pair.local, name="nas", recycle_bin=find_recycle_bin(pair.local))
     try:
         with StateDB(config.state_path(pair.account)) as state:
             outcome = sync_pair(
                 pair, local, remote, state, dry_run=args.dry_run,
-                allow_deletes=args.allow_deletes,
+                allow_deletes=args.allow_deletes, progress=progress,
             )  # fmt: skip
     except Exception as exc:  # e.g. iCloud unreachable while listing: try the next pair
         print(f"Pair {pair.name}: FAILED: {type(exc).__name__}: {exc}")
@@ -252,7 +276,7 @@ def _setup_logging() -> None:
     logger.setLevel(logging.INFO)
 
 
-def _photo_source(config: Config, job: PhotosConfig) -> PhotoSource:
+def _photo_source(config: Config, job: PhotosConfig, progress: Progress) -> PhotoSource:
     service = open_service(job.account, _apple_id(job), config.state_dir)
     return ICloudPhotosSource(
         service,
@@ -267,6 +291,7 @@ def _photo_source(config: Config, job: PhotosConfig) -> PhotoSource:
             hidden=job.hidden,
             xmp=job.xmp,
         ),
+        progress=progress,
     )
 
 
@@ -284,6 +309,8 @@ def _print_photos(job: PhotosConfig, outcome: PhotoOutcome, dry_run: bool) -> No
     counts = plan.counts()
     summary = ", ".join(f"{n} {kind}" for kind, n in counts.items())
     print(f"  {summary or 'nothing to do'}; {plan.up_to_date} up to date")
+    if plan.blocked:
+        print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
     if dry_run:
         print("  Dry run: nothing was changed.")
     elif outcome.result:
@@ -298,13 +325,16 @@ def _cmd_photos(args: argparse.Namespace) -> int:
         raise ConfigError("no photos jobs configured")
     status = EXIT_OK
     for job in jobs:
-        with _events(args.config, f"photos:{job.name}"):
-            run = functools.partial(_photos_one, args, config, job)
+        source = f"photos:{job.name}"
+        with _events(args.config, source), _progress(args.config, source) as progress:
+            run = functools.partial(_photos_one, args, config, job, progress)
             status = _worst(status, _reported(run, job.account))
     return status
 
 
-def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> int:
+def _photos_one(
+    args: argparse.Namespace, config: Config, job: PhotosConfig, progress: Progress
+) -> int:
     state_path = config.photo_state_path(job.account)
     with _run_lock(state_path.with_suffix(".lock")) as locked:
         if not locked:
@@ -312,9 +342,10 @@ def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> 
             print(f"homeward: {message}", file=sys.stderr)
             log.warning("%s", message, extra={"event": "already_running"})
             return EXIT_FAILED
+        progress.phase("connecting")
         log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
         try:
-            source = _photo_source(config, job)
+            source = _photo_source(config, job, progress)
         except LoginRequired as exc:
             print(f"homeward: {exc}", file=sys.stderr)
             _log_login_required(exc, job.account)
@@ -323,15 +354,34 @@ def _photos_one(args: argparse.Namespace, config: Config, job: PhotosConfig) -> 
             outcome = backup_photos(
                 job.name, source, job.target, state, job.layout,
                 albums=job.albums or job.favorites, dry_run=args.dry_run, workers=job.workers,
+                progress=progress, mirror_deletes=job.mirror_deletes, selection=_selection(job),
+                brake=job.delete_brake, allow_deletes=args.allow_deletes,
+                remove_gone=args.remove_gone, recycle_bin=find_recycle_bin(job.target),
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     counts["up_to_date"] = outcome.plan.up_to_date
     _log_summary(f"photos {job.name}", counts, failed)
+    if (job.mirror_deletes or args.remove_gone) and not args.dry_run:
+        # Only the backup's own trash: DSM empties #recycle on its own schedule.
+        purged = NasProvider(job.target).purge_trash(job.trash_days)
+        if purged:
+            print(f"  Emptied {purged} day folder(s) older than {job.trash_days} days "
+                  "from the NAS trash.")  # fmt: skip
     if outcome.result and outcome.result.failed:
         return EXIT_FAILED
+    if outcome.result and outcome.result.blocked:
+        return EXIT_BLOCKED
     return EXIT_OK
+
+
+def _selection(job: PhotosConfig) -> str:
+    """What decides which files a photos job backs up; deletions are only mirrored
+    while it stays the same (see ``build_photo_plan``)."""
+    libraries = ",".join(sorted(lib.value for lib in job.libraries))
+    switches = (job.videos, job.live_videos, job.raw_alternative, job.edited, job.xmp, job.hidden)
+    return f"{libraries}:" + "".join("1" if on else "0" for on in switches)
 
 
 def _log_summary(what: str, counts: dict[str, int], failed: int) -> None:
@@ -409,6 +459,14 @@ def main(argv: list[str] | None = None) -> int:
     _add_config_arg(photos)
     photos.add_argument("--job", help="only run this photos job")
     photos.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
+    photos.add_argument(
+        "--allow-deletes", action="store_true", help="approve deletions the delete brake held back"
+    )
+    photos.add_argument(
+        "--remove-gone",
+        action="store_true",
+        help="also delete the photos earlier runs found deleted in iCloud (to the trash)",
+    )
 
     login = sub.add_parser("login", help="log in to an Apple ID (password and 2FA)")
     _add_config_arg(login)

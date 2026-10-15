@@ -11,6 +11,7 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import check_name, existing_state, package_version
 from homeward.api.server import Context, Request
+from homeward.core.photo_state import gone_counts
 from homeward.runtime import (
     CancelRequest,
     Event,
@@ -18,6 +19,7 @@ from homeward.runtime import (
     drop_request,
     pending_requests,
     read_events,
+    read_progress,
     read_status,
     record_event,
     request_cancel,
@@ -47,14 +49,20 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
                 "last_run": asdict(runs[0]) if runs else None,
                 "job": jobs.get(f"pair:{pair.name}"),
                 "pending": pair.name in pending,
+                "progress": _progress(ctx, daemon, pair.name, f"pair:{pair.name}"),
             }
         )
+    gone: dict[str, dict[str, int]] = {}
+    for account in {job.account for job in config.photos}:
+        gone[account] = gone_counts(config.photo_state_path(account))
     photos = [
         {
             "name": job.name,
             "account": job.account,
+            "gone": gone[job.account].get(job.name, 0),  # deleted in iCloud, kept on the NAS
             "job": jobs.get(f"photos:{job.name}"),
             "pending": f"photos:{job.name}" in pending,
+            "progress": _progress(ctx, daemon, f"photos:{job.name}", f"photos:{job.name}"),
         }
         for job in config.photos
     ]
@@ -67,6 +75,13 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
         "photos": photos,
         "notices": notices(ctx),
     }
+
+
+def _progress(ctx: Context, daemon: dict[str, Any], running: str, source: str) -> Any:
+    """How far the job is, while the daemon runs it (``running`` as in ``daemon.running``)."""
+    if daemon.get("running") != running:
+        return None
+    return read_progress(ctx.paths, source)
 
 
 def clear_notices(ctx: Context, request: Request) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from homeward.core.config import PairConfig
 from homeward.core.executor import Executor, RunResult
 from homeward.core.models import Plan
 from homeward.core.planner import build_plan
+from homeward.core.progress import Progress
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 
@@ -27,13 +28,19 @@ def sync_pair(
     dry_run: bool,
     allow_deletes: bool = False,
     today: date | None = None,
+    progress: Progress | None = None,
 ) -> SyncOutcome:
     started = time.time()
+    progress = progress or Progress()
+    progress.phase("listing")
+    local_files = local.list_files()
+    remote_files = remote.list_files()
+    progress.phase("planning")
     plan = build_plan(
         pair.name,
         pair.mode,
-        local.list_files(),
-        remote.list_files(),
+        local_files,
+        remote_files,
         state.records(pair.name),
         excludes=pair.exclude,
         brake=pair.delete_brake,
@@ -43,7 +50,8 @@ def sync_pair(
     )
     result = None
     if not dry_run:
-        result = Executor(local, remote, state, pair.name).run(plan, allow_deletes=allow_deletes)
+        executor = Executor(local, remote, state, pair.name, progress)
+        result = executor.run(plan, allow_deletes=allow_deletes)
     state.log_run(
         pair.name,
         started,
