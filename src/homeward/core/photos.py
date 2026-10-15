@@ -109,6 +109,15 @@ class PhotoSource(Protocol):
         """Every file of every photo in the selected libraries."""
         ...
 
+    def list_changes(self, since: str) -> Iterable[PhotoItem] | None:
+        """The files of every photo added or changed since the cursor ``since``, or None
+        when the source cannot tell for sure (then the whole library is read).
+
+        Photos removed in iCloud and changed album memberships need not be reported:
+        the regular full listing catches up on those.
+        """
+        ...
+
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Called before the next batch of downloads; a source whose download URLs
         expire renews them here."""
@@ -193,6 +202,7 @@ _FILE_KINDS = frozenset(
 )
 PROGRESS_EVERY = 50
 PREPARE_BATCH = 100
+FULL_LISTING_HOURS = 24  # read the whole library at least this often
 DEFAULT_WORKERS = 4
 MAX_WORKERS = 8
 
@@ -212,6 +222,8 @@ class PhotoPlan:
     job: str
     cursor: str | None
     unchanged: bool = False  # cursor unchanged and every file present: nothing listed
+    full: bool = True  # the whole library was read (False: only the changes)
+    started_at: float = 0.0  # when the plan asked iCloud
     actions: list[PhotoAction] = field(default_factory=list)
     up_to_date: int = 0
 
@@ -329,25 +341,44 @@ def build_photo_plan(
     *,
     albums: bool = True,
     progress: Progress | None = None,
+    now: Callable[[], float] = time.time,
 ) -> PhotoPlan:
-    """Compare iCloud with the state of the last run and decide what to fetch or link."""
+    """Compare iCloud with the state of the last run and decide what to fetch or link.
+
+    When only some photos changed since the last run, the source is asked for just
+    those (``list_changes``) instead of the whole library. The whole library is still
+    read when the source cannot tell for sure, when a file is missing on the NAS, and
+    at least every ``FULL_LISTING_HOURS``; that run also catches up on photos removed
+    in iCloud and on changed album memberships.
+    """
     layout = layout or PhotoLayout()
     progress = progress or Progress()
     progress.phase("checking")
     records = state.records(job)
     links = state.links(job)
     cursor = source.cursor()
-    plan = PhotoPlan(job=job, cursor=cursor)
-    if (
-        cursor is not None
-        and cursor == state.cursor(job)
-        and _all_present(root, records.values(), links)
-    ):
+    previous = state.cursor(job)
+    plan = PhotoPlan(job=job, cursor=cursor, started_at=now())
+    present = _all_present(root, records.values(), links)
+    if cursor is not None and cursor == previous and present:
         plan.unchanged = True
         plan.up_to_date = sum(1 for r in records.values() if r.gone_at is None)
         return plan
 
     paths = _Paths(root, [r.path for r in records.values()] + list(links))
+    changes = _changes(job, source, state, cursor, previous, present, plan.started_at)
+    if changes is not None:
+        plan.full = False
+        progress.phase("planning", total=len(changes))
+        _, wanted_links = _plan_items(plan, changes, root, records, paths, layout, progress, albums)
+        fetched = {a.key for a in plan.actions if a.kind in _FILE_KINDS}
+        plan.up_to_date = sum(
+            1 for k, r in records.items() if r.gone_at is None and k not in fetched
+        )
+        existing = {(key, album): path for path, (key, album) in links.items()}
+        _plan_links(plan, root, layout, paths, existing, wanted_links)
+        return plan
+
     progress.phase("listing")  # the source sets the total once it knows it
     items = sorted(source.list_items(), key=lambda i: (i.created, i.key))
     progress.phase("planning", total=len(items))
@@ -359,6 +390,34 @@ def build_photo_plan(
     _plan_links(plan, root, layout, paths, existing, wanted_links)
     _plan_unlinks(plan, records, existing, wanted_links, seen)
     return plan
+
+
+def _changes(
+    job: str,
+    source: PhotoSource,
+    state: PhotoStateDB,
+    cursor: str | None,
+    previous: str | None,
+    present: bool,
+    now: float,
+) -> list[PhotoItem] | None:
+    """The changed photos when reading only the changes is safe, else None."""
+    full_at = state.full_listing_at(job)
+    if cursor is None or previous is None or full_at is None:
+        reason = "no earlier complete run to build on"
+    elif not present:
+        reason = "files are missing on the NAS"
+    elif now - full_at >= FULL_LISTING_HOURS * 3600:
+        reason = f"the last complete reading is more than {FULL_LISTING_HOURS} hours old"
+    else:
+        changed = source.list_changes(previous)
+        if changed is not None:
+            items = sorted(changed, key=lambda i: (i.created, i.key))
+            log.info("reading only what changed in iCloud: %d files", len(items))
+            return items
+        reason = "iCloud did not report the changes in a way Homeward can rely on"
+    log.info("reading the whole photo library: %s", reason)
+    return None
 
 
 def _plan_items(
@@ -374,7 +433,8 @@ def _plan_items(
     """Download what is new, restore or replace what changed. Returns the keys seen in
     iCloud and the album links wanted, as (key, album) -> primary path."""
     wanted_links: dict[tuple[str, str], str] = {}
-    assigned: dict[str, str] = {}  # key -> NAS path, for placing sidecars
+    # key -> NAS path, for placing sidecars (next to a photo of an earlier run, too)
+    assigned = {key: record.path for key, record in records.items()}
     seen: set[str] = set()
     for item in items:
         progress.advance()
@@ -559,6 +619,8 @@ class PhotoExecutor:
             self._step(result, action, partial(self._apply, action))
         if result.ok and not plan.unchanged:
             self.state.set_cursor(self.job, plan.cursor)
+            if plan.full:
+                self.state.set_full_listing(self.job, plan.started_at)
         return result
 
     def _run_files(
@@ -757,8 +819,11 @@ def backup_photos(
     workers: int = 1,
     today: Callable[[], date] = date.today,
     progress: Progress | None = None,
+    now: Callable[[], float] = time.time,
 ) -> PhotoOutcome:
-    plan = build_photo_plan(job, source, root, state, layout, albums=albums, progress=progress)
+    plan = build_photo_plan(
+        job, source, root, state, layout, albums=albums, progress=progress, now=now
+    )
     if dry_run:
         return PhotoOutcome(plan, None)
     executor = PhotoExecutor(

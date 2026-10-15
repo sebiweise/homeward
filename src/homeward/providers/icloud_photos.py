@@ -45,6 +45,9 @@ RETRY_DELAY = 10.0
 INDEXING_ERROR = "PyiCloudServiceNotActivatedException"
 INDEXING_WAITS = (60.0, 120.0, 300.0)
 PROGRESS_EVERY = 500
+# Changed records a quick run can handle on its own. Anything else (album memberships,
+# albums, unknown types) makes it read the whole library instead.
+CHANGE_TYPES = frozenset({"CPLAsset", "CPLMaster"})
 
 # Edited renders live on the asset record (the master record holds the originals).
 EDITED_PREFIXES = (("edited", "resJPEGFull"), ("edited_video", "resVidFull"))
@@ -179,6 +182,108 @@ class ICloudPhotosSource(PhotoSource):
             yield from self._hidden_items(personal, members)
         if Library.SHARED_ALBUMS in self.wanted:
             yield from self._shared_album_items()
+
+    def list_changes(self, since: str) -> list[PhotoItem] | None:
+        """The files of the photos added or changed since the cursor ``since``, from
+        each library's CloudKit change feed; None when that is not enough to be sure."""
+        reason = self._no_changes_reason(since)
+        if reason is not None:
+            log.info("cannot read only the changes: %s", reason)
+            return None
+        self._urls.clear()
+        self._blobs.clear()
+        self._origins.clear()
+        self._fetched_at.clear()
+        tokens = _cursor_parts(since)
+        items: list[PhotoItem] = []
+        self.progress.phase("listing")
+        for lib, key, library in self._libraries():
+            changed = self._changed_assets(key, library, tokens[key])
+            if changed is None:
+                return None
+            for asset in changed:
+                items.extend(self._changed_items(asset, lib, library))
+                self.progress.advance()
+        return items
+
+    def _no_changes_reason(self, since: str) -> str | None:
+        current = self.cursor()
+        if current is None:
+            return "iCloud gave no sync token"
+        old, new = _cursor_parts(since), _cursor_parts(current)
+        if old.get("options") != new.get("options"):
+            return "the backup settings changed"
+        if old.get("shared_albums") != new.get("shared_albums"):
+            return "the shared albums changed"
+        missing = [key for _lib, key, _library in self._libraries() if key not in old]
+        if missing:
+            return f"no earlier sync token for {', '.join(missing)}"
+        return None
+
+    def _changed_assets(self, key: str, library: Any, since: str) -> list[Any] | None:
+        """Fresh assets of every photo the change feed of one library reports."""
+        pairs: dict[str, str] = {}  # asset record -> master record
+        masters: set[str] = set()
+        types: dict[str, int] = defaultdict(int)
+        removed = 0
+        client = getattr(library, "_client", None)
+        if client is None:
+            log.info("library %s: this pyicloud session has no CloudKit client", key)
+            return None
+        try:
+            with self._api_lock:
+                for zone in client.iter_changes(zone_req=_zone_req(library, since)):
+                    for record in zone.records:
+                        error = getattr(record, "serverErrorCode", None)
+                        if error is not None:
+                            log.info("library %s: the change feed reported %s", key, error)
+                            return None
+                        record_type = getattr(record, "recordType", None)
+                        if record_type is None or getattr(record, "deleted", False):
+                            removed += 1  # deletions: the next full reading marks them
+                            continue
+                        types[record_type] += 1
+                        if record_type == "CPLAsset":
+                            ref = _field(record, "masterRef")
+                            master = getattr(ref, "recordName", None)
+                            if master is None and isinstance(ref, dict):
+                                master = ref.get("recordName")
+                            if master is None:
+                                log.info("library %s: a changed photo has no master", key)
+                                return None
+                            pairs[record.recordName] = master
+                        elif record_type == "CPLMaster":
+                            masters.add(record.recordName)
+        except Exception as exc:  # e.g. an expired sync token
+            log.info("library %s: could not read the changes: %s", key, exc)
+            return None
+        summary = ", ".join(f"{n} {t}" for t, n in sorted(types.items())) or "none"
+        log.info("library %s changes: %s; %d removed", key, summary, removed)
+        unknown = set(types) - CHANGE_TYPES
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            log.info("library %s: changes of %s need a full reading", key, names)
+            return None
+        if masters - set(pairs.values()):
+            log.info("library %s: an original changed without its photo", key)
+            return None
+        assets: list[Any] = []
+        ids = sorted(pairs)
+        for start in range(0, len(ids), LOOKUP_BATCH):
+            batch = ids[start : start + LOOKUP_BATCH]
+            with self._api_lock:
+                found = list(self._lookup(library, batch, [pairs[i] for i in batch]))
+            assets.extend(found)
+        return assets
+
+    def _changed_items(self, asset: Any, lib: Library, library: Any) -> Iterator[PhotoItem]:
+        record = getattr(asset, "asset_record", None)
+        if _field(record, "isDeleted") == 1 or _field(record, "isExpunged") == 1:
+            return  # in "Recently Deleted": a backup keeps what it has
+        hidden = _field(record, "isHidden") == 1
+        if hidden and not (self.options.hidden and lib is Library.PERSONAL):
+            return
+        yield from self._items(asset, lib, (), hidden=hidden, origin=library)
 
     def open_read(self, item: PhotoItem) -> BinaryIO:
         blob = self._blobs.get(item.key)
@@ -498,6 +603,18 @@ class ICloudPhotosSource(PhotoSource):
         )
         self._blobs[item.key] = data
         return item
+
+
+def _cursor_parts(cursor: str) -> dict[str, str]:
+    """``key=value|key=value`` as written by ``cursor()``."""
+    return dict(part.split("=", 1) for part in cursor.split("|") if "=" in part)
+
+
+def _zone_req(library: Any, since: str) -> Any:
+    models = importlib.import_module("pyicloud.common.cloudkit.models")
+    return models.CKZoneChangesZoneReq(
+        zoneID=models.CKZoneID(**library.zone_id), syncToken=since, reverse=False
+    )
 
 
 def _photo_count(libraries: list[tuple[Library, str, Any]]) -> int | None:

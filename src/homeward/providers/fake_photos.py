@@ -24,6 +24,10 @@ class FakePhotoSource(PhotoSource):
         self.listed = 0
         self.downloads: list[str] = []
         self.prepared: list[list[str]] = []
+        # change log: (cursor after the change, key or None for an album change)
+        self.changes_reliable = False  # tests switch the change feed on
+        self.changes_listed = 0
+        self._log: list[tuple[str, str | None]] = []
         self._cursor = f"c{next(_tokens)}"
 
     def add(
@@ -47,14 +51,14 @@ class FakePhotoSource(PhotoSource):
         )  # fmt: skip
         self.items[item.key] = item
         self.data[item.key] = payload
-        self._touch()
+        self._touch(item.key)
         return item
 
     def edit(self, key: str, data: bytes) -> None:
         item = self.items[key]
         self.items[key] = replace(item, size=len(data), checksum=f"ck-{hash(data) & 0xFFFFFFFF:x}")
         self.data[key] = data
-        self._touch()
+        self._touch(key)
 
     def set_albums(self, key: str, albums: tuple[str, ...]) -> None:
         self.items[key] = replace(self.items[key], albums=albums)
@@ -63,10 +67,11 @@ class FakePhotoSource(PhotoSource):
     def remove(self, key: str) -> None:
         del self.items[key]
         del self.data[key]
-        self._touch()
+        self._touch(key)
 
-    def _touch(self) -> None:
+    def _touch(self, key: str | None = None) -> None:
         self._cursor = f"c{next(_tokens)}"
+        self._log.append((self._cursor, key))
 
     # PhotoSource interface
 
@@ -76,6 +81,19 @@ class FakePhotoSource(PhotoSource):
     def list_items(self) -> list[PhotoItem]:
         self.listed += 1
         return list(self.items.values())
+
+    def list_changes(self, since: str) -> list[PhotoItem] | None:
+        """Like iCloud's change feed: photos added or edited since ``since``. Removed
+        photos are left out; an album change makes the answer unreliable (None)."""
+        self.changes_listed += 1
+        tokens = [token for token, _ in self._log]
+        if not self.changes_reliable or since not in tokens:
+            return None
+        after = self._log[tokens.index(since) + 1 :]
+        if any(key is None for _, key in after):
+            return None
+        keys = {key for _, key in after if key in self.items}
+        return [self.items[key] for key in sorted(keys)]
 
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         self.prepared.append([item.key for item in items])

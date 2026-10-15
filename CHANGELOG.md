@@ -14,6 +14,12 @@ All notable changes to Homeward are listed here. Versions follow
 
 ### Changed
 
+- A photos backup reads only what changed in iCloud when it safely can (from iCloud's
+  change feed) instead of the whole library, which took about 20 minutes for 28,000
+  photos. It still reads the whole library on the first run, after a run with errors,
+  when a file is missing on the NAS, when albums, settings or shared albums changed,
+  whenever iCloud's answer is incomplete, and at least once every 24 hours; that run
+  also marks photos removed in iCloud and updates album folders.
 - Photo downloads no longer pause after every 100 files: the next batch's download
   links are renewed and queued while the current batch still downloads.
 

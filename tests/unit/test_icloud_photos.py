@@ -687,3 +687,154 @@ def test_expired_shared_album_link_lists_the_album_again() -> None:
     clock[0] += RENEW_AFTER
     with source.open_read(item) as stream:
         assert stream.read() == b"https://cdn/x3"
+
+
+# --- reading only the changes ---------------------------------------------------------
+
+
+class Fields:
+    def __init__(self, values: dict[str, Any]) -> None:
+        self.values = values
+
+    def get_value(self, name: str) -> Any:
+        return self.values.get(name)
+
+
+@dataclass
+class Ref:
+    recordName: str  # pyicloud's name
+
+
+@dataclass
+class Record:
+    recordName: str
+    recordType: str | None  # None: a deletion
+    fields: Fields = field(default_factory=lambda: Fields({}))
+
+
+def asset_change(asset_id: str) -> Record:
+    return Record(asset_id, "CPLAsset", Fields({"masterRef": Ref(f"m-{asset_id}")}))
+
+
+@dataclass
+class Zone:
+    records: list[Record]
+
+
+class ChangeClient:
+    def __init__(self, records: list[Record]) -> None:
+        self.records = records
+        self.since: list[str] = []
+
+    def iter_changes(self, *, zone_req: str) -> list[Zone]:
+        self.since.append(zone_req)
+        return [Zone(self.records)]
+
+
+@pytest.fixture
+def changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import homeward.providers.icloud_photos as module
+
+    monkeypatch.setattr(module, "_zone_req", lambda library, since: since)
+
+
+def changed_source(
+    records: list[Record], assets: list[Asset], options: PhotoOptions | None = None
+) -> tuple[ICloudPhotosSource, ChangeClient, list[list[str]]]:
+    root = Library_([image("a")], [PhotoAlbum("Cats", [])], token="t2")
+    client = ChangeClient(records)
+    root._client = client  # type: ignore[attr-defined]
+    looked_up: list[list[str]] = []
+
+    def lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -> list[Asset]:
+        looked_up.append(asset_ids + master_ids)
+        return [a for a in assets if a.id in asset_ids]
+
+    service = Service({"root": root})
+    source = ICloudPhotosSource(service, [Library.PERSONAL], options, lookup=lookup)
+    return source, client, looked_up
+
+
+def old_cursor(source: ICloudPhotosSource) -> str:
+    return source.cursor().replace("root=t2", "root=t1")  # type: ignore[union-attr]
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_fetches_changed_photos() -> None:
+    new = image("n")
+    deleted = image("d")
+    deleted.asset_record = {"fields": {"isDeleted": 1}}
+    records = [
+        asset_change("n"), Record("m-n", "CPLMaster"), asset_change("d"), Record("gone", None)
+    ]  # fmt: skip
+    source, client, looked_up = changed_source(records, [new, deleted])
+
+    items = source.list_changes(old_cursor(source))
+
+    assert items is not None
+    assert [item.key for item in items] == ["personal/n/original"]
+    assert client.since == ["t1"]
+    assert looked_up == [["d", "n", "m-d", "m-n"]]
+    with source.open_read(items[0]) as fh:
+        assert fh.read() == b"https://cdn/n"
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_on_album_changes() -> None:
+    records = [asset_change("n"), Record("rel-1", "CPLContainerRelation")]
+    source, _client, looked_up = changed_source(records, [image("n")])
+    assert source.list_changes(old_cursor(source)) is None
+    assert looked_up == []
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_on_an_original_without_its_photo() -> None:
+    source, _client, _ = changed_source([Record("m-x", "CPLMaster")], [])
+    assert source.list_changes(old_cursor(source)) is None
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_when_the_settings_changed() -> None:
+    source, client, _ = changed_source([asset_change("n")], [image("n")])
+    since = old_cursor(source).replace("options=", "options=x")
+    assert source.list_changes(since) is None
+    assert client.since == []
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_skips_hidden_photos_unless_wanted() -> None:
+    hidden = image("h")
+    hidden.asset_record = {"fields": {"isHidden": 1}}
+    source, _client, _ = changed_source([asset_change("h")], [hidden])
+    assert source.list_changes(old_cursor(source)) == []
+
+    with_hidden, _client, _ = changed_source(
+        [asset_change("h")], [hidden], PhotoOptions(hidden=True)
+    )
+    items = with_hidden.list_changes(old_cursor(with_hidden))
+    assert items is not None
+    assert [(item.key, item.hidden) for item in items] == [("personal/h/original", True)]
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_when_the_feed_fails() -> None:
+    source, client, _ = changed_source([], [])
+
+    def broken(*, zone_req: str) -> list[Zone]:
+        raise RuntimeError("sync token expired")
+
+    client.iter_changes = broken  # type: ignore[method-assign]
+    assert source.list_changes(old_cursor(source)) is None
+
+
+@dataclass
+class ErrorItem:
+    recordName: str
+    serverErrorCode: str = "ZONE_NOT_FOUND"
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_on_an_error_in_the_feed() -> None:
+    records = [asset_change("n"), ErrorItem("x")]
+    source, _client, _ = changed_source(records, [image("n")])  # type: ignore[list-item]
+    assert source.list_changes(old_cursor(source)) is None

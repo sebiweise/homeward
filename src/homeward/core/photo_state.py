@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS cursors (
     job TEXT PRIMARY KEY,
     cursor TEXT
 );
+CREATE TABLE IF NOT EXISTS full_listings (
+    job TEXT PRIMARY KEY,
+    finished_at REAL NOT NULL
+);
 """
 
 
@@ -110,3 +114,13 @@ class PhotoStateDB:
 
     def set_cursor(self, job: str, cursor: str | None) -> None:
         self._conn.execute("INSERT OR REPLACE INTO cursors VALUES (?, ?)", (job, cursor))
+
+    def full_listing_at(self, job: str) -> float | None:
+        """When a run that read the whole library last finished without errors."""
+        row = self._conn.execute(
+            "SELECT finished_at FROM full_listings WHERE job = ?", (job,)
+        ).fetchone()
+        return None if row is None else float(row[0])
+
+    def set_full_listing(self, job: str, at: float) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO full_listings VALUES (?, ?)", (job, at))
