@@ -2,15 +2,15 @@
 
 import hashlib
 import os
-import secrets
 import shutil
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
+from homeward.core.files import rename_noreplace, temp_name
 from homeward.core.models import FileMeta
-from homeward.core.rules import TEMP_SUFFIX, TRASH_DIR, is_excluded
+from homeward.core.rules import TRASH_DIR, is_excluded
 from homeward.providers.base import Provider
 
 _CHUNK = 1024 * 1024
@@ -40,8 +40,9 @@ class NasProvider(Provider):
     given (same layout DSM uses, so DSM's retention rules apply), otherwise or if
     that fails to ``<root>/.homeward-papierkorb/<date>/``.
 
-    Writes go to a temporary file next to the target and are hard-linked into place,
-    so a crash never leaves a partial file and an existing file is never clobbered.
+    Writes go to a temporary file next to the target and are renamed into place
+    without replacing (see ``core.files``), so a crash never leaves a partial file
+    and an existing file is never clobbered.
     """
 
     def __init__(
@@ -80,14 +81,14 @@ class NasProvider(Provider):
         if target.exists():
             raise FileExistsError(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}{TEMP_SUFFIX}")
+        tmp = temp_name(target)
         try:
             with tmp.open("xb") as out:
                 shutil.copyfileobj(data, out, _CHUNK)
                 out.flush()
                 os.fsync(out.fileno())
             os.utime(tmp, (mtime, mtime))
-            os.link(tmp, target)
+            rename_noreplace(tmp, target)
         finally:
             tmp.unlink(missing_ok=True)
         return self._meta(path, target)
@@ -126,8 +127,7 @@ class NasProvider(Provider):
     def move(self, path: str, new_path: str) -> FileMeta:
         source, target = self._full(path), self._full(new_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.link(source, target)  # fails if target exists
-        source.unlink()
+        rename_noreplace(source, target)
         return self._meta(new_path, target)
 
     def sha256(self, path: str) -> str:

@@ -7,6 +7,7 @@
 - ``homeward.log``: the daemon's log, shown in the UI
 - ``events.jsonl``: the event log (waits, retries, errors) shown in the UI
 - ``notices.json``: when the user last cleared the notices on the status page
+- ``progress/<job>.json``: how far the running sync or photos backup is, written by it
 """
 
 import json
@@ -62,6 +63,14 @@ class Paths:
         return self.var_dir / "notices.json"
 
     @property
+    def progress_dir(self) -> Path:
+        return self.var_dir / "progress"
+
+    def progress_file(self, source: str) -> Path:
+        """``source`` is ``pair:<name>`` or ``photos:<name>`` (names are file-safe)."""
+        return self.progress_dir / (source.replace(":", "-", 1) + ".json")
+
+    @property
     def backup_dir(self) -> Path:
         return self.var_dir / "config-backups"
 
@@ -71,6 +80,7 @@ class RunRequest:
     pair: str
     dry_run: bool = False
     allow_deletes: bool = False
+    remove_gone: bool = False  # photos: also clean up photos deleted in iCloud
     requested_at: float = 0.0
 
 
@@ -90,6 +100,7 @@ def request_run(paths: Paths, request: RunRequest) -> None:
         "pair": request.pair,
         "dry_run": request.dry_run,
         "allow_deletes": request.allow_deletes,
+        "remove_gone": request.remove_gone,
         "requested_at": request.requested_at or time.time(),
     }
     write_json_atomic(paths.requests_dir / f"{request.pair}.json", data)
@@ -118,6 +129,7 @@ def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
                 pair=str(data["pair"]),
                 dry_run=bool(data.get("dry_run", False)),
                 allow_deletes=bool(data.get("allow_deletes", False)),
+                remove_gone=bool(data.get("remove_gone", False)),
                 requested_at=float(data.get("requested_at", 0.0)),
             )
         except (OSError, ValueError, KeyError, TypeError):
@@ -161,6 +173,28 @@ def take_cancels(paths: Paths) -> list[CancelRequest]:
             pass
         file.unlink(missing_ok=True)
     return taken
+
+
+def write_progress(paths: Paths, source: str, snapshot: dict[str, Any]) -> None:
+    write_json_atomic(paths.progress_file(source), snapshot | {"pid": os.getpid()})
+
+
+def clear_progress(paths: Paths, source: str) -> None:
+    paths.progress_file(source).unlink(missing_ok=True)
+
+
+def read_progress(paths: Paths, source: str) -> dict[str, Any] | None:
+    """The progress of a running job, or None when there is none or its run ended."""
+    try:
+        data = json.loads(paths.progress_file(source).read_text(encoding="utf-8"))
+        os.kill(int(data["pid"]), 0)  # the run crashed without removing it
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass  # the process exists
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def read_status(paths: Paths) -> dict[str, Any]:

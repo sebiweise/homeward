@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -189,7 +190,7 @@ def test_photos_dry_run_then_real(
     source.add(
         "a1", "a.jpg", b"img", created=datetime(2024, 5, 3, 12, tzinfo=UTC), albums=("Urlaub",)
     )
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
     config = _photos_config(tmp_path)
 
     assert main(["photos", "--config", str(config), "--dry-run"]) == EXIT_OK
@@ -219,7 +220,7 @@ def test_photos_failed_download_exit_code(
 
     source = FakePhotoSource()
     source.fail_keys.add(source.add("a1", "a.jpg").key)
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
 
     assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_FAILED
     assert "FAILED download" in capsys.readouterr().out
@@ -274,12 +275,88 @@ def test_photos_progress_on_stderr(
 
     source = FakePhotoSource()
     source.add("a1", "a.jpg")
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
 
     assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_OK
     err = capsys.readouterr().err
     assert "reading iCloud" in err
     assert "1 of 1 files downloaded" in err
+
+
+def test_photos_progress_file_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    progress_file = tmp_path / "progress" / "photos-seb.json"
+    seen: list[dict[str, object]] = []
+    open_read = source.open_read
+
+    def reading(item: object) -> object:
+        seen.append(json.loads(progress_file.read_text()))
+        return open_read(item)  # type: ignore[arg-type]
+
+    source.open_read = reading  # type: ignore[assignment,method-assign]
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_OK
+    assert seen[0]["phase"] == "downloading"
+    assert seen[0]["total"] == 1
+    assert seen[0]["pid"] == os.getpid()
+    assert not progress_file.exists()  # removed when the run ends
+
+
+def test_photos_mirror_deletes_and_delete_brake(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    items = [source.add(f"a{n}", f"{n}.jpg") for n in range(3)]
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+    config = _photos_config(tmp_path)
+    config.write_text(config.read_text() + "mirror_deletes = true\nmax_delete_count = 1\n")
+    photo = tmp_path / "photos" / "2024" / "05"
+
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    source.remove(items[0].key)
+    source.remove(items[1].key)
+    assert main(["photos", "--config", str(config)]) == EXIT_BLOCKED
+    assert "Delete brake: 2 deletions exceed" in capsys.readouterr().out
+    assert (photo / "0.jpg").exists()
+
+    assert main(["photos", "--config", str(config), "--allow-deletes"]) == EXIT_OK
+    assert sorted(p.name for p in photo.iterdir()) == ["2.jpg"]
+    trash = next((tmp_path / "photos" / ".homeward-papierkorb").iterdir())
+    assert (trash / "2024" / "05" / "0.jpg").exists()
+
+
+def test_photos_remove_gone_uses_the_synology_recycle_bin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    items = [source.add(f"a{n}", f"{n}.jpg") for n in range(2)]
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+    config = _photos_config(tmp_path)
+    (tmp_path / "#recycle").mkdir()  # the recycle bin of the share holding the backup
+    photo = tmp_path / "photos" / "2024" / "05"
+
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    source.remove(items[0].key)
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    assert (photo / "0.jpg").exists()  # without mirror_deletes it stays
+
+    assert main(["photos", "--config", str(config), "--remove-gone"]) == EXIT_OK
+    assert sorted(p.name for p in photo.iterdir()) == ["1.jpg"]
+    assert (tmp_path / "#recycle" / "photos" / "2024" / "05" / "0.jpg").exists()
+    assert not (tmp_path / "photos" / ".homeward-papierkorb").exists()
 
 
 def test_photos_refuses_a_second_run_for_the_same_account(
@@ -292,7 +369,7 @@ def test_photos_refuses_a_second_run_for_the_same_account(
 
     source = FakePhotoSource()
     source.add("a1", "a.jpg")
-    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job: source)
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
     config = _photos_config(tmp_path)
     lock = tmp_path / "state" / "seb@example.com.photos.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)

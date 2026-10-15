@@ -3,6 +3,48 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
+## [Unreleased]
+
+### Added
+
+- Photos backups have an option *Also delete photos on the NAS that were deleted in
+  iCloud (1:1)* (`mirror_deletes`, off by default). Deleted photos and their album links
+  move to the share's Synology recycle bin when it is enabled (DSM's emptying schedule
+  applies), otherwise to the backup folder's trash, which is emptied after `trash_days`
+  (30). The delete
+  brake holds back more than 50 or more than 10 % of the photos until approved; photos
+  that only left the selection (libraries, file types) are never deleted.
+- *Clean up deleted photos (N)* on a photos backup's overview removes the photos deleted
+  in iCloud that are still on the NAS, into the same trash (`photos --remove-gone`).
+- While a photos backup or sync runs, its overview shows a progress card: the current
+  step (signing in, reading the library, reading albums, downloading, album links), how
+  many of how many are done, data, speed, time left, the last file and the latest log
+  message, including waits for Apple. The page refreshes every 3 s while a job runs.
+
+### Changed
+
+- "Waiting for iCloud": a library zone Apple is still indexing only holds up a photos
+  backup when the backup includes it (pyicloud gave up on any zone, even ones no backup
+  reads). The log names the library and Apple's progress, e.g. "the Shared Library
+  (73 %)". A run waits at most 3 minutes for it instead of 8, so other jobs are not held
+  up, and the daemon tries a waiting job again after 15 minutes instead of a whole
+  interval.
+- A photos backup reads only what changed in iCloud when it safely can (from iCloud's
+  change feed) instead of the whole library, which took about 20 minutes for 28,000
+  photos. It still reads the whole library on the first run, after a run with errors,
+  when a file is missing on the NAS, when albums, settings or shared albums changed,
+  whenever iCloud's answer is incomplete, and at least once every 24 hours; that run
+  also marks photos removed in iCloud and updates album folders.
+- Photo downloads no longer pause after every 100 files: the next batch's download
+  links are renewed and queued while the current batch still downloads.
+
+### Fixed
+
+- Photos (and files from iCloud Drive) now show up in Synology Photos. Homeward used
+  to hard-link a finished download into place, which DSM's indexer does not notice;
+  it now renames it into place, still never replacing an existing file. Photos backed
+  up before this fix need a one-time re-index in Synology Photos.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added

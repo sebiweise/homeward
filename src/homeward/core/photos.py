@@ -14,7 +14,6 @@ a photo) are removed when a photo leaves an album.
 import logging
 import os
 import re
-import secrets
 import shutil
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -26,8 +25,11 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol
 
+from homeward.core.files import link_noreplace, rename_noreplace, temp_name
 from homeward.core.photo_state import PhotoRecord, PhotoStateDB
-from homeward.core.rules import TEMP_SUFFIX, TRASH_DIR
+from homeward.core.planner import DeleteBrake
+from homeward.core.progress import Progress
+from homeward.core.rules import TRASH_DIR
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +110,15 @@ class PhotoSource(Protocol):
         """Every file of every photo in the selected libraries."""
         ...
 
+    def list_changes(self, since: str) -> Iterable[PhotoItem] | None:
+        """The files of every photo added or changed since the cursor ``since``, or None
+        when the source cannot tell for sure (then the whole library is read).
+
+        Photos removed in iCloud and changed album memberships need not be reported:
+        the regular full listing catches up on those.
+        """
+        ...
+
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Called before the next batch of downloads; a source whose download URLs
         expire renews them here."""
@@ -185,6 +196,7 @@ class PhotoActionKind(StrEnum):
     UNLINK = "unlink"  # the photo left the album; its Year/Month file stays
     GONE = "gone"  # deleted in iCloud; the NAS copy stays
     RETURNED = "returned"  # back in iCloud after it was gone (e.g. restored there)
+    DELETE = "delete"  # deleted in iCloud, mirrored: NAS file and album links to the trash
 
 
 _FILE_KINDS = frozenset(
@@ -192,6 +204,7 @@ _FILE_KINDS = frozenset(
 )
 PROGRESS_EVERY = 50
 PREPARE_BATCH = 100
+FULL_LISTING_HOURS = 24  # read the whole library at least this often
 DEFAULT_WORKERS = 4
 MAX_WORKERS = 8
 
@@ -211,6 +224,11 @@ class PhotoPlan:
     job: str
     cursor: str | None
     unchanged: bool = False  # cursor unchanged and every file present: nothing listed
+    full: bool = True  # the whole library was read (False: only the changes)
+    started_at: float = 0.0  # when the plan asked iCloud
+    selection: str | None = None  # see ``build_photo_plan``
+    blocked: str | None = None  # the delete brake holds back the DELETE actions...
+    held: set[str] = field(default_factory=set)  # ...of these photo keys
     actions: list[PhotoAction] = field(default_factory=list)
     up_to_date: int = 0
 
@@ -231,6 +249,7 @@ class PhotoFailure:
 class PhotoRunResult:
     done: list[PhotoAction] = field(default_factory=list)
     failed: list[PhotoFailure] = field(default_factory=list)
+    blocked: str | None = None  # deletions held back by the delete brake
 
     @property
     def ok(self) -> bool:
@@ -327,49 +346,150 @@ def build_photo_plan(
     layout: PhotoLayout | None = None,
     *,
     albums: bool = True,
+    progress: Progress | None = None,
+    now: Callable[[], float] = time.time,
+    mirror_deletes: bool = False,
+    selection: str | None = None,
+    brake: DeleteBrake | None = None,
+    remove_gone: bool = False,
 ) -> PhotoPlan:
-    """Compare iCloud with the state of the last run and decide what to fetch or link."""
+    """Compare iCloud with the state of the last run and decide what to fetch or link.
+
+    With ``mirror_deletes``, photos deleted in iCloud are removed on the NAS too (into
+    the trash), but only when this run reads the whole library with the same
+    ``selection`` (libraries and file types, any text) as the last complete run: a
+    photo that merely left the selection is not deleted, it only counts as gone.
+    More deletions than ``brake`` allows are held back until approved.
+
+    ``remove_gone`` (the user's explicit "clean up") also deletes the photos earlier
+    runs marked as deleted in iCloud, the same way and without the brake.
+
+    When only some photos changed since the last run, the source is asked for just
+    those (``list_changes``) instead of the whole library. The whole library is still
+    read when the source cannot tell for sure, when a file is missing on the NAS, and
+    at least every ``FULL_LISTING_HOURS``; that run also catches up on photos removed
+    in iCloud and on changed album memberships.
+    """
     layout = layout or PhotoLayout()
+    progress = progress or Progress()
+    progress.phase("checking")
     records = state.records(job)
     links = state.links(job)
     cursor = source.cursor()
-    plan = PhotoPlan(job=job, cursor=cursor)
-    if (
-        cursor is not None
-        and cursor == state.cursor(job)
-        and _all_present(root, records.values(), links)
-    ):
+    previous = state.cursor(job)
+    plan = PhotoPlan(job=job, cursor=cursor, started_at=now(), selection=selection)
+    present = _all_present(root, records.values(), links)
+    if remove_gone:
+        plan.actions += [
+            PhotoAction(PhotoActionKind.DELETE, r.path, key=key)
+            for key, r in sorted(records.items())
+            if r.gone_at is not None
+        ]
+    if cursor is not None and cursor == previous and present:
         plan.unchanged = True
         plan.up_to_date = sum(1 for r in records.values() if r.gone_at is None)
         return plan
 
     paths = _Paths(root, [r.path for r in records.values()] + list(links))
-    seen, wanted_links = _plan_items(plan, source, root, records, paths, layout, albums=albums)
+    changes = _changes(job, source, state, cursor, previous, present, plan.started_at)
+    if changes is not None:
+        plan.full = False
+        progress.phase("planning", total=len(changes))
+        changed = {i.key for i in changes}
+        plan.actions = [a for a in plan.actions if a.key not in changed]  # back in iCloud
+        _, wanted_links = _plan_items(plan, changes, root, records, paths, layout, progress, albums)
+        fetched = {a.key for a in plan.actions if a.kind in _FILE_KINDS}
+        plan.up_to_date = sum(
+            1 for k, r in records.items() if r.gone_at is None and k not in fetched
+        )
+        existing = {(key, album): path for path, (key, album) in links.items()}
+        _plan_links(plan, root, layout, paths, existing, wanted_links)
+        return plan
+
+    progress.phase("listing")  # the source sets the total once it knows it
+    items = sorted(source.list_items(), key=lambda i: (i.created, i.key))
+    progress.phase("planning", total=len(items))
+    seen, wanted_links = _plan_items(plan, items, root, records, paths, layout, progress, albums)
+    delete = mirror_deletes and _same_selection(job, state, selection)
+    live = sum(1 for r in records.values() if r.gone_at is None)
     for key, record in sorted(records.items()):
         if key not in seen and record.gone_at is None:
-            plan.actions.append(PhotoAction(PhotoActionKind.GONE, record.path, key=key))
+            kind = PhotoActionKind.DELETE if delete else PhotoActionKind.GONE
+            plan.actions.append(PhotoAction(kind, record.path, key=key))
+    # A photo marked as gone that is back in iCloud is not cleaned up.
+    plan.actions = [
+        a for a in plan.actions if a.kind is not PhotoActionKind.DELETE or a.key not in seen
+    ]
+    mirrored = (
+        {k for k, r in records.items() if k not in seen and r.gone_at is None} if delete else set()
+    )
+    if mirrored:
+        plan.blocked = (brake or DeleteBrake()).check(len(mirrored), live)
+        if plan.blocked:
+            plan.held = mirrored
     existing = {(key, album): path for path, (key, album) in links.items()}
     _plan_links(plan, root, layout, paths, existing, wanted_links)
     _plan_unlinks(plan, records, existing, wanted_links, seen)
     return plan
 
 
+def _same_selection(job: str, state: PhotoStateDB, selection: str | None) -> bool:
+    previous = state.full_listing_selection(job)
+    if previous is None or previous != selection:
+        log.info(
+            "photos removed from iCloud are not deleted on the NAS in this run: "
+            "the libraries or file types changed since the last complete run"
+        )
+        return False
+    return True
+
+
+def _changes(
+    job: str,
+    source: PhotoSource,
+    state: PhotoStateDB,
+    cursor: str | None,
+    previous: str | None,
+    present: bool,
+    now: float,
+) -> list[PhotoItem] | None:
+    """The changed photos when reading only the changes is safe, else None."""
+    full_at = state.full_listing_at(job)
+    if cursor is None or previous is None or full_at is None:
+        reason = "no earlier complete run to build on"
+    elif not present:
+        reason = "files are missing on the NAS"
+    elif now - full_at >= FULL_LISTING_HOURS * 3600:
+        reason = f"the last complete reading is more than {FULL_LISTING_HOURS} hours old"
+    else:
+        changed = source.list_changes(previous)
+        if changed is not None:
+            items = sorted(changed, key=lambda i: (i.created, i.key))
+            log.info("reading only what changed in iCloud: %d files", len(items))
+            return items
+        reason = "iCloud did not report the changes in a way Homeward can rely on"
+    log.info("reading the whole photo library: %s", reason)
+    return None
+
+
 def _plan_items(
     plan: PhotoPlan,
-    source: PhotoSource,
+    items: list[PhotoItem],
     root: Path,
     records: dict[str, PhotoRecord],
     paths: _Paths,
     layout: PhotoLayout,
-    *,
+    progress: Progress,
     albums: bool,
 ) -> tuple[set[str], dict[tuple[str, str], str]]:
     """Download what is new, restore or replace what changed. Returns the keys seen in
     iCloud and the album links wanted, as (key, album) -> primary path."""
     wanted_links: dict[tuple[str, str], str] = {}
-    assigned: dict[str, str] = {}  # key -> NAS path, for placing sidecars
+    # key -> NAS path, for placing sidecars (next to a photo of an earlier run, too)
+    assigned = {key: record.path for key, record in records.items()}
     seen: set[str] = set()
-    for item in sorted(source.list_items(), key=lambda i: (i.created, i.key)):
+    for item in items:
+        progress.advance()
         if item.key in seen:
             continue
         seen.add(item.key)
@@ -508,8 +628,12 @@ class PhotoExecutor:
         *,
         today: Callable[[], date] = date.today,
         workers: int = 1,
+        progress: Progress | None = None,
+        recycle_bin: Path | None = None,
     ) -> None:
         self.source = source
+        self.recycle_bin = recycle_bin
+        self.progress = progress or Progress()
         self.root = root
         self.state = state
         self.job = job
@@ -520,7 +644,7 @@ class PhotoExecutor:
         self._files = 0
         self._started = 0.0
 
-    def run(self, plan: PhotoPlan) -> PhotoRunResult:
+    def run(self, plan: PhotoPlan, *, allow_deletes: bool = False) -> PhotoRunResult:
         result = PhotoRunResult()
         # Files first, so links of the same run find their target.
         order = {kind: i for i, kind in enumerate(PhotoActionKind)}
@@ -528,6 +652,10 @@ class PhotoExecutor:
         files = [a for a in actions if a.kind in _FILE_KINDS]
         self._bytes, self._fetched, self._files = 0, 0, len(files)
         self._started = time.monotonic()
+        if files:
+            sizes = [_need(a.item).size for a in files]
+            known = None if None in sizes else sum(s or 0 for s in sizes)
+            self.progress.phase("downloading", total=len(files), total_bytes=known or None)
         # Downloads run in parallel (each request waits mostly on Apple, not on bandwidth);
         # the state database and everything else stay on this thread.
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
@@ -538,16 +666,35 @@ class PhotoExecutor:
                 # writes a temporary file first), drop the queued ones.
                 pool.shutdown(cancel_futures=True)
                 raise
-        for action in actions:
-            if action.kind not in _FILE_KINDS:
-                self._step(result, action, partial(self._apply, action))
-        if result.ok and not plan.unchanged:
+        rest = [a for a in actions if a.kind not in _FILE_KINDS]
+        if plan.blocked and not allow_deletes:
+            log.warning(
+                "delete brake: %s; photos deleted in iCloud stay on the NAS until approved",
+                plan.blocked,
+                extra={"event": "delete_brake"},
+            )
+            result.blocked = plan.blocked
+            rest = [
+                a for a in rest if a.kind is not PhotoActionKind.DELETE or a.key not in plan.held
+            ]
+            self.state.clear_full_listing(self.job)  # the approving run reads it all again
+        if rest:
+            self.progress.phase("linking", total=len(rest))
+        for action in rest:
+            self._step(result, action, partial(self._apply, action))
+        # A run the delete brake held keeps neither: the next one reads everything again.
+        if result.ok and not plan.unchanged and not result.blocked:
             self.state.set_cursor(self.job, plan.cursor)
+            if plan.full:
+                self.state.set_full_listing(self.job, plan.started_at, plan.selection)
         return result
 
     def _run_files(
         self, result: PhotoRunResult, files: list[PhotoAction], pool: ThreadPoolExecutor
     ) -> None:
+        # Two batches are in flight: while the workers download one, the next one's
+        # links are renewed and queued, so no worker waits for a batch to drain.
+        in_flight: list[tuple[list[PhotoAction], dict[Future[int], PhotoAction]]] = []
         for start in range(0, len(files), PREPARE_BATCH):
             batch = files[start : start + PREPARE_BATCH]
             self._prepare([_need(a.item) for a in batch])
@@ -556,14 +703,27 @@ class PhotoExecutor:
                 for action in batch
                 if action.kind is not PhotoActionKind.REPLACE
             }
-            for future in as_completed(fetches):
-                action = fetches[future]
-                self._step(result, action, partial(self._collect, action, future))
-            for action in batch:
-                if action.kind is PhotoActionKind.REPLACE:
-                    self._step(result, action, partial(self._apply, action))
+            in_flight.append((batch, fetches))
+            if len(in_flight) > 1:
+                self._finish_batch(result, *in_flight.pop(0))
+        for batch, fetches in in_flight:
+            self._finish_batch(result, batch, fetches)
+
+    def _finish_batch(
+        self,
+        result: PhotoRunResult,
+        batch: list[PhotoAction],
+        fetches: "dict[Future[int], PhotoAction]",
+    ) -> None:
+        for future in as_completed(fetches):
+            action = fetches[future]
+            self._step(result, action, partial(self._collect, action, future))
+        for action in batch:
+            if action.kind is PhotoActionKind.REPLACE:
+                self._step(result, action, partial(self._apply, action))
 
     def _step(self, result: PhotoRunResult, action: PhotoAction, apply: Callable[[], None]) -> None:
+        before = self._bytes
         try:
             apply()
         except Exception as exc:
@@ -571,8 +731,14 @@ class PhotoExecutor:
                 "%s %s failed: %s", action.kind, action.path, exc, extra={"event": "file_failed"}
             )
             result.failed.append(PhotoFailure(action, f"{type(exc).__name__}: {exc}"))
+            failed = True
         else:
             result.done.append(action)
+            failed = False
+        nbytes = self._bytes - before
+        if failed and action.item is not None and action.item.size:
+            nbytes = action.item.size  # keeps the remaining bytes and the estimate right
+        self.progress.advance(nbytes=nbytes, failed=failed, current=action.path)
         if action.kind in _FILE_KINDS:
             self._fetched += 1
             if self._fetched % PROGRESS_EVERY == 0 or self._fetched == self._files:
@@ -606,6 +772,8 @@ class PhotoExecutor:
                 self.state.remove_link(self.job, action.path)
             case PhotoActionKind.GONE:
                 self.state.mark_gone(self.job, action.key)
+            case PhotoActionKind.DELETE:
+                self._delete(action)
             case PhotoActionKind.RETURNED:
                 item = _need(action.item)
                 size = (self.root / action.path).stat().st_size
@@ -619,7 +787,7 @@ class PhotoExecutor:
         item = _need(action.item)
         target = self.root / action.path
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}{TEMP_SUFFIX}")
+        tmp = temp_name(target)
         try:
             with self.source.open_read(item) as stream, tmp.open("xb") as out:
                 shutil.copyfileobj(stream, out, _CHUNK)
@@ -630,7 +798,7 @@ class PhotoExecutor:
                 raise OSError(f"incomplete download: {size} of {item.size} bytes")
             stamp = item.created.timestamp()
             os.utime(tmp, (stamp, stamp))
-            os.link(tmp, target)  # never replaces an existing file
+            rename_noreplace(tmp, target)  # never replaces an existing file
         finally:
             tmp.unlink(missing_ok=True)
         return size
@@ -644,28 +812,31 @@ class PhotoExecutor:
         self.state.record(self.job, item.key, action.path, size, item.checksum)
 
     def _trash(self, path: str) -> None:
+        """Move a file to the share's Synology recycle bin (same layout DSM uses, so
+        DSM's emptying schedule applies), else to ``.homeward-papierkorb/<date>/``."""
         source = self.root / path
-        day_dir = self.root / TRASH_DIR / self._today().isoformat()
-        target, number = day_dir / path, 2
-        while target.exists():
-            target = day_dir / numbered(PurePosixPath(path), number)
-            number += 1
-        target.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(target)
+        if self.recycle_bin is not None:
+            try:
+                relative = source.relative_to(self.recycle_bin.parent).as_posix()
+                _move_numbered(source, self.recycle_bin, relative)
+                return
+            except (OSError, ValueError) as exc:  # e.g. no write permission in #recycle
+                log.info("recycle bin not usable (%s), using the backup's own trash", exc)
+        _move_numbered(source, self.root / TRASH_DIR / self._today().isoformat(), path)
 
     def _link(self, target: Path, link: Path) -> None:
         link.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.link(target, link)
+            link_noreplace(target, link)
         except OSError as exc:
             if link.exists():
                 raise
             # File systems without hard links get a copy instead.
             log.info("hard link %s failed (%s), copying instead", link, exc)
-            tmp = link.with_name(f".{link.name}.{secrets.token_hex(4)}{TEMP_SUFFIX}")
+            tmp = temp_name(link)
             try:
                 shutil.copy2(target, tmp)
-                os.link(tmp, link)
+                rename_noreplace(tmp, link)
             finally:
                 tmp.unlink(missing_ok=True)
 
@@ -678,6 +849,22 @@ class PhotoExecutor:
             link.unlink()  # the Year/Month file still holds the data
         else:
             self._trash(action.path)  # a copy or an edited file: keep it recoverable
+
+    def _delete(self, action: PhotoAction) -> None:
+        """Move a photo deleted in iCloud and its album links to the trash."""
+        target = self.root / action.path
+        for path, (key, _album) in self.state.links(self.job).items():
+            if key != action.key:
+                continue
+            link = self.root / path
+            if link.exists() and target.exists() and os.path.samefile(link, target):
+                link.unlink()  # the same file, kept once in the trash below
+            elif link.exists():
+                self._trash(path)
+            self.state.remove_link(self.job, path)
+        if target.exists():
+            self._trash(action.path)
+        self.state.forget(self.job, action.key)
 
     def _relink(self, key: str, target_path: str, old: os.stat_result) -> None:
         """After a replace, point the album links of ``key`` at the new file."""
@@ -693,6 +880,16 @@ class PhotoExecutor:
                 else:
                     self._trash(path)
             self._link(target, link)
+
+
+def _move_numbered(source: Path, folder: Path, relative: str) -> None:
+    """Move ``source`` to ``folder/relative``, numbered if that name is taken."""
+    target, number = folder / relative, 2
+    while target.exists():
+        target = folder / numbered(PurePosixPath(relative), number)
+        number += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
 
 
 def _need[T](value: T | None) -> T:
@@ -718,9 +915,25 @@ def backup_photos(
     dry_run: bool = False,
     workers: int = 1,
     today: Callable[[], date] = date.today,
+    progress: Progress | None = None,
+    now: Callable[[], float] = time.time,
+    mirror_deletes: bool = False,
+    selection: str | None = None,
+    brake: DeleteBrake | None = None,
+    allow_deletes: bool = False,
+    remove_gone: bool = False,
+    recycle_bin: Path | None = None,
 ) -> PhotoOutcome:
-    plan = build_photo_plan(job, source, root, state, layout, albums=albums)
+    plan = build_photo_plan(
+        job, source, root, state, layout, albums=albums, progress=progress, now=now,
+        mirror_deletes=mirror_deletes, selection=selection, brake=brake,
+        remove_gone=remove_gone,
+    )  # fmt: skip
     if dry_run:
         return PhotoOutcome(plan, None)
-    result = PhotoExecutor(source, root, state, job, today=today, workers=workers).run(plan)
+    executor = PhotoExecutor(
+        source, root, state, job, today=today, workers=workers, progress=progress,
+        recycle_bin=recycle_bin,
+    )  # fmt: skip
+    result = executor.run(plan, allow_deletes=allow_deletes)
     return PhotoOutcome(plan, result)

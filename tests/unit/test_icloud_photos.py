@@ -11,6 +11,7 @@ from homeward.core.photos import FAVORITES_ALBUM, Library
 from homeward.providers.icloud_photos import (
     RENEW_AFTER,
     ICloudPhotosSource,
+    Indexing,
     PhotoOptions,
     PhotosNotReady,
 )
@@ -620,6 +621,103 @@ def test_waits_when_pyicloud_wraps_the_indexing_refusal() -> None:
     assert pauses == [60.0]
 
 
+class _IndexingZone:
+    """pyicloud's photos service while Apple indexes one library zone."""
+
+    streams = None
+
+    @property
+    def libraries(self) -> dict[str, Library_]:
+        raise PyiCloudServiceNotActivatedException("not finished indexing")
+
+
+def test_a_zone_the_backup_does_not_need_does_not_hold_it_up(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, pauses = make_service(), []
+    libraries = service.photos.libraries
+    service.photos = _IndexingZone()  # type: ignore[assignment]
+
+    def open_zones(photos: object) -> tuple[dict[str, Any], dict[str, Indexing]]:
+        return {"root": libraries["root"]}, {"shared:SharedSync-1": Indexing("RUNNING", 73)}
+
+    source = ICloudPhotosSource(
+        service, [Library.PERSONAL], sleep=pauses.append, open_zones=open_zones
+    )
+    with caplog.at_level("INFO", logger="homeward"):
+        keys = {item.key for item in source.list_items()}
+    assert keys == {"personal/a/original", "personal/b/original",
+                    "personal/b/original_video", "personal/v/original"}  # fmt: skip
+    assert pauses == []
+    assert "the Shared Library (73 %), which this backup does not include" in caplog.text
+
+
+def test_a_needed_zone_that_is_indexing_is_named_with_its_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, pauses = make_service(), []
+    libraries = service.photos.libraries
+    service.photos = _IndexingZone()  # type: ignore[assignment]
+
+    def open_zones(photos: object) -> tuple[dict[str, Any], dict[str, Indexing]]:
+        return {"root": libraries["root"]}, {"shared:SharedSync-1": Indexing("RUNNING", 73)}
+
+    source = ICloudPhotosSource(
+        service, [Library.PERSONAL, Library.SHARED], sleep=pauses.append, open_zones=open_zones
+    )
+    with caplog.at_level("INFO", logger="homeward"), pytest.raises(PhotosNotReady) as excinfo:
+        source.cursor()
+    assert pauses == [60.0, 120.0]
+    assert "iCloud is still indexing the Shared Library (73 %)" in str(excinfo.value)
+    assert "the Shared Library (73 %), waiting 60 s" in caplog.text
+
+
+def test_pyicloud_zones_are_opened_one_by_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pyicloud")
+    from types import SimpleNamespace
+
+    from pyicloud.common.cloudkit import models
+    from pyicloud.services.photos_cloudkit import service as pyicloud_service
+
+    from homeward.providers.icloud_photos import pyicloud_open_zones
+
+    def zone(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            deleted=False, syncToken=f"token-{name}", zoneID=models.CKZoneID(zoneName=name)
+        )
+
+    class Client:
+        def zones_list(self) -> SimpleNamespace:
+            names = ("PrimarySync", "SharedSync-1", "SomeOtherZone")
+            return SimpleNamespace(zones=[zone(n) for n in names])
+
+        def query(self, **kwargs: Any) -> SimpleNamespace:
+            assert kwargs["zone_id"].zoneName == "SomeOtherZone"
+            record = models.CKRecord.model_validate({
+                "recordName": "x", "recordType": "CheckIndexingState",
+                "fields": {"state": {"value": "RUNNING", "type": "STRING"},
+                           "progress": {"value": 40, "type": "INT64"}},
+            })  # fmt: skip
+            return SimpleNamespace(records=[record])
+
+    class PhotoLibrary:
+        def __init__(self, photos: object, *, zone_id: dict[str, str], **kwargs: Any) -> None:
+            if zone_id["zoneName"] == "SomeOtherZone":
+                raise PyiCloudServiceNotActivatedException("not finished indexing")
+            self.zone_id, self.scope = zone_id, kwargs["scope"]
+
+    monkeypatch.setattr(pyicloud_service, "PhotoLibrary", PhotoLibrary)
+    root = SimpleNamespace(current_sync_token=None)
+    photos = SimpleNamespace(private_client=Client(), _root_library=root)
+
+    opened, waiting = pyicloud_open_zones(photos)
+
+    assert set(opened) == {"root", "shared:SharedSync-1"}
+    assert opened["shared:SharedSync-1"].scope == "shared-library"
+    assert root.current_sync_token == "token-PrimarySync"
+    assert waiting == {"SomeOtherZone": Indexing("RUNNING", 40)}
+
+
 def test_download_threads_get_their_own_session_with_icloud_cookies() -> None:
     requests = pytest.importorskip("requests")
     from homeward.providers.icloud_photos import download_session
@@ -687,3 +785,154 @@ def test_expired_shared_album_link_lists_the_album_again() -> None:
     clock[0] += RENEW_AFTER
     with source.open_read(item) as stream:
         assert stream.read() == b"https://cdn/x3"
+
+
+# --- reading only the changes ---------------------------------------------------------
+
+
+class Fields:
+    def __init__(self, values: dict[str, Any]) -> None:
+        self.values = values
+
+    def get_value(self, name: str) -> Any:
+        return self.values.get(name)
+
+
+@dataclass
+class Ref:
+    recordName: str  # pyicloud's name
+
+
+@dataclass
+class Record:
+    recordName: str
+    recordType: str | None  # None: a deletion
+    fields: Fields = field(default_factory=lambda: Fields({}))
+
+
+def asset_change(asset_id: str) -> Record:
+    return Record(asset_id, "CPLAsset", Fields({"masterRef": Ref(f"m-{asset_id}")}))
+
+
+@dataclass
+class Zone:
+    records: list[Record]
+
+
+class ChangeClient:
+    def __init__(self, records: list[Record]) -> None:
+        self.records = records
+        self.since: list[str] = []
+
+    def iter_changes(self, *, zone_req: str) -> list[Zone]:
+        self.since.append(zone_req)
+        return [Zone(self.records)]
+
+
+@pytest.fixture
+def changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import homeward.providers.icloud_photos as module
+
+    monkeypatch.setattr(module, "_zone_req", lambda library, since: since)
+
+
+def changed_source(
+    records: list[Record], assets: list[Asset], options: PhotoOptions | None = None
+) -> tuple[ICloudPhotosSource, ChangeClient, list[list[str]]]:
+    root = Library_([image("a")], [PhotoAlbum("Cats", [])], token="t2")
+    client = ChangeClient(records)
+    root._client = client  # type: ignore[attr-defined]
+    looked_up: list[list[str]] = []
+
+    def lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -> list[Asset]:
+        looked_up.append(asset_ids + master_ids)
+        return [a for a in assets if a.id in asset_ids]
+
+    service = Service({"root": root})
+    source = ICloudPhotosSource(service, [Library.PERSONAL], options, lookup=lookup)
+    return source, client, looked_up
+
+
+def old_cursor(source: ICloudPhotosSource) -> str:
+    return source.cursor().replace("root=t2", "root=t1")  # type: ignore[union-attr]
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_fetches_changed_photos() -> None:
+    new = image("n")
+    deleted = image("d")
+    deleted.asset_record = {"fields": {"isDeleted": 1}}
+    records = [
+        asset_change("n"), Record("m-n", "CPLMaster"), asset_change("d"), Record("gone", None)
+    ]  # fmt: skip
+    source, client, looked_up = changed_source(records, [new, deleted])
+
+    items = source.list_changes(old_cursor(source))
+
+    assert items is not None
+    assert [item.key for item in items] == ["personal/n/original"]
+    assert client.since == ["t1"]
+    assert looked_up == [["d", "n", "m-d", "m-n"]]
+    with source.open_read(items[0]) as fh:
+        assert fh.read() == b"https://cdn/n"
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_on_album_changes() -> None:
+    records = [asset_change("n"), Record("rel-1", "CPLContainerRelation")]
+    source, _client, looked_up = changed_source(records, [image("n")])
+    assert source.list_changes(old_cursor(source)) is None
+    assert looked_up == []
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_on_an_original_without_its_photo() -> None:
+    source, _client, _ = changed_source([Record("m-x", "CPLMaster")], [])
+    assert source.list_changes(old_cursor(source)) is None
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_when_the_settings_changed() -> None:
+    source, client, _ = changed_source([asset_change("n")], [image("n")])
+    since = old_cursor(source).replace("options=", "options=x")
+    assert source.list_changes(since) is None
+    assert client.since == []
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_skips_hidden_photos_unless_wanted() -> None:
+    hidden = image("h")
+    hidden.asset_record = {"fields": {"isHidden": 1}}
+    source, _client, _ = changed_source([asset_change("h")], [hidden])
+    assert source.list_changes(old_cursor(source)) == []
+
+    with_hidden, _client, _ = changed_source(
+        [asset_change("h")], [hidden], PhotoOptions(hidden=True)
+    )
+    items = with_hidden.list_changes(old_cursor(with_hidden))
+    assert items is not None
+    assert [(item.key, item.hidden) for item in items] == [("personal/h/original", True)]
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_when_the_feed_fails() -> None:
+    source, client, _ = changed_source([], [])
+
+    def broken(*, zone_req: str) -> list[Zone]:
+        raise RuntimeError("sync token expired")
+
+    client.iter_changes = broken  # type: ignore[method-assign]
+    assert source.list_changes(old_cursor(source)) is None
+
+
+@dataclass
+class ErrorItem:
+    recordName: str
+    serverErrorCode: str = "ZONE_NOT_FOUND"
+
+
+@pytest.mark.usefixtures("changes")
+def test_list_changes_gives_up_on_an_error_in_the_feed() -> None:
+    records = [asset_change("n"), ErrorItem("x")]
+    source, _client, _ = changed_source(records, [image("n")])  # type: ignore[list-item]
+    assert source.list_changes(old_cursor(source)) is None

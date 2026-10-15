@@ -75,6 +75,10 @@ class PhotosConfig:
     hidden: bool = False  # hidden photos, kept in their own folder
     xmp: bool = True  # XMP sidecars with caption, keywords, location and rating
     workers: int = DEFAULT_WORKERS  # parallel downloads
+    # Photos deleted in iCloud are also removed on the NAS (into the trash).
+    mirror_deletes: bool = False
+    delete_brake: DeleteBrake = field(default_factory=DeleteBrake)
+    trash_days: int = DEFAULT_TRASH_DAYS  # with mirror_deletes: how long the trash keeps them
     layout: PhotoLayout = field(default_factory=PhotoLayout)
     interval_minutes: int | None = None  # None: the global interval
 
@@ -187,6 +191,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
     workers = entry.get("workers", DEFAULT_WORKERS)
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
         raise ConfigError(f"{where}: 'workers' must be a whole number from 1 to {MAX_WORKERS}")
+    brake, trash_days = _brake_and_trash(entry, where)
     return PhotosConfig(
         name=name,
         target=target,
@@ -202,6 +207,9 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         hidden=_get_bool(entry, "hidden", False, where),
         xmp=_get_bool(entry, "xmp", True, where),
         workers=workers,
+        mirror_deletes=_get_bool(entry, "mirror_deletes", False, where),
+        delete_brake=brake,
+        trash_days=trash_days,
         interval_minutes=_get_interval(entry, where),
         layout=PhotoLayout(
             scheme=scheme,
@@ -249,12 +257,7 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
     local = Path(_get(entry, "local", str, None, where))
     if not local.is_absolute():
         raise ConfigError(f"{where}: local must be an absolute path")
-    defaults = DeleteBrake()
-    ratio = _get(entry, "max_delete_ratio", (int, float), defaults.max_ratio, where)
-    count = _get(entry, "max_delete_count", int, defaults.max_count, where)
-    trash_days = _get(entry, "trash_days", int, DEFAULT_TRASH_DAYS, where)
-    if trash_days < 0:
-        raise ConfigError(f"{where}: trash_days must be 0 (keep forever) or more")
+    brake, trash_days = _brake_and_trash(entry, where)
     return PairConfig(
         name=name,
         local=local,
@@ -265,10 +268,20 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         remote_provider=provider,
         exclude=tuple(exclude),
         beta=beta,
-        delete_brake=DeleteBrake(max_ratio=float(ratio), max_count=count),
+        delete_brake=brake,
         trash_days=trash_days,
         interval_minutes=_get_interval(entry, where),
     )
+
+
+def _brake_and_trash(entry: dict[str, Any], where: str) -> tuple[DeleteBrake, int]:
+    defaults = DeleteBrake()
+    ratio = _get(entry, "max_delete_ratio", (int, float), defaults.max_ratio, where)
+    count = _get(entry, "max_delete_count", int, defaults.max_count, where)
+    trash_days = _get(entry, "trash_days", int, DEFAULT_TRASH_DAYS, where)
+    if trash_days < 0:
+        raise ConfigError(f"{where}: trash_days must be 0 (keep forever) or more")
+    return DeleteBrake(max_ratio=float(ratio), max_count=count), trash_days
 
 
 def _get(
