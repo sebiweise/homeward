@@ -831,9 +831,9 @@ class ChangeClient:
 
 @pytest.fixture
 def changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    import homeward.providers.icloud_photos as module
+    from homeward.providers import pyicloud_compat
 
-    monkeypatch.setattr(module, "_zone_req", lambda library, since: since)
+    monkeypatch.setattr(pyicloud_compat, "zone_changes_request", lambda library, since: since)
 
 
 def changed_source(

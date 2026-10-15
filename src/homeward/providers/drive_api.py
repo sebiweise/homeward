@@ -12,6 +12,7 @@ import mimetypes
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, BinaryIO, Protocol
 
+from homeward.providers import pyicloud_compat as compat
 from homeward.providers.multipart import CHUNK, MultipartFile
 
 ZONE = "com.apple.CloudDocs"
@@ -98,7 +99,7 @@ class PyiCloudDriveApi(DriveApi):
         self._drive = drive
         self._session = drive.session
         self._service_root: str = drive.service_root
-        self._document_root: str = drive._document_root
+        self._document_root = compat.drive_document_root(drive)
 
     def _params(self, **extra: Any) -> dict[str, Any]:
         return {**self._drive.params, **extra}
@@ -147,7 +148,7 @@ class PyiCloudDriveApi(DriveApi):
         content_type = mimetypes.guess_type(name)[0] or ""
         slot = self._post(
             f"{self._document_root}/ws/{zone}/upload/web",
-            params=self._params(**self._drive._get_token_from_cookie()),
+            params=self._params(**compat.drive_upload_token(self._drive)),
             headers={"Content-Type": "text/plain"},
             json={"filename": name, "type": "FILE", "content_type": content_type, "size": size},
         )[0]

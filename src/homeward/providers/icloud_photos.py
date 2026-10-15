@@ -21,6 +21,7 @@ from typing import Any, BinaryIO, cast
 
 from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem, PhotoSource
 from homeward.core.progress import Progress
+from homeward.providers import pyicloud_compat as compat
 
 log = logging.getLogger(__name__)
 
@@ -241,13 +242,14 @@ class ICloudPhotosSource(PhotoSource):
         masters: set[str] = set()
         types: dict[str, int] = defaultdict(int)
         removed = 0
-        client = getattr(library, "_client", None)
+        client = compat.cloudkit_client(library)
         if client is None:
             log.info("library %s: this pyicloud session has no CloudKit client", key)
             return None
         try:
             with self._api_lock:
-                for zone in client.iter_changes(zone_req=_zone_req(library, since)):
+                request = compat.zone_changes_request(library, since)
+                for zone in client.iter_changes(zone_req=request):
                     for record in zone.records:
                         error = getattr(record, "serverErrorCode", None)
                         if error is not None:
@@ -671,13 +673,6 @@ def _cursor_parts(cursor: str) -> dict[str, str]:
     return dict(part.split("=", 1) for part in cursor.split("|") if "=" in part)
 
 
-def _zone_req(library: Any, since: str) -> Any:
-    models = importlib.import_module("pyicloud.common.cloudkit.models")
-    return models.CKZoneChangesZoneReq(
-        zoneID=models.CKZoneID(**library.zone_id), syncToken=since, reverse=False
-    )
-
-
 def _photo_count(libraries: list[tuple[Library, str, Any]]) -> int | None:
     """How many photos the libraries hold (one count query each), None if unknown."""
     try:
@@ -794,12 +789,11 @@ def pyicloud_xmp(asset: Any) -> bytes | None:
     pyicloud's own exporter, or None if the photo has none of these."""
     from xml.etree import ElementTree
 
-    materialize = importlib.import_module("pyicloud.services.photos_cloudkit.materialize")
-    metadata = materialize.build_xmp_metadata(asset.asset_record)
+    metadata = compat.xmp_metadata(asset.asset_record)
     # Date and orientation are in the file's EXIF already; skip sidecars that add nothing.
     if metadata is None or not any(getattr(metadata, name) for name in XMP_WORTH_KEEPING):
         return None
-    element = materialize._render_xmp_xml(metadata)
+    element = compat.render_xmp(metadata)
     return cast(bytes, ElementTree.tostring(element, encoding="utf-8", xml_declaration=True))
 
 
@@ -809,16 +803,14 @@ def _aware(value: datetime) -> datetime:
 
 def pyicloud_lookup(library: Any, asset_ids: list[str], master_ids: list[str]) -> list[Any]:
     """Fetch assets of a pyicloud CloudKit library by record name in one request."""
-    models = importlib.import_module("pyicloud.common.cloudkit.models")
-    mappers = importlib.import_module("pyicloud.services.photos_cloudkit.mappers")
-    client = getattr(library, "_client", None)
+    client = compat.cloudkit_client(library)
     if client is None:
         raise RuntimeError("this pyicloud session has no CloudKit client")
     response = client.lookup(
-        record_names=[*asset_ids, *master_ids], zone_id=models.CKZoneIDReq(**library.zone_id)
+        record_names=[*asset_ids, *master_ids], zone_id=compat.zone_id_request(library.zone_id)
     )
-    records = [record for record in response.records if isinstance(record, models.CKRecord)]
-    assets_by_master, masters = mappers.master_asset_pairs(records)
+    records = [record for record in response.records if compat.is_record(record)]
+    assets_by_master, masters = compat.master_asset_pairs(records)
     return [
         library.asset_type(
             library.service, master, assets_by_master[master.recordName], library=library
@@ -835,43 +827,38 @@ def pyicloud_open_zones(photos: Any) -> tuple[dict[str, Any], dict[str, Indexing
     pyicloud opens every zone of the private database and gives up on the first one
     Apple is still indexing, even one no backup reads.
     """
-    service_module = importlib.import_module("pyicloud.services.photos_cloudkit.service")
-    models = importlib.import_module("pyicloud.common.cloudkit.models")
-    queries = importlib.import_module("pyicloud.services.photos_cloudkit.queries")
     client = photos.private_client
-    opened: dict[str, Any] = {PERSONAL_KEY: photos._root_library}
+    opened: dict[str, Any] = {PERSONAL_KEY: compat.root_library(photos)}
+    primary = compat.primary_zone_name()
     waiting: dict[str, Indexing] = {}
     for zone in client.zones_list().zones:
         name = zone.zoneID.zoneName
         if zone.deleted:
             continue
-        if name == service_module.PRIMARY_ZONE["zoneName"]:
+        if name == primary:
             opened[PERSONAL_KEY].current_sync_token = zone.syncToken
             continue
-        shared = service_module._is_shared_library_zone_name(name)
+        shared = compat.is_shared_library_zone(name)
         key = f"{SHARED_PREFIX}{name}" if shared else name
         zone_id = zone.zoneID.model_dump(exclude_none=True)
         try:
-            opened[key] = service_module.PhotoLibrary(
-                photos, zone_id=zone_id, client=client,
-                scope="shared-library" if shared else "private",
-            )  # fmt: skip
+            opened[key] = compat.open_library(photos, zone_id, client, shared=shared)
         except Exception as exc:
             if not _indexing(exc):
                 raise
-            waiting[key] = _indexing_state(client, models, queries, zone_id)
+            waiting[key] = _indexing_state(client, zone_id)
     return opened, waiting
 
 
-def _indexing_state(client: Any, models: Any, queries: Any, zone_id: dict[str, Any]) -> Indexing:
+def _indexing_state(client: Any, zone_id: dict[str, Any]) -> Indexing:
     try:
         response = client.query(
-            query=queries.check_indexing_state_query(),
-            zone_id=models.CKZoneIDReq(**zone_id),
+            query=compat.indexing_state_query(),
+            zone_id=compat.zone_id_request(zone_id),
             results_limit=1,
         )
         for record in response.records:
-            if isinstance(record, models.CKRecord):
+            if compat.is_record(record):
                 state = record.fields.get_value("state")
                 progress = record.fields.get_value("progress")
                 return Indexing(
