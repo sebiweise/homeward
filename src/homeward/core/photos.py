@@ -14,7 +14,6 @@ a photo) are removed when a photo leaves an album.
 import logging
 import os
 import re
-import secrets
 import shutil
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -26,8 +25,9 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol
 
+from homeward.core.files import link_noreplace, rename_noreplace, temp_name
 from homeward.core.photo_state import PhotoRecord, PhotoStateDB
-from homeward.core.rules import TEMP_SUFFIX, TRASH_DIR
+from homeward.core.rules import TRASH_DIR
 
 log = logging.getLogger(__name__)
 
@@ -619,7 +619,7 @@ class PhotoExecutor:
         item = _need(action.item)
         target = self.root / action.path
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}{TEMP_SUFFIX}")
+        tmp = temp_name(target)
         try:
             with self.source.open_read(item) as stream, tmp.open("xb") as out:
                 shutil.copyfileobj(stream, out, _CHUNK)
@@ -630,7 +630,7 @@ class PhotoExecutor:
                 raise OSError(f"incomplete download: {size} of {item.size} bytes")
             stamp = item.created.timestamp()
             os.utime(tmp, (stamp, stamp))
-            os.link(tmp, target)  # never replaces an existing file
+            rename_noreplace(tmp, target)  # never replaces an existing file
         finally:
             tmp.unlink(missing_ok=True)
         return size
@@ -656,16 +656,16 @@ class PhotoExecutor:
     def _link(self, target: Path, link: Path) -> None:
         link.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.link(target, link)
+            link_noreplace(target, link)
         except OSError as exc:
             if link.exists():
                 raise
             # File systems without hard links get a copy instead.
             log.info("hard link %s failed (%s), copying instead", link, exc)
-            tmp = link.with_name(f".{link.name}.{secrets.token_hex(4)}{TEMP_SUFFIX}")
+            tmp = temp_name(link)
             try:
                 shutil.copy2(target, tmp)
-                os.link(tmp, link)
+                rename_noreplace(tmp, link)
             finally:
                 tmp.unlink(missing_ok=True)
 

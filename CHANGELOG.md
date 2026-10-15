@@ -3,6 +3,15 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
+## [Unreleased]
+
+### Fixed
+
+- Photos (and files from iCloud Drive) now show up in Synology Photos. Homeward used
+  to hard-link a finished download into place, which DSM's indexer does not notice;
+  it now renames it into place, still never replacing an existing file. Photos backed
+  up before this fix need a one-time re-index in Synology Photos.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added
