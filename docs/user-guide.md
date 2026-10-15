@@ -283,5 +283,4 @@ for example after many photos were added or edited on a device. Homeward then wa
 to 3 minutes within the run and otherwise tries again 15 minutes later; the log names
 the library and, when Apple reports it, how far the indexing is ("the Shared Library
 (73 %)"). Only the libraries the backup includes count: indexing of another library is
-logged and skipped. If it lasts for days, open icloud.com/photos once; that usually
-gets Apple's indexing going.
+logged and skipped.
