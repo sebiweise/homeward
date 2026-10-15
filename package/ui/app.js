@@ -1186,7 +1186,9 @@ async function photosDialog(job) {
             LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
             PHOTO_SWITCHES.map((key) => checkbox(key, t("photos:" + key), j[key])),
-            el("p", { class: "hint", text: t("photos:mirror_deletes_hint") })),
+            el("p", { class: "hint", text: t("photos:mirror_deletes_hint") }),
+            field(t("photos:album_names"), el("textarea", { name: "album_names", text: (j.album_names || []).join("\n") }),
+                t("photos:album_names_hint"))),
         el("fieldset", {}, el("legend", { text: t("photos:folders") }),
             checkbox("source_folders", t("photos:source_folders"), j.source_folders),
             el("p", { class: "hint", text: t("photos:source_folders_hint") }),
@@ -1194,9 +1196,23 @@ async function photosDialog(job) {
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
         jobIntervalField(j.interval_minutes),
+        el("details", { class: "advanced" }, el("summary", { text: t("photos:advanced") }),
+            el("div", { class: "row" },
+                field(t("pair:brake_ratio"), el("input", { name: "ratio", type: "number", min: 0, max: 100, step: 1, value: Math.round(j.max_delete_ratio * 100) })),
+                field(t("pair:brake_count"), el("input", { name: "count", type: "number", min: 0, step: 1, value: j.max_delete_count }))),
+            el("div", { class: "row" },
+                field(t("photos:trash_days"), el("input", { name: "trash_days", type: "number", min: 0, max: 3650, step: 1, value: j.trash_days }),
+                    t("photos:trash_days_hint")),
+                field(t("photos:workers"), el("input", { name: "workers", type: "number", min: 1, max: 8, step: 1, value: j.workers }),
+                    t("photos:workers_hint")))),
     ];
     openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
         const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
+        photos.album_names = v.album_names.split("\n").map((s) => s.trim()).filter(Boolean);
+        photos.max_delete_ratio = Number(v.ratio) / 100;
+        photos.max_delete_count = Number(v.count);
+        photos.trash_days = Number(v.trash_days);
+        photos.workers = Number(v.workers);
         photos.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
         for (const key of PHOTO_SWITCHES) photos[key] = v[key] === "on";
         photos.source_folders = v.source_folders === "on";

@@ -16,7 +16,9 @@ from homeward.api.auth import DsmAuthenticator
 from homeward.api.cgi import handle, write_response
 from homeward.api.errors import ApiError
 from homeward.api.store import KEEP_BACKUPS, ConfigStore
+from homeward.core.config import parse_config
 from homeward.core.models import FileMeta
+from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
 from homeward.runtime import (
     Level,
@@ -465,6 +467,9 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
     assert defaults["hidden"] is False
     assert defaults["xmp"] is True
     assert defaults["source_folders"] is True
+    assert defaults["interval_minutes"] == 30  # what the dialog offers for a new backup
+    assert (defaults["max_delete_ratio"], defaults["max_delete_count"]) == (0.1, 50)
+    assert (defaults["trash_days"], defaults["workers"], defaults["album_names"]) == (30, 4, [])
 
     created = client.call("photos.create", post=True, photos=_photos(tmp_path))
     assert created["libraries"] == ["personal", "shared", "shared_albums"]
@@ -480,8 +485,16 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
         folder_scheme="{year}/{month}/{day}",
         albums_folder="Meine Alben",
         interval_minutes=720,
+        max_delete_ratio=0.25,
+        max_delete_count=100,
+        trash_days=0,
+        workers=2,
+        album_names=[" Urlaub ", "", "Familie", "Urlaub"],
     )
     updated = client.call("photos.update", post=True, photos=changed)
+    assert updated["album_names"] == ["Urlaub", "Familie"]
+    assert (updated["max_delete_ratio"], updated["max_delete_count"]) == (0.25, 100)
+    assert (updated["trash_days"], updated["workers"]) == (0, 2)
     assert updated["interval_minutes"] == 720
     assert updated["hidden"] is True
     assert updated["videos"] is False
@@ -494,6 +507,10 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
     assert job["apple_id"] == "a@b.de"
     assert job["albums_folder"] == "Meine Alben"
     assert job["source_folders"] is False
+    config = parse_config(raw, base=client.paths.config.parent).photos[0]
+    assert config.album_names == ("Urlaub", "Familie")
+    assert config.delete_brake == DeleteBrake(max_ratio=0.25, max_count=100)
+    assert (config.trash_days, config.workers) == (0, 2)
     assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]
 
     with pytest.raises(ApiError) as excinfo:
@@ -525,6 +542,12 @@ def test_photos_validation(client: Client, tmp_path: Path) -> None:
         {"source_folders": 0},
         {"albums_folder": "a/b"},
         {"folder_scheme": "../{year}"},
+        {"max_delete_ratio": 1.5},
+        {"max_delete_count": 2.5},
+        {"trash_days": -1},
+        {"workers": 9},
+        {"workers": True},
+        {"album_names": "Urlaub"},
     )
     for bad in bad_values:
         invalid = _photos(tmp_path, **bad)

@@ -310,6 +310,7 @@ def _photo_source(config: Config, job: PhotosConfig, progress: Progress) -> Phot
             favorites=job.favorites,
             hidden=job.hidden,
             xmp=job.xmp,
+            album_names=job.album_names,
         ),
         progress=progress,
     )

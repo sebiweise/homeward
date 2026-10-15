@@ -67,6 +67,7 @@ class PhotosConfig:
     apple_id: str | None = None
     libraries: tuple[Library, ...] = tuple(Library)
     albums: bool = True
+    album_names: tuple[str, ...] = ()  # only these albums become folders; empty: all
     videos: bool = True
     live_videos: bool = True
     raw_alternative: bool = True  # the second file of RAW+JPEG shots
@@ -192,6 +193,9 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
         raise ConfigError(f"{where}: 'workers' must be a whole number from 1 to {MAX_WORKERS}")
     brake, trash_days = _brake_and_trash(entry, where)
+    album_names = _get(entry, "album_names", list, [], where)
+    if not all(isinstance(n, str) for n in album_names):
+        raise ConfigError(f"{where}: album_names must be a list of strings")
     return PhotosConfig(
         name=name,
         target=target,
@@ -199,6 +203,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         apple_id=apple_id,
         libraries=libraries,
         albums=_get_bool(entry, "albums", True, where),
+        album_names=tuple(album_names),
         videos=_get_bool(entry, "videos", True, where),
         live_videos=_get_bool(entry, "live_videos", True, where),
         raw_alternative=_get_bool(entry, "raw_alternative", True, where),

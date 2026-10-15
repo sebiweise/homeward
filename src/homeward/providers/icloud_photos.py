@@ -107,6 +107,7 @@ class PhotoOptions:
     favorites: bool = True
     hidden: bool = False
     xmp: bool = True
+    album_names: tuple[str, ...] = ()  # only these albums (and favorites); empty: all
 
 
 class ICloudPhotosSource(PhotoSource):
@@ -169,7 +170,12 @@ class ICloudPhotosSource(PhotoSource):
         return "|".join(parts)
 
     def _options(self) -> str:
-        return "".join("1" if on else "0" for on in astuple(self.options))
+        switches = (on for on in astuple(self.options) if isinstance(on, bool))
+        text = "".join("1" if on else "0" for on in switches)
+        if self.options.album_names:
+            names = "\n".join(sorted(self.options.album_names)).encode()
+            text += "-" + hashlib.sha256(names).hexdigest()[:12]
+        return text
 
     def list_items(self) -> Iterator[PhotoItem]:
         self._urls.clear()
@@ -511,6 +517,9 @@ class ICloudPhotosSource(PhotoSource):
         members: dict[str, set[str]] = defaultdict(set)
         if self.options.albums:
             albums = [a for a in library.albums if type(a).__name__ == USER_ALBUM_CLASS]
+            if self.options.album_names:
+                wanted = set(self.options.album_names)
+                albums = [a for a in albums if a.fullname in wanted]
             if Library.PERSONAL not in self.wanted:
                 # Albums belong to the Apple ID, not to a library: they can hold
                 # Shared Library photos, which get their album folders this way.
