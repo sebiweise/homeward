@@ -3,7 +3,7 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-15
 
 ### Added
 
@@ -77,4 +77,5 @@ anything you point it at.
 - Command-line interface (`homeward sync`, `homeward photos`, `homeward login`) and an
   interval scheduler service.
 
+[0.2.0]: https://github.com/sebiweise/homeward/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sebiweise/homeward/releases/tag/v0.1.0
