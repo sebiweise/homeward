@@ -172,6 +172,7 @@ class PhotoActionKind(StrEnum):
     DOWNLOAD = "download"  # new photo
     RESTORE = "restore"  # known photo whose NAS file is missing
     REPLACE = "replace"  # the original changed in iCloud; old file goes to the trash
+    MOVE = "move"  # moved to another library (e.g. into the Shared Library): file follows
     LINK = "link"  # add a photo to an album folder
     UNLINK = "unlink"  # the photo left the album; its Year/Month file stays
     GONE = "gone"  # deleted in iCloud; the NAS copy stays
@@ -195,6 +196,7 @@ class PhotoAction:
     key: str = ""
     target: str | None = None  # LINK/UNLINK: the Year/Month file the link points to
     album: str = ""  # LINK/UNLINK
+    moved_from: str = ""  # MOVE: the key the photo had in its old library
 
 
 @dataclass(slots=True)

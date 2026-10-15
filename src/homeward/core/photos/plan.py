@@ -168,7 +168,12 @@ def build_photo_plan(
         progress.phase("planning", total=len(changes))
         changed = {i.key for i in changes}
         plan.actions = [a for a in plan.actions if a.key not in changed]  # back in iCloud
-        _, wanted_links = _plan_items(plan, changes, root, records, paths, layout, progress, albums)
+        moves = _Moves(root, records, changed)
+        _, wanted_links = _plan_items(
+            plan, changes, root, records, paths, layout, progress, albums, moves
+        )
+        plan.actions = [a for a in plan.actions if a.key not in moves.old_keys]
+        links = moves.rekey(links)
         fetched = {a.key for a in plan.actions if a.kind in FILE_KINDS}
         plan.up_to_date = sum(
             1 for k, r in records.items() if r.gone_at is None and k not in fetched
@@ -180,7 +185,13 @@ def build_photo_plan(
     progress.phase("listing")  # the source sets the total once it knows it
     items = sorted(source.list_items(), key=lambda i: (i.created, i.key))
     progress.phase("planning", total=len(items))
-    seen, wanted_links = _plan_items(plan, items, root, records, paths, layout, progress, albums)
+    listed = {i.key for i in items}
+    moves = _Moves(root, records, listed)
+    seen, wanted_links = _plan_items(
+        plan, items, root, records, paths, layout, progress, albums, moves
+    )
+    seen |= moves.old_keys  # moved, not deleted
+    links = moves.rekey(links)
     delete = mirror_deletes and _same_selection(job, state, selection)
     live = sum(1 for r in records.values() if r.gone_at is None)
     for key, record in sorted(records.items()):
@@ -252,9 +263,11 @@ def _plan_items(
     layout: PhotoLayout,
     progress: Progress,
     albums: bool,
+    moves: "_Moves",
 ) -> tuple[set[str], dict[tuple[str, str], str]]:
-    """Download what is new, restore or replace what changed. Returns the keys seen in
-    iCloud and the album links wanted, as (key, album) -> primary path."""
+    """Download what is new, restore or replace what changed, move what changed library.
+    Returns the keys seen in iCloud and the album links wanted, as (key, album) ->
+    primary path."""
     wanted_links: dict[tuple[str, str], str] = {}
     # key -> NAS path, for placing sidecars (next to a photo of an earlier run, too)
     assigned = {key: record.path for key, record in records.items()}
@@ -265,7 +278,15 @@ def _plan_items(
             continue
         seen.add(item.key)
         record = records.get(item.key)
-        if record is None:
+        old = moves.match(item) if record is None else None
+        if old is not None:
+            wanted = _new_path(item, layout, assigned)
+            path = old.path if str(wanted) == old.path else paths.claim(wanted)
+            plan.actions.append(
+                PhotoAction(PhotoActionKind.MOVE, path, item, item.key, target=old.path,
+                            moved_from=old.key)
+            )  # fmt: skip
+        elif record is None:
             path = paths.claim(_new_path(item, layout, assigned))
             plan.actions.append(PhotoAction(PhotoActionKind.DOWNLOAD, path, item, item.key))
         else:
@@ -280,6 +301,48 @@ def _plan_items(
             for album in item.albums:
                 wanted_links[(item.key, album)] = path
     return seen, wanted_links
+
+
+class _Moves:
+    """Photos that moved to another library in iCloud, e.g. into the Shared Library.
+
+    Their key changes with the library (``personal/...`` to ``shared/...``), so the
+    move looks like a new photo plus a deleted one. A new file whose checksum and
+    resource match a backed-up file of another library that this run did not list
+    (any longer) is that file: it is moved on the NAS instead of downloaded again,
+    and the old one is not counted as deleted.
+    """
+
+    def __init__(self, root: Path, records: dict[str, PhotoRecord], listed: set[str]) -> None:
+        self._by_content: dict[tuple[str, str], PhotoRecord] = {}
+        for key, record in sorted(records.items()):
+            if record.checksum and key not in listed and (root / record.path).exists():
+                self._by_content.setdefault((_resource(key), record.checksum), record)
+        self.old_keys: set[str] = set()
+        self._new_keys: dict[str, str] = {}  # old key -> new key
+
+    def match(self, item: PhotoItem) -> PhotoRecord | None:
+        if item.checksum is None:
+            return None
+        record = self._by_content.get((item.resource, item.checksum))
+        if record is None or _library(record.key) == str(item.library):
+            return None
+        del self._by_content[(item.resource, item.checksum)]
+        self.old_keys.add(record.key)
+        self._new_keys[record.key] = item.key
+        return record
+
+    def rekey(self, links: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
+        """The album links of moved photos belong to their new key."""
+        return {path: (self._new_keys.get(key, key), album) for path, (key, album) in links.items()}
+
+
+def _resource(key: str) -> str:
+    return key.rsplit("/", 1)[-1]
+
+
+def _library(key: str) -> str:
+    return key.split("/", 1)[0]
 
 
 def _new_path(item: PhotoItem, layout: PhotoLayout, assigned: dict[str, str]) -> PurePosixPath:

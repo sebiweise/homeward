@@ -187,6 +187,8 @@ class PhotoExecutor:
                 self._trash(action.path)
                 self._download(action)
                 self._relink(action.key, action.path, old)
+            case PhotoActionKind.MOVE:
+                self._move(action)
             case PhotoActionKind.LINK:
                 target = self.root / _need(action.target)
                 self._link(target, self.root / action.path)
@@ -281,6 +283,21 @@ class PhotoExecutor:
         if target.exists():
             self._trash(action.path)
         self.state.forget(self.job, action.key)
+
+    def _move(self, action: PhotoAction) -> None:
+        """Follow a photo into its new library: same file, new place and key. Its
+        album links are hard links to the same file and only change their key."""
+        item, old_path = _need(action.item), _need(action.target)
+        if action.path != old_path:
+            target = self.root / action.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            rename_noreplace(self.root / old_path, target)
+        size = (self.root / action.path).stat().st_size
+        self.state.record(self.job, item.key, action.path, size, item.checksum)
+        for path, (key, album) in self.state.links(self.job).items():
+            if key == action.moved_from:
+                self.state.add_link(self.job, path, item.key, album)
+        self.state.forget(self.job, action.moved_from)
 
     def _relink(self, key: str, target_path: str, old: os.stat_result) -> None:
         """After a replace, point the album links of ``key`` at the new file."""
