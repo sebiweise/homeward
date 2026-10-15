@@ -134,8 +134,10 @@ Optional settings with their defaults:
 | `favorites_folder` | `"Favoriten"` | folder for favorites |
 | `hidden_folder` | `"Ausgeblendet"` | folder for hidden photos |
 | `shared_albums_folder` | `"Geteilte Alben"` | folder for shared albums |
+| `source_folders` | `true` | `false` puts the Shared Library and shared albums straight into the target folder, for a backup of just one of them |
 
-Switching an option off later keeps the files it already produced.
+Switching an option off later keeps the files it already produced. Folder changes
+apply to newly downloaded photos; photos already on the NAS keep their place.
 
 ### iCloud Drive pairs
 
