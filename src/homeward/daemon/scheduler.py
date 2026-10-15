@@ -60,6 +60,8 @@ MAX_PARALLEL_RUNS = 2
 # A run iCloud was not ready for (e.g. still indexing) is tried again this soon,
 # instead of after the whole interval.
 WAITING_RETRY_MINUTES = 15
+# A job without a successful run for this long warns in the UI and notifies DSM once.
+STALE_DAYS = 3
 
 # homeward.log is rotated at this size, keeping this many old files (homeward.log.1 ...).
 LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -106,6 +108,9 @@ class JobStatus:
     finished_at: float | None = None
     exit_code: int | None = None
     result: str | None = None
+    last_success: float | None = None  # end of the last successful (real) run
+    tracked_since: float | None = None  # start of the first run, until one succeeds
+    stale_notified: bool = False  # the "not backed up" notification went out
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,10 +347,17 @@ class Scheduler:
 
     def _begin(self, job: Job, record: bool) -> tuple[JobStatus, str | None]:
         """Mark the job as running; returns its new status and its previous result."""
-        status = JobStatus(started_at=self._clock())
+        now = self._clock()
         name = _running_name(job)
         with self._lock:
-            previous = self.status.get(job.name, JobStatus()).result
+            old = self.status.get(job.name, JobStatus())
+            previous = old.result
+            status = JobStatus(
+                started_at=now,
+                last_success=old.last_success,
+                tracked_since=old.tracked_since or now,
+                stale_notified=old.stale_notified,
+            )
             if record:
                 self._forced.discard(job.name)
                 self.status[job.name] = status
@@ -371,6 +383,9 @@ class Scheduler:
             status.result = _RESULTS.get(code, "killed" if code < 0 else "failed")
             if status.result == "killed" and name in self.cancelled:
                 status.result = "cancelled"
+            if status.result == "ok" and not dry_run:
+                status.last_success = status.finished_at
+                status.stale_notified = False
             notify_login = status.result == "login_required" and self._first_login_needed(
                 job, previous
             )
@@ -387,6 +402,32 @@ class Scheduler:
             self.running.discard(name)
             self.cancelled.discard(name)
             self.save()
+
+    def check_stale(self) -> list[Job]:
+        """Warn once about every job without a successful run for ``STALE_DAYS``
+        (or, never successful, since its first run); returns the jobs warned about."""
+        now = self._clock()
+        warned = []
+        with self._lock:
+            for job in self.jobs:
+                status = self.status.get(job.name)
+                since = status and (status.last_success or status.tracked_since)
+                if not status or not since or status.stale_notified:
+                    continue
+                days = int((now - since) // 86400)
+                if days < STALE_DAYS:
+                    continue
+                status.stale_notified = True
+                warned.append((job, days))
+            if warned:
+                self._save()
+        for job, days in warned:
+            log.warning("%s has not been backed up for %d days", job.name, days)
+            record_event(Level.WARNING, job.name, "not_backed_up",
+                         f"no successful run for {days} days", paths=self.events,
+                         days=days)  # fmt: skip
+            self._notify(Event.NOT_BACKED_UP, job.name.split(":", 1)[-1], str(days))
+        return [job for job, _days in warned]
 
     def _first_login_needed(self, job: Job, previous: str | None) -> bool:
         """Notify once per account: not again while this or another job of the same
@@ -463,6 +504,9 @@ class Scheduler:
                     finished_at=entry.get("finished_at"),
                     exit_code=entry.get("exit_code"),
                     result=entry.get("result"),
+                    last_success=entry.get("last_success"),
+                    tracked_since=entry.get("tracked_since"),
+                    stale_notified=bool(entry.get("stale_notified", False)),
                 )
                 for name, entry in jobs.items()
             }
@@ -600,6 +644,7 @@ class Daemon:
                 self.scheduler.run_all_now()
             self.run_requests()
             self.scheduler.start_due(self.stop)
+            self.scheduler.check_stale()
             self.scheduler.save()
 
     def run_requests(self) -> None:

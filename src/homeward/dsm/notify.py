@@ -25,6 +25,7 @@ class Event(StrEnum):
     DELETE_BRAKE = "delete_brake"  # names the pair
     LOGIN_NEEDED = "login_needed"  # names the account
     CONFLICTS = "conflicts"  # names the pair and the number of conflict copies
+    NOT_BACKED_UP = "not_backed_up"  # names the job and the days since its last success
 
 
 def notify(event: Event, *args: str, binary: str = SYNODSMNOTIFY) -> bool:

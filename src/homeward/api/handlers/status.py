@@ -16,7 +16,8 @@ from homeward.api.handlers.common import (
     package_version,
 )
 from homeward.api.server import Context, Request
-from homeward.core.photo_state import gone_counts
+from homeward.core.photo_state import gone_counts, totals
+from homeward.daemon.scheduler import STALE_DAYS
 from homeward.runtime import (
     CancelRequest,
     Event,
@@ -46,25 +47,32 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
     for pair in config.pairs:
         with existing_state(config, pair.account) as state:
             runs = state.runs(pair.name, limit=1) if state else []
+            files, size = state.totals(pair.name) if state else (0, 0)
         pairs.append(
             {
                 "name": pair.name,
                 "account": pair.account,
                 "mode": pair.mode.value,
                 "last_run": asdict(runs[0]) if runs else None,
+                "files": files,
+                "bytes": size,
                 "job": jobs.get(f"pair:{pair.name}"),
                 "pending": pair.name in pending,
                 "progress": _progress(ctx, daemon, pair.name, f"pair:{pair.name}"),
             }
         )
     gone: dict[str, dict[str, int]] = {}
+    sizes: dict[str, dict[str, tuple[int, int]]] = {}
     for account in {job.account for job in config.photos}:
         gone[account] = gone_counts(config.photo_state_path(account))
+        sizes[account] = totals(config.photo_state_path(account))
     photos = [
         {
             "name": job.name,
             "account": job.account,
             "gone": gone[job.account].get(job.name, 0),  # deleted in iCloud, kept on the NAS
+            "files": sizes[job.account].get(job.name, (0, 0))[0],
+            "bytes": sizes[job.account].get(job.name, (0, 0))[1],
             "job": jobs.get(f"photos:{job.name}"),
             "pending": f"photos:{job.name}" in pending,
             "progress": _progress(ctx, daemon, f"photos:{job.name}", f"photos:{job.name}"),
@@ -76,6 +84,7 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
         "api_user": _user(),
         "daemon": daemon,
         "interval_minutes": config.interval_minutes,
+        "stale_days": STALE_DAYS,
         "pairs": pairs,
         "photos": photos,
         "notices": notices(ctx),

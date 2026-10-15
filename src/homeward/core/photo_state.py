@@ -166,3 +166,23 @@ def gone_counts(path: Path) -> dict[str, int]:
     finally:
         conn.close()
     return {str(job): int(count) for job, count in rows}
+
+
+def totals(path: Path) -> dict[str, tuple[int, int]]:
+    """Per job, the number and total size of the photos on the NAS (read-only, as
+    ``gone_counts``)."""
+    return _read_only(path, "SELECT job, COUNT(*), COALESCE(SUM(size), 0) FROM photos GROUP BY job")
+
+
+def _read_only(path: Path, query: str) -> dict[str, tuple[int, int]]:
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute(query).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {str(name): (int(count), int(size)) for name, count, size in rows}

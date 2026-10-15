@@ -24,6 +24,15 @@ none="Noch nichts vorhanden."
 version="Version {0}"
 
 [status]
+safe_title="Ist alles gesichert?"
+safe_job="Job"
+safe_last="Zuletzt erfolgreich"
+safe_files="Dateien"
+safe_size="Größe"
+safe_never="noch nie"
+safe_ok="Alle Jobs waren in den letzten {0} Tagen erfolgreich."
+safe_stale="{0} Job(s) seit über {1} Tagen ohne erfolgreichen Lauf."
+safe_stale_badge="seit {0} Tagen nicht gesichert"
 approve_confirm_photos="Die Löschbremse hat beim letzten Lauf von {0} das Löschen auf dem NAS angehalten (Details im Protokoll). Gelöschte Fotos landen im Papierkorb (#recycle des freigegebenen Ordners, sonst .homeward-papierkorb). Jetzt mit diesen Löschungen sichern?"
 pair="Paar"
 mode="Modus"
@@ -206,6 +215,7 @@ source="Betrifft"
 event="Ereignis"
 
 [event]
+not_backed_up="Seit mehr als 3 Tagen kein erfolgreicher Lauf. Prüfe die Hinweise und das Protokoll dieses Jobs."
 level_info="Info"
 level_warning="Warnung"
 level_error="Fehler"
@@ -276,6 +286,7 @@ folder_exists="Ein Ordner mit diesem Namen existiert bereits: {0}"
 invalid_interval="Das Intervall muss eine ganze Zahl von Minuten sein ({0})."
 
 [notify]
+not_backed_up="{0} wurde seit {1} Tagen nicht erfolgreich gesichert."
 sync_failed="{0}: Der letzte Lauf endete mit Fehlern. Details im Ereignis-Protokoll von Homeward."
 delete_brake="{0} wurde von der Löschbremse gestoppt. Gib die Löschungen in Homeward frei."
 login_needed="Apple-ID {0} muss in Homeward neu angemeldet werden."

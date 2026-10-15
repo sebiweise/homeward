@@ -556,3 +556,53 @@ def test_jobs_of_different_apple_ids_run_side_by_side(tmp_path: Path) -> None:
     assert scheduler.start_due() == [drive_me, folder_pair]
     scheduler.wait()
     assert scheduler.running == set()
+
+
+def test_a_job_without_success_for_days_warns_once(tmp_path: Path) -> None:
+    from homeward.daemon.scheduler import STALE_DAYS
+
+    sent: list[tuple[str, ...]] = []
+    clock = Clock()
+    runner = Recorder(code=0)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append((e, *a))
+    )
+    job, other = Job("photos:fotos", ("photos",)), Job("pair:docs", ("sync",))
+    scheduler.jobs = [job, other]
+    scheduler.run(job)
+    assert scheduler.status[job.name].last_success == clock.now
+    assert scheduler.check_stale() == []  # the other job never ran: nothing to judge yet
+
+    runner.code = 1  # from now on every run fails
+    clock.now += 86400
+    scheduler.run(job)
+    scheduler.run(Job("photos:fotos", ("photos", "--dry-run")))  # a dry run is no backup
+    clock.now += (STALE_DAYS - 1) * 86400
+    assert scheduler.check_stale() == [job]
+    assert scheduler.check_stale() == []  # once only
+    assert sent[-1] == ("not_backed_up", "fotos", str(STALE_DAYS))
+
+    # the flag and the last success survive a restart; a success re-arms the warning
+    restarted = Scheduler(tmp_path / "status.json", runner, clock, notifier=lambda e, *a: True)
+    restarted.jobs = [job]
+    assert restarted.status[job.name].stale_notified
+    runner.code = 0
+    restarted.run(job)
+    assert not restarted.status[job.name].stale_notified
+    assert restarted.status[job.name].last_success == clock.now
+
+
+def test_a_job_that_never_succeeded_warns_after_days(tmp_path: Path) -> None:
+    from homeward.daemon.scheduler import STALE_DAYS
+
+    clock = Clock()
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=6), clock, notifier=lambda *a: True
+    )
+    job = Job("pair:docs", ("sync",))
+    scheduler.jobs = [job]
+    scheduler.run(job)
+    clock.now += STALE_DAYS * 86400
+    scheduler.run(job)
+    assert scheduler.status[job.name].tracked_since == 1_000_000.0
+    assert scheduler.check_stale() == [job]

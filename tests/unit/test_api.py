@@ -352,6 +352,8 @@ def test_status_shows_last_run_and_daemon(client: Client, tmp_path: Path) -> Non
 
     status = client.call("status.get")
     assert status["daemon"] == {"running": "docs"}
+    assert status["stale_days"] == 3
+    assert (status["pairs"][0]["files"], status["pairs"][0]["bytes"]) == (0, 0)
     last = status["pairs"][0]["last_run"]
     assert last["started_at"] == 2.0
     assert last["blocked"] == "too many"
@@ -913,7 +915,8 @@ def test_photos_cleanup_shows_the_count_and_queues_a_request(
         state.mark_gone("fotos", "b")
         state.record("other", "x", "x.jpg", 1, None)
         state.mark_gone("other", "x")
-    assert client.call("status.get")["photos"][0]["gone"] == 2
+    photos = client.call("status.get")["photos"][0]
+    assert (photos["gone"], photos["files"], photos["bytes"]) == (2, 3, 3)
 
     client.call("photos.run", post=True, name="fotos", remove_gone="true")
     (request,) = take_requests(client.paths)

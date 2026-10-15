@@ -24,6 +24,15 @@ none="Nothing here yet."
 version="Version {0}"
 
 [status]
+safe_title="Is everything backed up?"
+safe_job="Job"
+safe_last="Last success"
+safe_files="Files"
+safe_size="Size"
+safe_never="never"
+safe_ok="Every job succeeded within the last {0} days."
+safe_stale="{0} job(s) without a successful run for more than {1} days."
+safe_stale_badge="not backed up for {0} days"
 approve_confirm_photos="The delete brake held back deletions on the NAS in the last run of {0} (see the log). Deleted photos go to the trash (the shared folder's #recycle, else .homeward-papierkorb). Back up now with these deletions?"
 pair="Pair"
 mode="Mode"
@@ -206,6 +215,7 @@ source="About"
 event="Event"
 
 [event]
+not_backed_up="No successful run for more than 3 days. Check this job's notices and log."
 level_info="Info"
 level_warning="Warning"
 level_error="Error"
@@ -276,6 +286,7 @@ folder_exists="A folder with this name already exists: {0}"
 invalid_interval="The interval must be a whole number of minutes ({0})."
 
 [notify]
+not_backed_up="{0} has not been backed up successfully for {1} days."
 sync_failed="{0}: the last run finished with errors. Details are in Homeward's event log."
 delete_brake="{0} was stopped by the delete brake. Approve the deletions in Homeward."
 login_needed="Apple ID {0} needs to sign in again in Homeward."

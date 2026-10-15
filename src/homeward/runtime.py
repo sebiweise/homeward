@@ -226,6 +226,7 @@ EVENT_CODES = (
     "config_error",  # the config file is invalid; nothing runs until it is fixed
     "already_running",  # another run for the same account still holds the lock
     "folder_missing",  # a synced folder is gone; the run stopped before changing anything
+    "not_backed_up",  # no successful run for ``STALE_DAYS``; ``days`` says how long
     "notices_cleared",  # the user cleared the notices on the status page
     "sync_summary",  # what a run did; ``counts`` maps an action kind to a number
 )

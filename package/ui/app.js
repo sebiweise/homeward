@@ -1029,6 +1029,41 @@ function daemonState(daemon) {
     return Object.keys(daemon).length ? { cls: "ok", text: t("status:daemon_idle") } : { cls: "warn", text: t("status:daemon_unknown") };
 }
 
+// Days since a job last succeeded (or, never successful, since its first run); null if
+// it has not run yet.
+function staleDays(job) {
+    const status = job.item.job;
+    const since = status?.last_success || status?.tracked_since;
+    return since ? Math.floor((Date.now() / 1000 - since) / 86400) : null;
+}
+
+function safeCard() {
+    const all = jobs();
+    if (!all.length) return null;
+    const limit = data.status?.stale_days || 3;
+    const stale = all.filter((job) => (staleDays(job) ?? 0) >= limit);
+    const rows = all.map((job) => {
+        const days = staleDays(job);
+        const last = job.item.job?.last_success;
+        return el("tr", {}, [
+            el("a", { href: "#", text: job.name, onclick: (e) => { e.preventDefault(); choose(job.key); } }),
+            el("span", {}, last ? formatTime(last) : t("status:safe_never"),
+                (days ?? 0) >= limit ? " " : null,
+                (days ?? 0) >= limit ? badge("warn", t("status:safe_stale_badge", days)) : null),
+            formatNumber(job.item.files || 0),
+            formatBytes(job.item.bytes || 0),
+        ].map((cell) => el("td", {}, cell)));
+    });
+    return el(
+        "section",
+        { class: "card" },
+        el("h3", { text: t("status:safe_title") }),
+        el("p", { class: stale.length ? "warn-text" : "muted",
+            text: stale.length ? t("status:safe_stale", stale.length, limit) : t("status:safe_ok", limit) }),
+        table([t("status:safe_job"), t("status:safe_last"), t("status:safe_files"), t("status:safe_size")], rows)
+    );
+}
+
 function serviceOverview() {
     const status = data.status || {};
     const state = daemonState(status.daemon || {});
@@ -1041,6 +1076,7 @@ function serviceOverview() {
     ];
     return [
         headCard(state.cls, t("nav:service_title"), state.text, [change]),
+        safeCard(),
         noticesCard(status.notices || [], null),
         infoCard(t("ui:details"), rows),
     ].filter(Boolean);
