@@ -29,6 +29,7 @@ from typing import Any, Protocol
 from homeward.api.accounts import AccountBackend, LoginResult, SessionState
 from homeward.api.errors import ApiError
 from homeward.api.store import ConfigStore
+from homeward.apple_errors import classify
 from homeward.auth.session import logout, session_dir
 from homeward.auth.twofa import LoginFlow
 from homeward.core.photos import safe_component
@@ -179,7 +180,9 @@ class PyiCloudBackend(AccountBackend):
             channel.stop_helper()
             raise ApiError("login_timeout", "Apple did not answer in time")
         if answer["state"] == "failed":
-            raise ApiError("login_failed", str(answer.get("error", "")))
+            error = str(answer.get("error", ""))
+            hint = classify(error)
+            raise ApiError(f"apple_{hint}" if hint else "login_failed", error)
         return LoginResult(SessionState(answer["state"]))
 
     def verify_2fa(self, account: str, code: str) -> LoginResult:

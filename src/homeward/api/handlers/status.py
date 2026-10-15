@@ -9,7 +9,12 @@ from dataclasses import asdict
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, existing_state, package_version
+from homeward.api.handlers.common import (
+    check_name,
+    event_dict,
+    existing_state,
+    package_version,
+)
 from homeward.api.server import Context, Request
 from homeward.core.photo_state import gone_counts
 from homeward.runtime import (
@@ -156,7 +161,7 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
         seen.add(key)  # only the newest event per source and code counts
         if not waiting and event.level == Level.INFO:
             continue
-        result.append(asdict(event) | {"waiting": waiting})
+        result.append(event_dict(event) | {"waiting": waiting})
         if len(result) >= MAX_NOTICES:
             break
     return result

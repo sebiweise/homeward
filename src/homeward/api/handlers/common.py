@@ -3,13 +3,16 @@
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
+from homeward.apple_errors import classify
 from homeward.core.config import Config
 from homeward.core.state import StateDB
+from homeward.runtime import Event, Level
 
 # Pair and account names become file names (run requests, state databases).
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.@-]{0,63}$")
@@ -53,3 +56,12 @@ def existing_state(config: Config, account: str) -> Iterator[StateDB | None]:
         return
     with StateDB(path) as state:
         yield state
+
+
+def event_dict(event: Event) -> dict[str, Any]:
+    """An event for the UI; a warning or error from Apple gets the ``hint`` code of
+    a text that explains it (see ``homeward.apple_errors``)."""
+    result = asdict(event)
+    if event.level != Level.INFO and event.message:
+        result["hint"] = classify(event.message)
+    return result

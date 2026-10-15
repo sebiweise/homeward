@@ -579,12 +579,15 @@ def test_events_and_notices(client: Client, tmp_path: Path) -> None:
                  paths=paths, attempt=1)  # fmt: skip
     record_event(Level.ERROR, "pair:docs", "file_failed", "a.txt: 503", paths=paths)
     record_event(Level.ERROR, "pair:docs", "file_failed", "b.txt: 503", paths=paths)
+    record_event(Level.INFO, "service", "sync_started", "Invalid global session", paths=paths)
     paths.events_file.open("a").write("not json\n")
 
     events = client.call("log.events")["events"]
-    assert [e["code"] for e in events] == ["file_failed", "file_failed", "icloud_indexing",
-                                           "sync_started"]  # fmt: skip
-    assert events[2]["details"] == {"attempt": 1}
+    assert [e["code"] for e in events] == ["sync_started", "file_failed", "file_failed",
+                                           "icloud_indexing", "sync_started"]  # fmt: skip
+    assert events[3]["details"] == {"attempt": 1}
+    # warnings and errors carry the code of a text explaining Apple's message; info never
+    assert "hint" not in events[0] and events[1]["hint"] is None
     errors = client.call("log.events", level="error")["events"]
     assert {e["level"] for e in errors} == {"error"}
     with pytest.raises(ApiError):

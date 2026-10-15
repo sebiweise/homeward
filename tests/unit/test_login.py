@@ -16,10 +16,11 @@ class FakeFlow:
         self.password, self.code, self.needs_code = password, code, needs_code
         self.state_dir: Path | None = None
         self.account = ""
+        self.error = "wrong password"
 
     def login(self, password: str) -> bool:
         if password != self.password:
-            raise RuntimeError("wrong password")
+            raise RuntimeError(self.error)
         return self.needs_code
 
     def verify_2fa(self, code: str) -> None:
@@ -88,6 +89,15 @@ def test_login_without_code_and_wrong_password(tmp_path: Path) -> None:
     with pytest.raises(ApiError) as excinfo:
         backend.login("me", "a@b.de", "wrong")
     assert excinfo.value.code == "login_failed"
+
+
+def test_login_error_names_apple_reason(tmp_path: Path) -> None:
+    flow = FakeFlow(needs_code=False)
+    backend = _backend(tmp_path, flow)
+    flow.error = "Invalid email/password combination. (-20101)"
+    with pytest.raises(ApiError) as excinfo:
+        backend.login("me", "a@b.de", "wrong")
+    assert excinfo.value.code == "apple_wrong_password"
 
 
 def test_code_without_waiting_sign_in(tmp_path: Path) -> None:

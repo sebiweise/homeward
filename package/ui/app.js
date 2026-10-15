@@ -387,7 +387,9 @@ function eventRow(event, withSource) {
         el("td", {}, badge(LEVEL_BADGE[event.level], t("event:level_" + event.level))),
         withSource ? el("td", { text: eventSource(event.source) }) : null,
         el("td", {}, eventText(event), event.message && strings["event:" + event.code]
-            ? el("div", { class: "muted", text: event.message }) : null)
+            ? el("div", { class: "muted", text: event.message }) : null,
+        event.hint && strings["apple:" + event.hint]
+            ? el("div", { class: "event-hint", text: t("apple:" + event.hint) }) : null)
     );
 }
 
