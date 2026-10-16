@@ -1446,7 +1446,7 @@ let refreshTimer = null;
 function scheduleRefresh() {
     clearTimeout(refreshTimer);
     if (document.hidden) return; // resumed by the visibilitychange listener
-    refreshTimer = setTimeout(autoRefresh, runningJobs(data.status?.daemon).length ? REFRESH_RUNNING_MS : REFRESH_MS);
+    refreshTimer = setTimeout(() => void autoRefresh(), runningJobs(data.status?.daemon).length ? REFRESH_RUNNING_MS : REFRESH_MS);
 }
 
 async function autoRefresh() {
@@ -1474,7 +1474,7 @@ async function start() {
     });
     document.addEventListener("visibilitychange", () => {
         if (document.hidden) clearTimeout(refreshTimer);
-        else autoRefresh();
+        else void autoRefresh();
     });
     await guarded(refresh);
     scheduleRefresh();
