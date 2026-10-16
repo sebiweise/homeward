@@ -5,7 +5,7 @@
 # and move cffi, charset_normalizer, cryptography and pydantic_core to
 # requirements-crossenv.txt.
 
-homeward==0.2.0
+homeward==0.3.0
 
 annotated-types==0.8.0
 certifi==2026.7.22
@@ -19,7 +19,7 @@ keyring==25.7.0
 keyrings.alt==5.0.2
 markdown-it-py==4.2.0
 mdurl==0.1.2
-more-itertools==11.1.0
+more-itertools==11.2.1
 protobuf==7.36.2
 pycparser==3.11
 pydantic==2.14.1
