@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS cursors (
     job TEXT PRIMARY KEY,
     cursor TEXT
 );
+CREATE TABLE IF NOT EXISTS integrity_checks (
+    job TEXT PRIMARY KEY,
+    checked_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS full_listings (
     job TEXT PRIMARY KEY,
     finished_at REAL NOT NULL,
@@ -142,6 +146,15 @@ class PhotoStateDB:
             "INSERT OR REPLACE INTO full_listings VALUES (?, ?, ?)", (job, at, selection)
         )
 
+    def integrity_checked_at(self, job: str) -> float | None:
+        row = self._conn.execute(
+            "SELECT checked_at FROM integrity_checks WHERE job = ?", (job,)
+        ).fetchone()
+        return None if row is None else float(row[0])
+
+    def set_integrity_checked(self, job: str, at: float) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO integrity_checks VALUES (?, ?)", (job, at))
+
     def clear_full_listing(self, job: str) -> None:
         """Make the next run read the whole library (its selection still counts)."""
         self._conn.execute("UPDATE full_listings SET finished_at = 0 WHERE job = ?", (job,))
@@ -166,3 +179,23 @@ def gone_counts(path: Path) -> dict[str, int]:
     finally:
         conn.close()
     return {str(job): int(count) for job, count in rows}
+
+
+def totals(path: Path) -> dict[str, tuple[int, int]]:
+    """Per job, the number and total size of the photos on the NAS (read-only, as
+    ``gone_counts``)."""
+    return _read_only(path, "SELECT job, COUNT(*), COALESCE(SUM(size), 0) FROM photos GROUP BY job")
+
+
+def _read_only(path: Path, query: str) -> dict[str, tuple[int, int]]:
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute(query).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {str(name): (int(count), int(size)) for name, count, size in rows}

@@ -10,7 +10,8 @@ from typing import BinaryIO
 
 from homeward.core.files import rename_noreplace, temp_name
 from homeward.core.models import FileMeta
-from homeward.core.rules import TRASH_DIR, is_excluded
+from homeward.core.rules import is_excluded
+from homeward.core.trash import Trash
 from homeward.providers.base import Provider
 
 _CHUNK = 1024 * 1024
@@ -56,9 +57,10 @@ class NasProvider(Provider):
     ) -> None:
         self.name = name
         self.root = root
-        self.trash_root = trash_root or root / TRASH_DIR
-        self.recycle_bin = recycle_bin
-        self._today = today
+        self.trash = Trash(root, recycle_bin=recycle_bin, trash_root=trash_root, today=today)
+
+    def root_exists(self) -> bool:
+        return self.root.is_dir()
 
     def list_files(self) -> dict[str, FileMeta]:
         files: dict[str, FileMeta] = {}
@@ -94,35 +96,11 @@ class NasProvider(Provider):
         return self._meta(path, target)
 
     def delete(self, path: str) -> None:
-        source = self._full(path)
-        if self.recycle_bin is not None:
-            try:
-                relative = source.relative_to(self.recycle_bin.parent).as_posix()
-                _move_aside(source, self.recycle_bin, relative)
-                return
-            except (OSError, ValueError):
-                pass  # e.g. no write permission in #recycle: use our own trash
-        _move_aside(source, self.trash_root / self._today().isoformat(), path)
+        self.trash.move(self._full(path), path)
 
     def purge_trash(self, max_age_days: int) -> int:
-        """Delete day folders in the package trash older than ``max_age_days``.
-
-        Only touches ``<date>`` folders in Homeward's own trash, never the Synology
-        recycle bin. Returns the number of day folders removed.
-        """
-        if max_age_days <= 0 or not self.trash_root.is_dir():
-            return 0
-        today = self._today()
-        removed = 0
-        for entry in self.trash_root.iterdir():
-            try:
-                day = date.fromisoformat(entry.name)
-            except ValueError:
-                continue
-            if entry.is_dir() and not entry.is_symlink() and (today - day).days > max_age_days:
-                shutil.rmtree(entry)
-                removed += 1
-        return removed
+        """Empty day folders of Homeward's own trash older than ``max_age_days``."""
+        return self.trash.purge(max_age_days)
 
     def move(self, path: str, new_path: str) -> FileMeta:
         source, target = self._full(path), self._full(new_path)
@@ -147,14 +125,3 @@ class NasProvider(Provider):
     def _meta(path: str, full: Path) -> FileMeta:
         st = full.stat()
         return FileMeta(path, st.st_size, st.st_mtime, f"{st.st_size}:{st.st_mtime_ns}")
-
-
-def _move_aside(source: Path, folder: Path, relative: str) -> None:
-    """Move ``source`` to ``folder/relative``, numbering the name if that is taken."""
-    target = folder / relative
-    number = 2
-    while target.exists():
-        target = folder / f"{relative} ({number})"
-        number += 1
-    target.parent.mkdir(parents=True, exist_ok=True)
-    source.rename(target)

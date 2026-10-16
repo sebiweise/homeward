@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from homeward import cli
-from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
+from homeward.cli import EXIT_BLOCKED, EXIT_FAILED, EXIT_LOGIN, EXIT_OK, EXIT_USAGE, main
 from homeward.providers.drive_api import DriveApiError
 from homeward.providers.fake_drive import FakeDriveApi
 from homeward.runtime import Event, Paths, read_events
@@ -66,10 +66,11 @@ def test_sync_dry_run_then_real(tmp_path: Path, capsys: pytest.CaptureFixture[st
 
 def test_sync_delete_brake_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     config = _config(tmp_path)
-    for i in range(5):
+    for i in range(10):
         (tmp_path / "nas" / f"{i}.txt").write_text(str(i))
     assert main(["sync", "--config", str(config)]) == EXIT_OK
-    (tmp_path / "nas" / "0.txt").unlink()
+    for i in range(6):
+        (tmp_path / "nas" / f"{i}.txt").unlink()
 
     assert main(["sync", "--config", str(config)]) == EXIT_BLOCKED
     assert "--allow-deletes" in capsys.readouterr().out
@@ -78,6 +79,43 @@ def test_sync_delete_brake_exit_code(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main(["sync", "--config", str(config), "--allow-deletes"]) == EXIT_OK
     assert not (tmp_path / "cloud" / "0.txt").exists()
     assert (tmp_path / "cloud" / ".homeward-papierkorb").is_dir()
+
+
+def test_sync_stops_when_a_folder_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = _config(tmp_path)
+    (tmp_path / "nas" / "a.txt").write_text("a")
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    (tmp_path / "nas" / "a.txt").unlink()
+    (tmp_path / "nas").rmdir()
+
+    assert main(["sync", "--config", str(config)]) == EXIT_FAILED
+
+    assert (tmp_path / "cloud" / "a.txt").exists()
+    assert "is missing" in capsys.readouterr().err
+    assert [e.code for e in _events(tmp_path) if e.level == "error"] == ["folder_missing"]
+
+
+def test_conflict_copies_send_a_notification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[tuple[str, ...]] = []
+    monkeypatch.setattr(cli, "notifier", lambda event, *args: sent.append((event, *args)) or True)
+    config = _config(tmp_path)
+    (tmp_path / "nas" / "a.txt").write_text("a")
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    (tmp_path / "nas" / "a.txt").write_text("nas edit")
+    (tmp_path / "cloud" / "a.txt").write_text("cloud edit!")
+
+    assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_OK
+    assert sent == []
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert sent == [("conflicts", "docs", "1")]
+    summary = next(e for e in _events(tmp_path) if e.code == "sync_summary")
+    [conflict] = summary.details["files"]
+    assert (conflict["kind"], conflict["path"]) == ("conflict", "a.txt")
+    assert conflict["to"].startswith("a (Konflikt NAS ")
 
 
 def test_sync_shows_renames(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -112,7 +150,7 @@ def test_icloud_sign_in_uses_the_stored_session(
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_USAGE
     assert "set apple_id" in capsys.readouterr().err
     config.write_text(config.read_text() + 'apple_id = "seb@example.com"\n')
-    assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_USAGE
+    assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_LOGIN
     assert "homeward login --account default" in capsys.readouterr().err
     assert calls == [("default", "seb@example.com", tmp_path / "state")]
 
@@ -232,7 +270,7 @@ def test_photos_failed_download_exit_code(
 def test_photos_without_session_asks_for_login(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_FAILED
+    assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_LOGIN
     assert "homeward login --account seb@example.com" in capsys.readouterr().err
 
 
@@ -415,7 +453,7 @@ def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
 def test_a_session_apple_rejects_mid_run_asks_for_a_new_sign_in(tmp_path: Path) -> None:
     import logging
 
-    from homeward.cli import EXIT_FAILED, _events, _reported
+    from homeward.cli import _events, _reported
     from homeward.runtime import Paths, read_events
 
     class PyiCloudAPIResponseException(Exception):
@@ -435,7 +473,7 @@ def test_a_session_apple_rejects_mid_run_asks_for_a_new_sign_in(tmp_path: Path) 
     config = tmp_path / "config.toml"
     logging.getLogger("homeward").setLevel(logging.INFO)
     with _events(config, "photos:me"):
-        assert _reported(rejected, "me") == EXIT_FAILED
+        assert _reported(rejected, "me") == EXIT_LOGIN
     [event] = read_events(Paths(var_dir=tmp_path, config=config))
     assert (event.code, event.details.get("account")) == ("login_required", "me")
     assert "homeward login --account me" in event.message
@@ -456,7 +494,7 @@ def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
         [sys.executable, "-m", "homeward.cli", "photos", "--config", str(config)],
         env=env, capture_output=True, text=True, check=False,
     )  # fmt: skip
-    assert run.returncode == 1, run.stderr
+    assert run.returncode == EXIT_LOGIN, run.stderr
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [e["code"] for e in events] == ["login_required"]
 

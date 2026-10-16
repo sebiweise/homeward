@@ -112,6 +112,13 @@ class StateDB:
         cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
         return cursor.rowcount
 
+    def totals(self, pair: str) -> tuple[int, int]:
+        """Number and total size of the files the pair keeps in sync."""
+        count, size = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files WHERE pair = ?", (pair,)
+        ).fetchone()
+        return int(count), int(size)
+
     def runs(self, pair: str | None = None, limit: int = 50) -> list[RunRecord]:
         """The most recent runs, newest first."""
         query = "SELECT pair, started_at, finished_at, dry_run, actions, errors, blocked FROM runs"

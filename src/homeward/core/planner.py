@@ -20,15 +20,20 @@ from homeward.core.rules import Decision, decide, is_excluded
 
 @dataclass(frozen=True, slots=True)
 class DeleteBrake:
-    """A run that would delete more than either limit is blocked until approved."""
+    """A run that would delete more than either limit is blocked until approved.
+
+    The ratio only counts from more than ``min_count`` deletions on, so tidying up a
+    few files in a small folder does not need an approval every time.
+    """
 
     max_ratio: float = 0.10
     max_count: int = 50
+    min_count: int = 5
 
     def check(self, deletes: int, tracked: int) -> str | None:
         if deletes > self.max_count:
             return f"{deletes} deletions exceed the limit of {self.max_count} files"
-        if tracked and deletes / tracked > self.max_ratio:
+        if deletes > self.min_count and tracked and deletes / tracked > self.max_ratio:
             return f"{deletes} of {tracked} files would be deleted, more than {self.max_ratio:.0%}"
         return None
 

@@ -157,6 +157,10 @@ class ICloudDriveProvider(Provider):
 
     # Provider interface
 
+    def root_exists(self) -> bool:
+        """Whether the last ``list_files`` found the root folder."""
+        return "" in self._index
+
     def list_files(self) -> dict[str, FileMeta]:
         root = self._find_folder(self._root_parts, create=False)
         self._index = {}

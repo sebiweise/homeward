@@ -9,9 +9,15 @@ from dataclasses import asdict
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, existing_state, package_version
+from homeward.api.handlers.common import (
+    check_name,
+    event_dict,
+    existing_state,
+    package_version,
+)
 from homeward.api.server import Context, Request
-from homeward.core.photo_state import gone_counts
+from homeward.core.photo_state import gone_counts, totals
+from homeward.daemon.scheduler import STALE_DAYS
 from homeward.runtime import (
     CancelRequest,
     Event,
@@ -41,25 +47,32 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
     for pair in config.pairs:
         with existing_state(config, pair.account) as state:
             runs = state.runs(pair.name, limit=1) if state else []
+            files, size = state.totals(pair.name) if state else (0, 0)
         pairs.append(
             {
                 "name": pair.name,
                 "account": pair.account,
                 "mode": pair.mode.value,
                 "last_run": asdict(runs[0]) if runs else None,
+                "files": files,
+                "bytes": size,
                 "job": jobs.get(f"pair:{pair.name}"),
                 "pending": pair.name in pending,
                 "progress": _progress(ctx, daemon, pair.name, f"pair:{pair.name}"),
             }
         )
     gone: dict[str, dict[str, int]] = {}
+    sizes: dict[str, dict[str, tuple[int, int]]] = {}
     for account in {job.account for job in config.photos}:
         gone[account] = gone_counts(config.photo_state_path(account))
+        sizes[account] = totals(config.photo_state_path(account))
     photos = [
         {
             "name": job.name,
             "account": job.account,
             "gone": gone[job.account].get(job.name, 0),  # deleted in iCloud, kept on the NAS
+            "files": sizes[job.account].get(job.name, (0, 0))[0],
+            "bytes": sizes[job.account].get(job.name, (0, 0))[1],
             "job": jobs.get(f"photos:{job.name}"),
             "pending": f"photos:{job.name}" in pending,
             "progress": _progress(ctx, daemon, f"photos:{job.name}", f"photos:{job.name}"),
@@ -71,15 +84,25 @@ def get(ctx: Context, _request: Request) -> dict[str, Any]:
         "api_user": _user(),
         "daemon": daemon,
         "interval_minutes": config.interval_minutes,
+        "stale_days": STALE_DAYS,
         "pairs": pairs,
         "photos": photos,
         "notices": notices(ctx),
     }
 
 
+def running_jobs(daemon: dict[str, Any]) -> set[str]:
+    """The jobs the daemon runs now: pair names and ``photos:<job>``."""
+    jobs = daemon.get("running_jobs")
+    if isinstance(jobs, list):
+        return {str(job) for job in jobs}
+    running = daemon.get("running")  # a daemon from before parallel runs
+    return {running} if isinstance(running, str) else set()
+
+
 def _progress(ctx: Context, daemon: dict[str, Any], running: str, source: str) -> Any:
-    """How far the job is, while the daemon runs it (``running`` as in ``daemon.running``)."""
-    if daemon.get("running") != running:
+    """How far the job is, while the daemon runs it (``running`` as in ``running_jobs``)."""
+    if running not in running_jobs(daemon):
         return None
     return read_progress(ctx.paths, source)
 
@@ -104,7 +127,7 @@ def clear_notices(ctx: Context, request: Request) -> dict[str, Any]:
 def cancel(ctx: Context, request: Request) -> dict[str, Any]:
     """Stop a sync: a queued one is dropped, a running one is asked to stop.
 
-    ``name`` is a pair name or ``photos:<job>``, as in ``daemon.running``. The daemon
+    ``name`` is a pair name or ``photos:<job>``, as in ``running_jobs``. The daemon
     stops the run cleanly; files already synced stay, nothing is left half-written.
     """
     name = request.get("name")
@@ -114,7 +137,7 @@ def cancel(ctx: Context, request: Request) -> dict[str, Any]:
         record_event(Level.WARNING, source, "sync_cancelled",
                      "cancelled by the user before it started", paths=ctx.paths)  # fmt: skip
         return {"name": name, "cancelled": "queued"}
-    if read_status(ctx.paths).get("running") != name:
+    if name not in running_jobs(read_status(ctx.paths)):
         raise ApiError("not_running", name, status=409)
     request_cancel(ctx.paths, CancelRequest(name))
     return {"name": name, "cancelled": "running"}
@@ -147,7 +170,7 @@ def notices(ctx: Context) -> list[dict[str, Any]]:
         seen.add(key)  # only the newest event per source and code counts
         if not waiting and event.level == Level.INFO:
             continue
-        result.append(asdict(event) | {"waiting": waiting})
+        result.append(event_dict(event) | {"waiting": waiting})
         if len(result) >= MAX_NOTICES:
             break
     return result

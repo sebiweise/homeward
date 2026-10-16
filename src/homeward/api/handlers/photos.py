@@ -11,9 +11,12 @@ from typing import Any
 
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import check_name, without_none
-from homeward.api.handlers.settings import parse_interval
+from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
+from homeward.core.config import DEFAULT_TRASH_DAYS
+from homeward.core.photos import DEFAULT_WORKERS, MAX_WORKERS
+from homeward.core.planner import DeleteBrake
 from homeward.runtime import RunRequest, request_run
 
 LIBRARIES = ("personal", "shared", "shared_albums")
@@ -31,6 +34,17 @@ SWITCHES = {
     "mirror_deletes": False,  # photos deleted in iCloud are deleted on the NAS too
     "source_folders": True,  # own folders for the shared library and shared albums
 }
+# Settings of the "Advanced" section, with the core's defaults.
+DEFAULT_BRAKE = DeleteBrake()
+ADVANCED = {
+    "max_delete_ratio": DEFAULT_BRAKE.max_ratio,
+    "max_delete_count": DEFAULT_BRAKE.max_count,
+    "trash_days": DEFAULT_TRASH_DAYS,
+    "workers": DEFAULT_WORKERS,
+}
+# New backups run this often unless the user picks another interval: a run that finds
+# nothing changed in iCloud costs one request.
+NEW_JOB_INTERVAL_MINUTES = 30
 FOLDERS = {
     "folder_scheme": "{year}/{month}",
     "shared_folder": "Geteilte Mediathek",
@@ -48,14 +62,21 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
         "target": entry.get("target", ""),
         "libraries": list(entry.get("libraries", LIBRARIES)),
         "interval_minutes": entry.get("interval_minutes"),
+        "window": entry.get("window"),
+        "max_rate_kb": entry.get("max_rate_kb"),
+        "album_names": list(entry.get("album_names", [])),
     }
     result |= {key: entry.get(key, default) for key, default in SWITCHES.items()}
+    result |= {key: entry.get(key, default) for key, default in ADVANCED.items()}
     result |= {key: entry.get(key, default) for key, default in FOLDERS.items()}
     return result
 
 
 def defaults(_ctx: Context, _request: Request) -> dict[str, Any]:
-    return {"libraries": list(LIBRARIES), **SWITCHES, **FOLDERS}
+    return {
+        "libraries": list(LIBRARIES), "album_names": [],
+        "interval_minutes": NEW_JOB_INTERVAL_MINUTES, **SWITCHES, **ADVANCED, **FOLDERS,
+    }  # fmt: skip
 
 
 def list_jobs(ctx: Context, _request: Request) -> dict[str, Any]:
@@ -163,6 +184,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "target": str(target),
         "libraries": _libraries(data),
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
+        **parse_limits(data),
     }
     for key, switch in SWITCHES.items():
         enabled = data.get(key, switch)
@@ -171,7 +193,35 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         entry[key] = enabled
     for key, folder in FOLDERS.items():
         entry[key] = _folder(key, text(key, folder))
+    entry |= _advanced(data)
+    entry["album_names"] = _album_names(data)
     return entry
+
+
+def _number(data: dict[str, Any], key: str, kind: type, low: float, high: float) -> Any:
+    value = data.get(key, ADVANCED[key])
+    if not isinstance(value, int | float) or isinstance(value, bool) or not low <= value <= high:
+        raise ApiError("invalid_param", key)
+    if kind is int and value != int(value):
+        raise ApiError("invalid_param", key)
+    return kind(value)
+
+
+def _advanced(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "max_delete_ratio": _number(data, "max_delete_ratio", float, 0, 1),
+        "max_delete_count": _number(data, "max_delete_count", int, 0, 1_000_000),
+        "trash_days": _number(data, "trash_days", int, 0, 3650),
+        "workers": _number(data, "workers", int, 1, MAX_WORKERS),
+    }
+
+
+def _album_names(data: dict[str, Any]) -> list[str]:
+    """Only these albums become folders (and only they are read); empty: all."""
+    names = data.get("album_names", [])
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ApiError("invalid_param", "album_names")
+    return list(dict.fromkeys(n.strip() for n in names if n.strip()))
 
 
 def _libraries(data: dict[str, Any]) -> list[str]:

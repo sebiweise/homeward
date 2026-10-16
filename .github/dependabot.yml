@@ -13,6 +13,18 @@ updates:
       - dependency-name: pyicloud
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
+  # The lock file the .spk is built from (requirements/icloud.txt, with hashes).
+  - package-ecosystem: pip
+    directory: /requirements
+    schedule:
+      interval: weekly
+    groups:
+      bundled:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: pyicloud
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

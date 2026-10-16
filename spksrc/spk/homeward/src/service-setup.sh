@@ -18,23 +18,14 @@ HOMEWARD_CONFIG="${SYNOPKG_PKGVAR}/config.toml"
 HOMEWARD_VAR="${SYNOPKG_PKGVAR}"
 export HOME HOMEWARD_CONFIG HOMEWARD_VAR
 
-LOG_MAX_BYTES=5242880
-
-SERVICE_COMMAND="${SYNOPKG_PKGDEST}/env/bin/homeward-daemon --config ${HOMEWARD_CONFIG}"
+SERVICE_COMMAND="${SYNOPKG_PKGDEST}/env/bin/homeward-daemon --config ${HOMEWARD_CONFIG} --log-file ${SYNOPKG_PKGVAR}/homeward.log"
 SVC_BACKGROUND=y
 SVC_WRITE_PID=y
-# The DSM app shows homeward.log; keep it across restarts (rotated in service_prestart).
+# The DSM app shows homeward.log; keep it across restarts (the daemon rotates it).
 SVC_KEEP_LOG=y
 SVC_CWD="${SYNOPKG_PKGVAR}"
 # A running sync records its finished steps on SIGTERM before it exits.
 SVC_WAIT_TIMEOUT=45
-
-service_prestart ()
-{
-    if [ -f "${LOG_FILE}" ] && [ "$(wc -c < "${LOG_FILE}")" -gt "${LOG_MAX_BYTES}" ]; then
-        mv -f "${LOG_FILE}" "${LOG_FILE}.1"
-    fi
-}
 
 service_postinst ()
 {
@@ -68,11 +59,19 @@ service_preuninst ()
         return
     fi
     # Copy config and state into the shared folder, so a reinstall can pick them up.
-    # The synced files themselves live in shared folders and are never touched.
+    # The synced files themselves live in shared folders and are never touched. The
+    # iCloud sessions stay behind: anyone who can read the share could use them to
+    # reach the Apple ID, so a reinstall asks to sign in again instead.
     if [ -n "${SHARE_PATH}" ] && [ -d "${SHARE_PATH}" ] && [ -f "${HOMEWARD_CONFIG}" ]; then
         dest="${SHARE_PATH}/.homeward-backup/$(date +%Y-%m-%d_%H%M%S)"
-        echo "Saving configuration and state to ${dest}"
-        mkdir -p "${dest}" && cp -p "${HOMEWARD_CONFIG}" "${dest}/" \
-            && { [ ! -d "${SYNOPKG_PKGVAR}/state" ] || cp -pR "${SYNOPKG_PKGVAR}/state" "${dest}/"; }
+        echo "Saving configuration and state (without the iCloud sessions) to ${dest}"
+        mkdir -p "${dest}/state" && cp -p "${HOMEWARD_CONFIG}" "${dest}/" || return
+        for entry in "${SYNOPKG_PKGVAR}/state"/* "${SYNOPKG_PKGVAR}/state"/.[!.]*; do
+            [ -e "${entry}" ] || continue
+            case "$(basename "${entry}")" in
+                sessions | sessions-pending) continue ;;
+            esac
+            cp -pR "${entry}" "${dest}/state/"
+        done
     fi
 }

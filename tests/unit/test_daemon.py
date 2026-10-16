@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -6,6 +9,7 @@ import pytest
 
 from homeward.core.config import ConfigError
 from homeward.daemon.scheduler import (
+    MAX_SLEEP_SECONDS,
     WAITING_RETRY_MINUTES,
     Daemon,
     Job,
@@ -221,11 +225,11 @@ def test_daemon_waits_for_a_valid_config(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     daemon = Daemon(config, _scheduler(tmp_path, recorder, Clock()), runner)
 
-    daemon.cycle()  # missing file
+    _cycle(daemon)  # missing file
     assert not daemon.config_ok
     assert recorder.calls == []
     _config(tmp_path)
-    daemon.cycle()
+    _cycle(daemon)
     assert daemon.config_ok
     assert recorder.calls == ["pair:docs"]
 
@@ -259,6 +263,12 @@ def test_take_requests(tmp_path: Path) -> None:
     assert list((tmp_path / "requests").iterdir()) == []
 
 
+def _cycle(daemon: Daemon) -> None:
+    """One daemon cycle, waiting for the runs it started (they run on threads)."""
+    daemon.cycle()
+    daemon.scheduler.wait()
+
+
 class ArgvRecorder:
     def __init__(self) -> None:
         self.argv: list[tuple[str, ...]] = []
@@ -273,13 +283,13 @@ def test_daemon_runs_requests(tmp_path: Path) -> None:
     config = _config(tmp_path, pairs=("a",))
     scheduler = Scheduler(tmp_path / "status.json", runner, clock)
     daemon = Daemon(config, scheduler, SubprocessRunner())
-    daemon.cycle()  # scheduled run
+    _cycle(daemon)  # scheduled run
     assert len(runner.argv) == 1
     scheduled_at = scheduler.status["pair:a"].started_at
 
     _request(tmp_path, "a", '{"pair": "a", "dry_run": true}')
     _request(tmp_path, "zzz", '{"pair": "missing"}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[1][-1] == "--dry-run"
     assert len(runner.argv) == 2
     # A dry run does not count as the scheduled run.
@@ -287,7 +297,7 @@ def test_daemon_runs_requests(tmp_path: Path) -> None:
 
     clock.now += 60
     _request(tmp_path, "a", '{"pair": "a", "allow_deletes": true}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[2][-1] == "--allow-deletes"
     assert scheduler.status["pair:a"].started_at == clock.now
     status = json.loads((tmp_path / "status.json").read_text())
@@ -314,14 +324,14 @@ target = "{tmp_path / "photos"}"
     daemon = Daemon(
         config, Scheduler(tmp_path / "status.json", runner, Clock()), SubprocessRunner()
     )
-    daemon.cycle()
+    _cycle(daemon)
     _request(tmp_path, "p", '{"pair": "photos:me", "dry_run": true, "allow_deletes": true}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[-1] == (
         "photos", "--config", str(config), "--job", "me", "--dry-run", "--allow-deletes"
     )  # fmt: skip
     _request(tmp_path, "p", '{"pair": "photos:me", "remove_gone": true}')
-    daemon.cycle()
+    _cycle(daemon)
     assert runner.argv[-1] == (
         "photos", "--config", str(config), "--job", "me", "--remove-gone"
     )  # fmt: skip
@@ -348,6 +358,30 @@ def test_runs_write_events_and_notify_once(tmp_path: Path) -> None:
     assert codes == [("pair:docs", c) for c in ("sync_failed", "sync_failed", "delete_brake",
                                                 "sync_finished")]  # fmt: skip
     assert sent == [("sync_failed", "docs"), ("delete_brake", "docs")]
+
+
+def test_a_needed_sign_in_notifies_once_per_apple_id(tmp_path: Path) -> None:
+    sent: list[tuple[str, ...]] = []
+    runner = Recorder(code=6)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, Clock(), notifier=lambda e, *a: sent.append((e, *a))
+    )
+    photos, drive = (
+        Job("photos:me", ("photos",), account="me"),
+        Job("pair:d", ("sync",), account="me"),
+    )
+    other = Job("photos:anna", ("photos",), account="anna")
+    scheduler.jobs = [photos, drive, other]
+    for job in (photos, drive, photos, other):
+        assert scheduler.run(job).result == "login_required"
+
+    assert sent == [("login_needed", "me"), ("login_needed", "anna")]
+    runner.code = 0
+    scheduler.run(photos)
+    scheduler.run(drive)
+    runner.code = 6
+    scheduler.run(photos)  # signed out again later
+    assert sent[-1] == ("login_needed", "me")
 
 
 def test_config_errors_become_events(tmp_path: Path) -> None:
@@ -389,7 +423,7 @@ class StoppableRunner(SubprocessRunner):
         self.during()
         return 5 if self.terminated else 0
 
-    def terminate(self, timeout: float = 0.0) -> None:
+    def terminate(self, name: str | None = None, timeout: float = 0.0) -> None:
         self.terminated += 1
 
 
@@ -413,12 +447,12 @@ def test_cancelling_the_running_sync(tmp_path: Path) -> None:
         tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append(e)
     )
     daemon = Daemon(config, scheduler, runner)
-    daemon.cycle()
+    _cycle(daemon)
 
     assert runner.terminated == 1
     status = scheduler.status["pair:a"]
     assert (status.result, status.exit_code) == ("cancelled", 5)
-    assert scheduler.running is None and scheduler.cancelled is None
+    assert scheduler.running == set() and scheduler.cancelled == set()
     assert not list((tmp_path / "cancel").glob("*.json"))
     (event, _started) = read_events(paths)
     assert (event.level, event.code, event.source) == ("warning", "sync_cancelled", "pair:a")
@@ -432,25 +466,30 @@ def test_sigterm_without_a_cancel_is_an_interrupted_run(tmp_path: Path) -> None:
     assert scheduler.run(Job("pair:a", ())).result == "killed"
 
 
-def test_cancelling_a_request_the_daemon_already_took(tmp_path: Path) -> None:
-    from homeward.runtime import CancelRequest, Paths, read_events, request_cancel
+def test_a_request_waits_while_its_lane_is_busy_and_can_be_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from homeward.daemon import scheduler as module
+    from homeward.runtime import Paths, drop_request, pending_requests
 
+    monkeypatch.setattr(module, "MAX_PARALLEL_RUNS", 1)
     paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
     config = _config(tmp_path, pairs=("a", "b"))
+    release = threading.Event()
+    runner = StoppableRunner(lambda: release.wait(5))
     clock = Clock()
-    runner = StoppableRunner(lambda: request_cancel(paths, CancelRequest("b")))
     daemon = Daemon(config, Scheduler(tmp_path / "status.json", runner, clock), runner)
-    daemon.cycle()  # the scheduled runs of a and b
-    runner.calls.clear()
-    clock.now += 60
-    request_cancel(paths, CancelRequest("a"))  # stale: from before the requests below
-
+    assert daemon.reload()
     _request(tmp_path, "a", '{"pair": "a"}')
     _request(tmp_path, "b", '{"pair": "b"}')
-    daemon.cycle()  # a runs and, while it does, the user cancels the queued b
+
+    daemon.run_requests()
+    assert [r.pair for r in pending_requests(paths)] == ["b"]  # still shown as queued
+    assert drop_request(paths, "b")  # the user cancels it before it starts
+    release.set()
+    daemon.scheduler.wait()
+
     assert runner.calls == ["pair:a"]
-    assert runner.terminated == 0
-    assert read_events(paths)[0].code == "sync_cancelled"
 
 
 def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> None:
@@ -465,3 +504,149 @@ def test_a_run_waiting_for_icloud_is_postponed_not_failed(tmp_path: Path) -> Non
     (event, _started) = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
     assert (event.level, event.code) == ("info", "sync_postponed")
     assert sent == []
+
+
+def test_the_log_rotates_with_the_output_of_the_runs(tmp_path: Path) -> None:
+    # In a separate process: the handler points fd 1 and 2 at the log file.
+    script = """
+import logging, subprocess, sys
+from pathlib import Path
+from homeward.daemon.scheduler import StdioRotatingHandler
+log_file = Path(sys.argv[1])
+logging.basicConfig(level=logging.INFO, handlers=[StdioRotatingHandler(log_file, 400, 2)])
+for i in range(30):
+    logging.info("daemon line %02d", i)
+    subprocess.run([sys.executable, "-c", f"print('run output {i:02d}')"], check=True)
+"""
+    log_file = tmp_path / "homeward.log"
+    subprocess.run([sys.executable, "-c", script, str(log_file)], check=True)
+
+    files = sorted(tmp_path.glob("homeward.log*"))
+    assert [f.name for f in files] == ["homeward.log", "homeward.log.1", "homeward.log.2"]
+    assert all(f.stat().st_size < 600 for f in files)
+    current = log_file.read_text()
+    assert "daemon line 29" in current
+    assert "run output 29" in current
+
+
+def test_jobs_of_different_apple_ids_run_side_by_side(tmp_path: Path) -> None:
+    release = threading.Event()
+    started: list[str] = []
+
+    def runner(job: Job) -> int:
+        started.append(job.name)
+        release.wait(5)
+        return 0
+
+    scheduler = Scheduler(tmp_path / "status.json", runner, Clock())
+    photos_me = Job("photos:me", ("photos",), account="me")
+    drive_me = Job("pair:docs", ("sync",), account="me")
+    photos_anna = Job("photos:anna", ("photos",), account="anna")
+    folder_pair = Job("pair:local", ("sync",))
+    scheduler.jobs = [photos_me, drive_me, photos_anna, folder_pair]
+
+    assert scheduler.start_due() == [photos_me, photos_anna]  # one per Apple ID, two at most
+    assert scheduler.due() == [drive_me, folder_pair]
+    assert scheduler.seconds_until_next() == MAX_SLEEP_SECONDS  # woken when a run ends
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["running_jobs"] == ["photos:anna", "photos:me"]
+    release.set()
+    scheduler.wait()
+    assert sorted(started) == ["photos:anna", "photos:me"]
+    assert scheduler.start_due() == [drive_me, folder_pair]
+    scheduler.wait()
+    assert scheduler.running == set()
+
+
+def test_a_job_without_success_for_days_warns_once(tmp_path: Path) -> None:
+    from homeward.daemon.scheduler import STALE_DAYS
+
+    sent: list[tuple[str, ...]] = []
+    clock = Clock()
+    runner = Recorder(code=0)
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append((e, *a))
+    )
+    job, other = Job("photos:fotos", ("photos",)), Job("pair:docs", ("sync",))
+    scheduler.jobs = [job, other]
+    scheduler.run(job)
+    assert scheduler.status[job.name].last_success == clock.now
+    assert scheduler.check_stale() == []  # the other job never ran: nothing to judge yet
+
+    runner.code = 1  # from now on every run fails
+    clock.now += 86400
+    scheduler.run(job)
+    scheduler.run(Job("photos:fotos", ("photos", "--dry-run")))  # a dry run is no backup
+    clock.now += (STALE_DAYS - 1) * 86400
+    assert scheduler.check_stale() == [job]
+    assert scheduler.check_stale() == []  # once only
+    assert sent[-1] == ("not_backed_up", "fotos", str(STALE_DAYS))
+
+    # the flag and the last success survive a restart; a success re-arms the warning
+    restarted = Scheduler(tmp_path / "status.json", runner, clock, notifier=lambda e, *a: True)
+    restarted.jobs = [job]
+    assert restarted.status[job.name].stale_notified
+    runner.code = 0
+    restarted.run(job)
+    assert not restarted.status[job.name].stale_notified
+    assert restarted.status[job.name].last_success == clock.now
+
+
+def test_a_job_that_never_succeeded_warns_after_days(tmp_path: Path) -> None:
+    from homeward.daemon.scheduler import STALE_DAYS
+
+    clock = Clock()
+    scheduler = Scheduler(
+        tmp_path / "status.json", Recorder(code=6), clock, notifier=lambda *a: True
+    )
+    job = Job("pair:docs", ("sync",))
+    scheduler.jobs = [job]
+    scheduler.run(job)
+    clock.now += STALE_DAYS * 86400
+    scheduler.run(job)
+    assert scheduler.status[job.name].tracked_since == 1_000_000.0
+    assert scheduler.check_stale() == [job]
+
+
+def test_a_time_window_limits_scheduled_runs(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from homeward.core.limits import TimeWindow
+
+    def at(hour: int, day: int = 15) -> float:
+        return datetime(2026, 10, day, hour).timestamp()
+
+    clock = Clock()
+    clock.now = at(12)
+    release = threading.Event()
+    codes = {"photos:night": -15, "pair:docs": 0}
+
+    def runner(job: Job) -> int:
+        release.wait(5)
+        return codes[job.name]
+
+    scheduler = Scheduler(tmp_path / "status.json", runner, clock, notifier=lambda *a: True)
+    night = Job("photos:night", ("photos",), account="a", window=TimeWindow.parse("22:00-06:00"))
+    now = Job("pair:docs", ("sync",), window=TimeWindow.parse("22:00-06:00"))
+    scheduler.jobs = [night, now]
+    assert scheduler.due() == [] and scheduler.next_due(night) == at(22)
+
+    clock.now = at(23)
+    assert scheduler.start_due() == [night, now]
+    clock.now = at(5)
+    assert scheduler.window_closed() == []  # still open
+    clock.now = at(6, day=16)
+    assert sorted(scheduler.window_closed()) == ["docs", "photos:night"]
+    assert scheduler.window_closed() == []  # already stopping
+    release.set()
+    scheduler.wait()
+    assert scheduler.status["photos:night"].result == "window_closed"
+    assert scheduler.status["pair:docs"].result == "ok"  # finished before the stop landed
+    assert scheduler.next_due(night) == at(22, day=16)  # goes on when the window opens
+
+    # "sync now" ignores the window and is not stopped when it closes
+    release.clear()
+    assert scheduler.start(now)
+    assert scheduler.window_closed() == []
+    release.set()
+    scheduler.wait()

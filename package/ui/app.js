@@ -4,7 +4,8 @@
 
 const API = "api.cgi";
 const REFRESH_MS = 10000;
-const REFRESH_RUNNING_MS = 3000; // while a job runs, so its progress moves
+const REFRESH_RUNNING_MS = 5000; // while a job runs, so its progress moves
+// Every refresh starts a CGI on the NAS: none while the window is hidden or minimized.
 const strings = {};
 let tokenRequest = null;
 let accountsCache = [];
@@ -386,7 +387,9 @@ function eventRow(event, withSource) {
         el("td", {}, badge(LEVEL_BADGE[event.level], t("event:level_" + event.level))),
         withSource ? el("td", { text: eventSource(event.source) }) : null,
         el("td", {}, eventText(event), event.message && strings["event:" + event.code]
-            ? el("div", { class: "muted", text: event.message }) : null)
+            ? el("div", { class: "muted", text: event.message }) : null,
+        event.hint && strings["apple:" + event.hint]
+            ? el("div", { class: "event-hint", text: t("apple:" + event.hint) }) : null)
     );
 }
 
@@ -442,8 +445,8 @@ function currentJob() {
     return jobs().find((job) => job.key === view.key) || null;
 }
 
-const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn" };
-const JOB_UNFINISHED = ["killed", "cancelled"];
+const JOB_BADGE = { ok: "ok", failed: "bad", blocked: "warn", config_error: "bad", killed: "idle", waiting: "idle", cancelled: "warn", login_required: "bad", window_closed: "idle" };
+const JOB_UNFINISHED = ["killed", "cancelled", "window_closed"];
 
 // The state of a job as a badge class ("ok", "warn", "bad", "idle", "busy") and a text.
 function jobState(job) {
@@ -451,7 +454,7 @@ function jobState(job) {
     const daemon = data.status?.daemon || {};
     const status = item.job;
     if (item.pending) return { cls: "busy", text: t("status:queued") };
-    if (daemon.running === job.run)
+    if (runningJobs(daemon).includes(job.run))
         return { cls: "busy", text: status?.started_at ? t("status:running_since", formatTime(status.started_at)) : t("ui:running") };
     const run = item.last_run;
     // A cancelled or interrupted run leaves no entry in the run history of a pair.
@@ -688,7 +691,7 @@ function cancelRun(job, running) {
 
 function jobActions(job) {
     const daemon = data.status?.daemon || {};
-    const running = daemon.running === job.run;
+    const running = runningJobs(daemon).includes(job.run);
     const busy = running || job.item.pending;
     const run = job.item.last_run;
     const photosBlocked = job.kind === "photos" && job.item.job?.result === "blocked";
@@ -840,6 +843,7 @@ const RUN_BADGE = {
     sync_cancelled: "warn",
     sync_stopped: "idle",
     sync_postponed: "idle",
+    sync_paused: "idle",
 };
 
 function runState(run, running) {
@@ -865,7 +869,7 @@ async function jobRuns(job) {
     const history = await api("log.history", { source: job.key, limit: 50 });
     const runs = history.runs;
     if (!runs.length) return el("p", { class: "muted", text: t("run:none") });
-    const running = data.status?.daemon?.running === job.run;
+    const running = isRunning(job.run);
     const runKey = (run) => run.started_at ?? run.finished_at;
     const index = Math.max(0, runs.findIndex((run) => runKey(run) === view.run));
     const list = el(
@@ -914,9 +918,21 @@ function runDetail(run, running) {
         "div",
         { class: "run-detail" },
         infoCard(t("run:title"), rows),
+        run.files && run.files.length ? runFiles(run) : null,
         el("section", { class: "card" }, el("h3", { text: t("run:events") }),
             run.events.length ? eventTable(run.events, false) : el("p", { class: "muted", text: t("run:no_events") }))
     );
+}
+
+// Files the run deleted (to the trash), replaced, kept as conflict copies or moved.
+function runFiles(run) {
+    const rows = run.files.map((file) =>
+        el("tr", {}, el("td", { text: t("file:" + file.kind) }),
+            el("td", { class: "path", text: file.to ? file.path + " → " + file.to : file.path })));
+    const more = run.files_total > run.files.length ? t("run:files_more", run.files_total - run.files.length) : null;
+    return el("section", { class: "card" }, el("h3", { text: t("run:files") }),
+        table([t("run:file_kind"), t("run:file_path")], rows),
+        more ? el("p", { class: "muted", text: more }) : null);
 }
 
 // --- job: settings ---------------------------------------------------------------------
@@ -938,6 +954,7 @@ function jobSettings(job) {
                   [t("photos:source_folders"), onOff(c.source_folders)],
                   ...PHOTO_FOLDERS.map((key) => [t("photos:" + key), c[key]]),
                   [t("ui:schedule"), scheduleText(job)],
+                  ...limitRows(c),
               ]
             : [
                   [t("pair:provider"), providerText(c)],
@@ -949,6 +966,7 @@ function jobSettings(job) {
                   [t("pair:brake_ratio"), Math.round(c.max_delete_ratio * 100) + " %"],
                   [t("pair:brake_count"), String(c.max_delete_count)],
                   [t("ui:schedule"), scheduleText(job)],
+                  ...limitRows(c),
               ];
     const edit = () => (job.kind === "photos" ? void guarded(() => photosDialog(c)) : pairDialog(c));
     const remove = () =>
@@ -994,12 +1012,59 @@ const JOB_TABS = { overview: jobOverview, runs: jobRuns, settings: jobSettings, 
 
 // --- service ---------------------------------------------------------------------------
 
+// The jobs the daemon runs now (several at once, one per Apple ID).
+function runningJobs(daemon) {
+    if (!daemon) return [];
+    if (Array.isArray(daemon.running_jobs)) return daemon.running_jobs;
+    return daemon.running ? [daemon.running] : [];
+}
+
+function isRunning(run) {
+    return runningJobs(data.status?.daemon).includes(run);
+}
+
 function daemonState(daemon) {
-    if (daemon.running) {
-        const job = daemon.running.startsWith("photos:") ? t("event:src_photos", daemon.running.slice(7)) : daemon.running;
-        return { cls: "busy", text: t("status:daemon_running", job) };
+    const running = runningJobs(daemon);
+    if (running.length) {
+        const names = running.map((name) => (name.startsWith("photos:") ? t("event:src_photos", name.slice(7)) : name));
+        return { cls: "busy", text: t("status:daemon_running", names.join(", ")) };
     }
     return Object.keys(daemon).length ? { cls: "ok", text: t("status:daemon_idle") } : { cls: "warn", text: t("status:daemon_unknown") };
+}
+
+// Days since a job last succeeded (or, never successful, since its first run); null if
+// it has not run yet.
+function staleDays(job) {
+    const status = job.item.job;
+    const since = status?.last_success || status?.tracked_since;
+    return since ? Math.floor((Date.now() / 1000 - since) / 86400) : null;
+}
+
+function safeCard() {
+    const all = jobs();
+    if (!all.length) return null;
+    const limit = data.status?.stale_days || 3;
+    const stale = all.filter((job) => (staleDays(job) ?? 0) >= limit);
+    const rows = all.map((job) => {
+        const days = staleDays(job);
+        const last = job.item.job?.last_success;
+        return el("tr", {}, [
+            el("a", { href: "#", text: job.name, onclick: (e) => { e.preventDefault(); choose(job.key); } }),
+            el("span", {}, last ? formatTime(last) : t("status:safe_never"),
+                (days ?? 0) >= limit ? " " : null,
+                (days ?? 0) >= limit ? badge("warn", t("status:safe_stale_badge", days)) : null),
+            formatNumber(job.item.files || 0),
+            formatBytes(job.item.bytes || 0),
+        ].map((cell) => el("td", {}, cell)));
+    });
+    return el(
+        "section",
+        { class: "card" },
+        el("h3", { text: t("status:safe_title") }),
+        el("p", { class: stale.length ? "warn-text" : "muted",
+            text: stale.length ? t("status:safe_stale", stale.length, limit) : t("status:safe_ok", limit) }),
+        table([t("status:safe_job"), t("status:safe_last"), t("status:safe_files"), t("status:safe_size")], rows)
+    );
 }
 
 function serviceOverview() {
@@ -1014,6 +1079,7 @@ function serviceOverview() {
     ];
     return [
         headCard(state.cls, t("nav:service_title"), state.text, [change]),
+        safeCard(),
         noticesCard(status.notices || [], null),
         infoCard(t("ui:details"), rows),
     ].filter(Boolean);
@@ -1054,6 +1120,27 @@ function jobIntervalField(value) {
     const s = settingsCache;
     return field(t("schedule:job_interval"), intervalInput("interval", value, s, false),
         t("schedule:job_hint", s.interval_minutes, s.min_interval_minutes));
+}
+
+// Time window and transfer limit of a pair or photos dialog; empty means none.
+function limitFields(c) {
+    return [
+        field(t("schedule:window"), el("input", { name: "window", type: "text", placeholder: "22:00-06:00",
+            pattern: "\\s*\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}\\s*", value: c.window || "" }), t("schedule:window_hint")),
+        field(t("schedule:rate"), el("input", { name: "max_rate_kb", type: "number", min: 1, step: 1,
+            placeholder: t("schedule:rate_none"), value: c.max_rate_kb ?? "" }), t("schedule:rate_hint")),
+    ];
+}
+
+function limitValues(v) {
+    return { window: v.window.trim() || null, max_rate_kb: v.max_rate_kb === "" ? null : Number(v.max_rate_kb) };
+}
+
+function limitRows(c) {
+    return [
+        [t("schedule:window"), c.window || t("schedule:window_none")],
+        [t("schedule:rate"), c.max_rate_kb ? t("schedule:rate_value", formatNumber(c.max_rate_kb)) : t("schedule:rate_none")],
+    ];
 }
 
 function jobInterval(value) {
@@ -1141,6 +1228,7 @@ function pairDialog(pair) {
             )
         ),
         jobIntervalField(p.interval_minutes),
+        ...limitFields(p),
         editing ? el("p", { class: "hint", text: t("pair:reset_hint") }) : null,
     ];
     openDialog(t(editing ? "pair:edit_title" : "pair:add_title"), fields, t("common:save"), async (v) => {
@@ -1155,6 +1243,7 @@ function pairDialog(pair) {
             max_delete_ratio: Number(v.ratio) / 100,
             max_delete_count: Number(v.count),
             interval_minutes: jobInterval(v.interval),
+            ...limitValues(v),
         };
         await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(pair) }, true);
         view.key = "pair:" + pair.name;
@@ -1186,7 +1275,9 @@ async function photosDialog(job) {
             LIBRARIES.map((lib) => checkbox("lib_" + lib, t("photos:lib_" + lib), j.libraries.includes(lib)))),
         el("fieldset", {}, el("legend", { text: t("photos:options") }),
             PHOTO_SWITCHES.map((key) => checkbox(key, t("photos:" + key), j[key])),
-            el("p", { class: "hint", text: t("photos:mirror_deletes_hint") })),
+            el("p", { class: "hint", text: t("photos:mirror_deletes_hint") }),
+            field(t("photos:album_names"), el("textarea", { name: "album_names", text: (j.album_names || []).join("\n") }),
+                t("photos:album_names_hint"))),
         el("fieldset", {}, el("legend", { text: t("photos:folders") }),
             checkbox("source_folders", t("photos:source_folders"), j.source_folders),
             el("p", { class: "hint", text: t("photos:source_folders_hint") }),
@@ -1194,9 +1285,24 @@ async function photosDialog(job) {
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
         jobIntervalField(j.interval_minutes),
+        ...limitFields(j),
+        el("details", { class: "advanced" }, el("summary", { text: t("photos:advanced") }),
+            el("div", { class: "row" },
+                field(t("pair:brake_ratio"), el("input", { name: "ratio", type: "number", min: 0, max: 100, step: 1, value: Math.round(j.max_delete_ratio * 100) })),
+                field(t("pair:brake_count"), el("input", { name: "count", type: "number", min: 0, step: 1, value: j.max_delete_count }))),
+            el("div", { class: "row" },
+                field(t("photos:trash_days"), el("input", { name: "trash_days", type: "number", min: 0, max: 3650, step: 1, value: j.trash_days }),
+                    t("photos:trash_days_hint")),
+                field(t("photos:workers"), el("input", { name: "workers", type: "number", min: 1, max: 8, step: 1, value: j.workers }),
+                    t("photos:workers_hint")))),
     ];
     openDialog(t(editing ? "photos:edit_title" : "photos:add_title"), fields, t("common:save"), async (v) => {
-        const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval) };
+        const photos = { name: v.name, account: v.account, target: v.target, interval_minutes: jobInterval(v.interval), ...limitValues(v) };
+        photos.album_names = v.album_names.split("\n").map((s) => s.trim()).filter(Boolean);
+        photos.max_delete_ratio = Number(v.ratio) / 100;
+        photos.max_delete_count = Number(v.count);
+        photos.trash_days = Number(v.trash_days);
+        photos.workers = Number(v.workers);
         photos.libraries = LIBRARIES.filter((lib) => v["lib_" + lib] === "on");
         for (const key of PHOTO_SWITCHES) photos[key] = v[key] === "on";
         photos.source_folders = v.source_folders === "on";
@@ -1335,10 +1441,18 @@ function addClicked(event) {
 
 // --- start -----------------------------------------------------------------------------
 
+let refreshTimer = null;
+
+function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    if (document.hidden) return; // resumed by the visibilitychange listener
+    refreshTimer = setTimeout(() => void autoRefresh(), runningJobs(data.status?.daemon).length ? REFRESH_RUNNING_MS : REFRESH_MS);
+}
+
 async function autoRefresh() {
     const live = view.tab === "overview" || view.tab === "runs";
     if (live && !openMenu && !document.querySelector("dialog[open]")) await guarded(refresh);
-    setTimeout(autoRefresh, data.status?.daemon?.running ? REFRESH_RUNNING_MS : REFRESH_MS);
+    scheduleRefresh();
 }
 
 async function start() {
@@ -1358,8 +1472,12 @@ async function start() {
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") closeMenu();
     });
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) clearTimeout(refreshTimer);
+        else void autoRefresh();
+    });
     await guarded(refresh);
-    setTimeout(autoRefresh, data.status?.daemon?.running ? REFRESH_RUNNING_MS : REFRESH_MS);
+    scheduleRefresh();
 }
 
 await start();

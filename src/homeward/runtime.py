@@ -219,12 +219,17 @@ EVENT_CODES = (
     "sync_failed",
     "sync_stopped",  # the service stopped (e.g. package update); the run is repeated
     "sync_cancelled",  # the user cancelled the run in the DSM UI
+    "sync_paused",  # the job's time window closed; it goes on when the window opens
     "sync_postponed",  # iCloud was not ready (e.g. indexing); the next scheduled run retries
     "delete_brake",
     "conflict",
     "file_failed",
     "config_error",  # the config file is invalid; nothing runs until it is fixed
     "already_running",  # another run for the same account still holds the lock
+    "folder_missing",  # a synced folder is gone; the run stopped before changing anything
+    "integrity_repaired",  # the weekly check moved a damaged photo aside to download it again
+    "integrity_damaged",  # the weekly check found a damaged photo iCloud no longer has
+    "not_backed_up",  # no successful run for ``STALE_DAYS``; ``days`` says how long
     "notices_cleared",  # the user cleared the notices on the status page
     "sync_summary",  # what a run did; ``counts`` maps an action kind to a number
 )
@@ -339,7 +344,7 @@ class EventLogHandler(logging.Handler):
         else:
             level = Level.INFO
         until = getattr(record, "until", None)
-        keys = ("account", "counts")
+        keys = ("account", "counts", "files", "files_total")
         details = {key: getattr(record, key) for key in keys if hasattr(record, key)}
         record_event(
             level,

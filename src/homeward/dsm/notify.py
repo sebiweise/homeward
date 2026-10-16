@@ -19,13 +19,13 @@ TITLE_KEY = "homeward:app:app_name"
 
 
 class Event(StrEnum):
-    """Each value is a key in the ``[notify]`` section of the UI strings; the
-    string takes one argument."""
+    """Each value is a key in the ``[notify]`` section of the UI strings."""
 
     SYNC_FAILED = "sync_failed"  # names the failed pair or photos backup
     DELETE_BRAKE = "delete_brake"  # names the pair
     LOGIN_NEEDED = "login_needed"  # names the account
-    CONFLICTS = "conflicts"  # names the pair
+    CONFLICTS = "conflicts"  # names the pair and the number of conflict copies
+    NOT_BACKED_UP = "not_backed_up"  # names the job and the days since its last success
 
 
 def notify(event: Event, *args: str, binary: str = SYNODSMNOTIFY) -> bool:
