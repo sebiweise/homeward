@@ -204,6 +204,16 @@ def test_filters() -> None:
     assert {i.key for i in no_videos.list_items()} == {"personal/a/original", "personal/b/original"}
 
 
+def test_only_the_chosen_albums_are_read() -> None:
+    options = PhotoOptions(album_names=("Cats", "Not there"))
+    source = ICloudPhotosSource(make_service(), [Library.PERSONAL], options)
+    items = {item.key: item for item in source.list_items()}
+    assert items["personal/a/original"].albums == ("Cats",)
+    assert items["personal/b/original"].albums == ()
+    cursor = source.cursor()
+    assert cursor is not None and "options=11111101-" in cursor  # a new choice lists again
+
+
 def test_cursor_combines_library_tokens() -> None:
     service = make_service()
     source = ICloudPhotosSource(service)
@@ -831,9 +841,9 @@ class ChangeClient:
 
 @pytest.fixture
 def changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    import homeward.providers.icloud_photos as module
+    from homeward.providers import pyicloud_compat
 
-    monkeypatch.setattr(module, "_zone_req", lambda library, since: since)
+    monkeypatch.setattr(pyicloud_compat, "zone_changes_request", lambda library, since: since)
 
 
 def changed_source(

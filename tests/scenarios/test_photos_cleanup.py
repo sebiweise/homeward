@@ -1,10 +1,12 @@
 """Cleaning up photos deleted in iCloud on request, and the Synology recycle bin."""
 
+import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
+from homeward.core.models import FolderMissing
 from homeward.core.photo_state import PhotoStateDB, gone_counts
 from homeward.core.photos import PhotoActionKind, PhotoOutcome, backup_photos
 from homeward.core.planner import DeleteBrake
@@ -148,3 +150,18 @@ def test_an_unusable_recycle_bin_falls_back_to_the_backup_trash(
 
 def test_gone_counts_of_a_missing_database(tmp_path: Path) -> None:
     assert gone_counts(tmp_path / "missing.sqlite3") == {}
+
+
+def test_a_missing_backup_folder_stops_the_run(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    root = tmp_path / "share" / "Photos"
+    source.add("a1", "IMG_1.HEIC", b"one", created=at(1))
+    backup(source, root, pstate)
+    (root / "2024/01/IMG_1.HEIC").unlink()
+    shutil.rmtree(tmp_path / "share")  # e.g. the shared folder is not mounted
+
+    with pytest.raises(FolderMissing, match=r"backup folder .* is missing"):
+        backup(source, root, pstate)
+
+    assert not root.exists()  # nothing was downloaded into a fresh folder

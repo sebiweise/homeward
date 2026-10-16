@@ -111,9 +111,14 @@ script start-stop-status stop
 
 step "uninstall"
 export SYNOPKG_PKG_STATUS=UNINSTALL
+mkdir -p "${SYNOPKG_PKGVAR}/state/sessions/me" "${SYNOPKG_PKGVAR}/state/sessions-pending/me"
+echo cookie > "${SYNOPKG_PKGVAR}/state/sessions/me/trusted"
+echo state > "${SYNOPKG_PKGVAR}/state/me.sqlite3"
 script preuninst
 script postuninst
 ls "${ROOT}"/share/.homeward-backup/*/config.toml >/dev/null || fail "no config backup"
+ls "${ROOT}"/share/.homeward-backup/*/state/me.sqlite3 >/dev/null || fail "no state backup"
+! ls -d "${ROOT}"/share/.homeward-backup/*/state/sessions* 2>/dev/null || fail "sessions copied to the share"
 [ -f "${ROOT}/share/cloud/a.txt" ] || fail "uninstall touched synced files"
 
 echo "lifecycle OK"

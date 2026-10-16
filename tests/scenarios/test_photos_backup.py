@@ -378,6 +378,18 @@ def test_unsafe_names_stay_inside_target(
     assert all(p.is_relative_to(tmp_path / "t") for p in files)
 
 
+def test_names_dsm_would_hide_or_claim_get_an_underscore(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", ".a.jpg", created=at(2024, 5), albums=("#recycle", "@eaDir", ".Geheim"))
+    run(source, tmp_path, pstate)
+    assert (tmp_path / "2024/05/_.a.jpg").is_file()
+    assert sorted(p.name for p in (tmp_path / "Alben").iterdir()) == [
+        "_#recycle", "_.Geheim", "_@eaDir",
+    ]  # fmt: skip
+    assert not (tmp_path / "Alben" / "#recycle").exists()
+
+
 def test_favorites_folder_holds_hard_links(
     source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
 ) -> None:

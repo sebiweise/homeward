@@ -23,7 +23,6 @@ WHEELHOUSE="${PKG_DEST}/wheelhouse"
 CONFIG="${PKG_VAR}/config.toml"
 PID_FILE="${PKG_VAR}/homeward.pid"
 LOG_FILE="${PKG_VAR}/homeward.log"
-LOG_MAX_BYTES=5242880
 STOP_TIMEOUT=45
 
 # Messages for the user. DSM shows the content of SYNOPKG_TEMP_LOGFILE in Package
@@ -94,16 +93,25 @@ service_postuninst() {
 
 # Copy config and state into the package's share before DSM deletes var/, so a
 # reinstall can pick them up again. The synced files themselves live in shares
-# and are never touched by an uninstall.
+# and are never touched by an uninstall. The iCloud sessions (trusted-session
+# cookies) stay behind: anyone who can read the share could use them to reach the
+# Apple ID, so a reinstall asks to sign in again instead.
 backup_var() {
     if [ ! -d "${PKG_SHARE}" ] || [ ! -f "${CONFIG}" ]; then
         return 0
     fi
     dest="${PKG_SHARE}/.homeward-backup/$(date +%Y-%m-%d_%H%M%S)"
-    echo "Saving configuration and state to ${dest}"
+    echo "Saving configuration and state (without the iCloud sessions) to ${dest}"
     mkdir -p "${dest}" && cp -p "${CONFIG}" "${dest}/" || return 0
     if [ -d "${PKG_VAR}/state" ]; then
-        cp -pR "${PKG_VAR}/state" "${dest}/"
+        mkdir -p "${dest}/state"
+        for entry in "${PKG_VAR}/state"/* "${PKG_VAR}/state"/.[!.]*; do
+            [ -e "${entry}" ] || continue
+            case "$(basename "${entry}")" in
+                sessions | sessions-pending) continue ;;
+            esac
+            cp -pR "${entry}" "${dest}/state/"
+        done
     fi
 }
 
@@ -111,21 +119,18 @@ daemon_running() {
     [ -r "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null
 }
 
-rotate_log() {
-    if [ -f "${LOG_FILE}" ] && [ "$(wc -c < "${LOG_FILE}")" -gt "${LOG_MAX_BYTES}" ]; then
-        mv -f "${LOG_FILE}" "${LOG_FILE}.1"
-    fi
-}
-
 service_start() {
     if daemon_running; then
         return 0
     fi
-    rotate_log
+    # The daemon rotates the log itself (--log-file, 5 MB x 3).
     # HOME points into var/ so libraries that write to ~ (cookies, caches) stay
     # inside the package and survive upgrades.
+    # The redirect only catches output from before the log file is opened.
+    # shellcheck disable=SC2094
     HOME="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" \
-        nohup "${VENV}/bin/homeward-daemon" --config "${CONFIG}" >> "${LOG_FILE}" 2>&1 &
+        nohup "${VENV}/bin/homeward-daemon" --config "${CONFIG}" --log-file "${LOG_FILE}" \
+        >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"
     sleep 1
     daemon_running || { rm -f "${PID_FILE}"; fail "Homeward did not start, see ${LOG_FILE}."; }

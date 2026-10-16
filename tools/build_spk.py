@@ -8,6 +8,8 @@ target CPU (manylinux2014, CPython 3.12). postinst builds a venv from them with
 SynoCommunity's Python 3.12, offline. The version comes from the latest git tag
 (``vX.Y.Z``): the DSM version is ``X.Y.Z-N`` with N commits since that tag.
 
+The dependencies are the versions pinned, with hashes, in requirements/icloud.txt.
+
 Stdlib only; needs git and pip (with network access to PyPI).
 """
 
@@ -29,6 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MTIME = int(os.environ.get("SOURCE_DATE_EPOCH") or time.time())
 PACKAGE_SRC = ROOT / "package"
+LOCK_FILE = ROOT / "requirements" / "icloud.txt"
 
 PACKAGE_NAME = "homeward"
 DISPLAY_NAME = "Homeward"
@@ -89,17 +92,18 @@ def build_wheelhouse(arch: str, wheelhouse: Path) -> list[Path]:
     machine = ARCHS[arch][0]
     wheelhouse.mkdir(parents=True)
     run(sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(wheelhouse), ".")
-    (homeward,) = wheelhouse.glob("homeward-*.whl")
+    # Exactly the pinned versions, and only files whose hash is in the lock file.
     run(
         sys.executable, "-m", "pip", "download",
         "--dest", str(wheelhouse),
         "--only-binary=:all:",
+        "--require-hashes", "--no-deps",
         "--platform", f"manylinux2014_{machine}",
         "--platform", f"manylinux_2_17_{machine}",
         "--python-version", PYTHON_VERSION,
         "--implementation", "cp",
         "--abi", "cp" + PYTHON_VERSION.replace(".", ""),
-        f"{homeward}[icloud]",
+        "--requirement", str(LOCK_FILE),
     )  # fmt: skip
     wheels = sorted(wheelhouse.iterdir())
     for wheel in wheels:

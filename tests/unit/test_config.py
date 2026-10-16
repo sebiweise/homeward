@@ -202,3 +202,31 @@ def test_intervals() -> None:
 def test_invalid_intervals(data: dict[str, object]) -> None:
     with pytest.raises(ConfigError, match=r"interval_minutes|daemon"):
         parse_config(data)
+
+
+def test_time_window_and_rate() -> None:
+    text = VALID.replace(
+        "trash_days = 7\n", 'trash_days = 7\nwindow = "22:00-06:00"\nmax_rate_kb = 500\n'
+    )
+    config = parse_config(
+        {**tomllib.loads(text), "photos": [{"name": "p", "target": "/a", "max_rate_kb": 0}]}
+    )
+    docs, other = config.pairs
+    assert (str(docs.window), docs.max_rate_kb) == ("22:00-06:00", 500)
+    assert (other.window, other.max_rate_kb) == (None, None)
+    assert config.photos[0].max_rate_kb is None  # 0 means no limit
+
+
+@pytest.mark.parametrize(
+    ("entry", "match"),
+    [
+        ({"window": "22-6"}, "HH:MM"),
+        ({"window": 22}, "window"),
+        ({"max_rate_kb": -1}, "max_rate_kb"),
+        ({"max_rate_kb": "500"}, "max_rate_kb"),
+        ({"max_rate_kb": True}, "max_rate_kb"),
+    ],
+)
+def test_invalid_limits(entry: dict[str, object], match: str) -> None:
+    with pytest.raises(ConfigError, match=match):
+        parse_config({"photos": [{"name": "p", "target": "/a", **entry}]})

@@ -16,10 +16,11 @@ class FakeFlow:
         self.password, self.code, self.needs_code = password, code, needs_code
         self.state_dir: Path | None = None
         self.account = ""
+        self.error = "wrong password"
 
     def login(self, password: str) -> bool:
         if password != self.password:
-            raise RuntimeError("wrong password")
+            raise RuntimeError(self.error)
         return self.needs_code
 
     def verify_2fa(self, code: str) -> None:
@@ -90,6 +91,15 @@ def test_login_without_code_and_wrong_password(tmp_path: Path) -> None:
     assert excinfo.value.code == "login_failed"
 
 
+def test_login_error_names_apple_reason(tmp_path: Path) -> None:
+    flow = FakeFlow(needs_code=False)
+    backend = _backend(tmp_path, flow)
+    flow.error = "Invalid email/password combination. (-20101)"
+    with pytest.raises(ApiError) as excinfo:
+        backend.login("me", "a@b.de", "wrong")
+    assert excinfo.value.code == "apple_wrong_password"
+
+
 def test_code_without_waiting_sign_in(tmp_path: Path) -> None:
     backend = _backend(tmp_path, FakeFlow())
     with pytest.raises(ApiError) as excinfo:
@@ -102,3 +112,33 @@ def test_helper_gives_up(tmp_path: Path) -> None:
     channel.reset()
     run_helper(FakeFlow(), "pw", channel, timeout=0.05)
     assert channel.read("result") == {"seq": 1, "state": "expired"}
+
+
+def test_only_the_login_helper_of_this_channel_counts(tmp_path: Path) -> None:
+    proc, channel = tmp_path / "proc", tmp_path / "login" / "me"
+    for pid, argv in (
+        (10, [b"python3", b"-m", b"homeward.api.login", bytes(channel)]),
+        (11, [b"python3", b"-m", b"homeward.api.login", bytes(tmp_path / "login" / "other")]),
+        (12, [b"/usr/bin/synoscgi"]),  # a reused pid
+    ):
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / str(pid) / "cmdline").write_bytes(b"\0".join(argv) + b"\0")
+
+    assert login.is_helper_process(10, channel, proc)
+    assert not login.is_helper_process(11, channel, proc)
+    assert not login.is_helper_process(12, channel, proc)
+    assert not login.is_helper_process(13, channel, proc)  # gone
+
+
+def test_a_stale_pid_file_never_signals_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel = Channel(tmp_path / "login" / "me")
+    channel.dir.mkdir(parents=True)
+    (channel.dir / "pid").write_text(str(__import__("os").getpid()))  # alive, not a helper
+    killed: list[int] = []
+    monkeypatch.setattr(login.os, "kill", lambda pid, sig: killed.append(sig))
+
+    channel.stop_helper()
+
+    assert killed == [0]  # only the liveness check, no SIGTERM

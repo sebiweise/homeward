@@ -16,7 +16,9 @@ from homeward.api.auth import DsmAuthenticator
 from homeward.api.cgi import handle, write_response
 from homeward.api.errors import ApiError
 from homeward.api.store import KEEP_BACKUPS, ConfigStore
+from homeward.core.config import parse_config
 from homeward.core.models import FileMeta
+from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
 from homeward.runtime import (
     Level,
@@ -350,6 +352,8 @@ def test_status_shows_last_run_and_daemon(client: Client, tmp_path: Path) -> Non
 
     status = client.call("status.get")
     assert status["daemon"] == {"running": "docs"}
+    assert status["stale_days"] == 3
+    assert (status["pairs"][0]["files"], status["pairs"][0]["bytes"]) == (0, 0)
     last = status["pairs"][0]["last_run"]
     assert last["started_at"] == 2.0
     assert last["blocked"] == "too many"
@@ -364,9 +368,15 @@ def test_status_shows_the_progress_of_the_running_job(client: Client, tmp_path: 
     write_progress(client.paths, "pair:docs", {"phase": "transferring", "done": 2, "total": 5})
     assert client.call("status.get")["pairs"][0]["progress"] is None  # not running
 
-    client.paths.status_file.write_text('{"running": "docs"}')
+    client.paths.status_file.write_text('{"running": "docs"}')  # an older daemon
     progress = client.call("status.get")["pairs"][0]["progress"]
     assert (progress["phase"], progress["done"], progress["total"]) == ("transferring", 2, 5)
+
+    # Runs of different Apple IDs side by side
+    client.paths.status_file.write_text('{"running": "docs", "running_jobs": ["docs", "photos:x"]}')
+    assert client.call("status.get")["pairs"][0]["progress"]["done"] == 2
+    request_cancel_ok = client.call("status.cancel", post=True, name="photos:x")
+    assert request_cancel_ok["cancelled"] == "running"
 
 
 def test_log_tail(client: Client) -> None:
@@ -465,6 +475,9 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
     assert defaults["hidden"] is False
     assert defaults["xmp"] is True
     assert defaults["source_folders"] is True
+    assert defaults["interval_minutes"] == 30  # what the dialog offers for a new backup
+    assert (defaults["max_delete_ratio"], defaults["max_delete_count"]) == (0.1, 50)
+    assert (defaults["trash_days"], defaults["workers"], defaults["album_names"]) == (30, 4, [])
 
     created = client.call("photos.create", post=True, photos=_photos(tmp_path))
     assert created["libraries"] == ["personal", "shared", "shared_albums"]
@@ -480,8 +493,16 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
         folder_scheme="{year}/{month}/{day}",
         albums_folder="Meine Alben",
         interval_minutes=720,
+        max_delete_ratio=0.25,
+        max_delete_count=100,
+        trash_days=0,
+        workers=2,
+        album_names=[" Urlaub ", "", "Familie", "Urlaub"],
     )
     updated = client.call("photos.update", post=True, photos=changed)
+    assert updated["album_names"] == ["Urlaub", "Familie"]
+    assert (updated["max_delete_ratio"], updated["max_delete_count"]) == (0.25, 100)
+    assert (updated["trash_days"], updated["workers"]) == (0, 2)
     assert updated["interval_minutes"] == 720
     assert updated["hidden"] is True
     assert updated["videos"] is False
@@ -494,6 +515,10 @@ def test_photos_lifecycle_with_all_options(client: Client, tmp_path: Path) -> No
     assert job["apple_id"] == "a@b.de"
     assert job["albums_folder"] == "Meine Alben"
     assert job["source_folders"] is False
+    config = parse_config(raw, base=client.paths.config.parent).photos[0]
+    assert config.album_names == ("Urlaub", "Familie")
+    assert config.delete_brake == DeleteBrake(max_ratio=0.25, max_count=100)
+    assert (config.trash_days, config.workers) == (0, 2)
     assert client.call("accounts.list")["accounts"][0]["photos"] == ["fotos"]
 
     with pytest.raises(ApiError) as excinfo:
@@ -525,6 +550,12 @@ def test_photos_validation(client: Client, tmp_path: Path) -> None:
         {"source_folders": 0},
         {"albums_folder": "a/b"},
         {"folder_scheme": "../{year}"},
+        {"max_delete_ratio": 1.5},
+        {"max_delete_count": 2.5},
+        {"trash_days": -1},
+        {"workers": 9},
+        {"workers": True},
+        {"album_names": "Urlaub"},
     )
     for bad in bad_values:
         invalid = _photos(tmp_path, **bad)
@@ -550,12 +581,15 @@ def test_events_and_notices(client: Client, tmp_path: Path) -> None:
                  paths=paths, attempt=1)  # fmt: skip
     record_event(Level.ERROR, "pair:docs", "file_failed", "a.txt: 503", paths=paths)
     record_event(Level.ERROR, "pair:docs", "file_failed", "b.txt: 503", paths=paths)
+    record_event(Level.INFO, "service", "sync_started", "Invalid global session", paths=paths)
     paths.events_file.open("a").write("not json\n")
 
     events = client.call("log.events")["events"]
-    assert [e["code"] for e in events] == ["file_failed", "file_failed", "icloud_indexing",
-                                           "sync_started"]  # fmt: skip
-    assert events[2]["details"] == {"attempt": 1}
+    assert [e["code"] for e in events] == ["sync_started", "file_failed", "file_failed",
+                                           "icloud_indexing", "sync_started"]  # fmt: skip
+    assert events[3]["details"] == {"attempt": 1}
+    # warnings and errors carry the code of a text explaining Apple's message; info never
+    assert "hint" not in events[0] and events[1]["hint"] is None
     errors = client.call("log.events", level="error")["events"]
     assert {e["level"] for e in errors} == {"error"}
     with pytest.raises(ApiError):
@@ -650,7 +684,9 @@ def test_run_history_of_one_job(client: Client) -> None:
     _run_event(paths, 780, "sync_postponed", exit_code=4)
     _run_event(paths, 700, "sync_started", dry_run=True)
     _run_event(paths, 690, "file_failed", Level.WARNING)
-    _run_event(paths, 680, "sync_summary", counts={"download": 3, "failed": 1})
+    deleted = [{"kind": "delete", "path": "2024/05/a.jpg", "to": ""}]
+    _run_event(paths, 680, "sync_summary", counts={"download": 3, "failed": 1}, files=deleted,
+               files_total=4)  # fmt: skip
     _run_event(paths, 670, "sync_failed", Level.ERROR, exit_code=1, dry_run=True)
     _run_event(paths, 100, "sync_started", dry_run=False)
     record_event(Level.ERROR, "pair:docs", "file_failed", paths=paths)  # another job
@@ -661,6 +697,8 @@ def test_run_history_of_one_job(client: Client) -> None:
     running, failed, postponed, finished = runs
     assert running["finished_at"] is None and running["events"] == []
     assert failed["dry_run"] and failed["counts"] == {"download": 3, "failed": 1}
+    assert (failed["files"], failed["files_total"]) == (deleted, 4)
+    assert (finished["files"], finished["files_total"]) == ([], 0)
     assert failed["level"] == "error"
     assert [e["code"] for e in failed["events"]] == ["file_failed"]
     assert [e["code"] for e in postponed["events"]] == ["icloud_indexing"]
@@ -877,10 +915,34 @@ def test_photos_cleanup_shows_the_count_and_queues_a_request(
         state.mark_gone("fotos", "b")
         state.record("other", "x", "x.jpg", 1, None)
         state.mark_gone("other", "x")
-    assert client.call("status.get")["photos"][0]["gone"] == 2
+    photos = client.call("status.get")["photos"][0]
+    assert (photos["gone"], photos["files"], photos["bytes"]) == (2, 3, 3)
 
     client.call("photos.run", post=True, name="fotos", remove_gone="true")
     (request,) = take_requests(client.paths)
     assert request.pair == "photos:fotos"
     assert request.remove_gone
     assert not request.allow_deletes
+
+
+def test_time_window_and_bandwidth(client: Client, tmp_path: Path) -> None:
+    pair = _pair(tmp_path, window=" 22:00 - 6:00 ", max_rate_kb="800")
+    created = client.call("pairs.create", post=True, pair=pair)
+    assert (created["window"], created["max_rate_kb"]) == ("22:00-06:00", 800)
+    cleared = _pair(tmp_path, window="", max_rate_kb="")
+    updated = client.call("pairs.update", post=True, pair=cleared)
+    assert (updated["window"], updated["max_rate_kb"]) == (None, None)
+    assert "window" not in tomllib.loads(client.paths.config.read_text())["pair"][0]
+
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    night = _photos(tmp_path, window="01:00-05:00", max_rate_kb=100)
+    photos = client.call("photos.create", post=True, photos=night)
+    assert (photos["window"], photos["max_rate_kb"]) == ("01:00-05:00", 100)
+
+    for bad, code in (({"window": "abends"}, "invalid_window"),
+                      ({"max_rate_kb": "viel"}, "invalid_param"),
+                      ({"max_rate_kb": 0.5}, "invalid_param"),
+                      ({"max_rate_kb": -3}, "invalid_param")):  # fmt: skip
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.update", post=True, pair=_pair(tmp_path, **bad))
+        assert _error(excinfo) == code, bad

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import existing_state
+from homeward.api.handlers.common import event_dict, existing_state
 from homeward.api.server import Context, Request
 from homeward.runtime import Event, Level, read_events
 
@@ -70,8 +70,10 @@ class _Runs:
         elif self.current is not None:
             if event.code == "sync_summary":
                 self.current["counts"] = event.details.get("counts") or {}
+                self.current["files"] = event.details.get("files") or []
+                self.current["files_total"] = event.details.get("files_total", 0)
             else:
-                self.current["events"].append(asdict(event))
+                self.current["events"].append(event_dict(event))
 
     def _end(self, event: Event) -> None:
         run = self.current
@@ -92,6 +94,8 @@ def _new_run(started_at: float | None, details: dict[str, Any]) -> dict[str, Any
         "message": "",
         "dry_run": bool(details.get("dry_run")),
         "counts": None,
+        "files": [],  # deleted, replaced, conflicting or moved files: kind, path, to
+        "files_total": 0,
         "events": [],
     }
 
@@ -111,7 +115,7 @@ def events(ctx: Context, request: Request) -> dict[str, Any]:
         for e in read_events(ctx.paths, limit=10_000)
         if order.index(e.level) >= minimum and (not source or e.source == source)
     ]
-    return {"events": [asdict(event) for event in found[:limit]]}
+    return {"events": [event_dict(event) for event in found[:limit]]}
 
 
 def _int(value: str, low: int, high: int) -> int:

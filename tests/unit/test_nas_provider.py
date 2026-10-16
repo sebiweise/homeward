@@ -41,7 +41,7 @@ def test_delete_moves_to_trash(nas: NasProvider, tmp_path: Path) -> None:
     nas.delete("d/a.txt")
     day = tmp_path / ".homeward-papierkorb" / "2026-10-11" / "d"
     assert (day / "a.txt").read_bytes() == b"1"
-    assert (day / "a.txt (2)").read_bytes() == b"2"
+    assert (day / "a (2).txt").read_bytes() == b"2"
     assert nas.list_files() == {}  # the trash and Synology folders are not listed
 
 
@@ -83,7 +83,7 @@ def test_delete_uses_the_share_recycle_bin(tmp_path: Path) -> None:
     nas.write("a/b.txt", io.BytesIO(b"2"), mtime=1.0)
     nas.delete("a/b.txt")
     assert (share / "#recycle" / "Work" / "a" / "b.txt").read_bytes() == b"1"
-    assert (share / "#recycle" / "Work" / "a" / "b.txt (2)").read_bytes() == b"2"
+    assert (share / "#recycle" / "Work" / "a" / "b (2).txt").read_bytes() == b"2"
     assert not (root / ".homeward-papierkorb").exists()
 
 

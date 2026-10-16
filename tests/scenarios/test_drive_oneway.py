@@ -139,7 +139,7 @@ def test_mass_delete_in_icloud_hits_the_brake(down: Pair) -> None:
     for i in range(10):
         down.api.put(f"Docs/{i}.txt", str(i))
     down.run()
-    for i in range(5):
+    for i in range(6):
         down.api.remove(f"Docs/{i}.txt")
     nas = NasProvider(down.root)
     icloud = ICloudDriveProvider(down.api, "Docs")

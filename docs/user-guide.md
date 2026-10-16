@@ -55,10 +55,27 @@ Apple ID, and *Service* shows the background service.
 | Settings | The task's settings, with *Edit* and *Delete*. |
 | Log | The task's event log, filtered by level. Under *Service*, the log tab shows the events of all tasks and the raw service log. |
 
+*Service* also answers "Is everything backed up?": every task with its last successful
+run, its number of files and their size. A task without a successful run for more than
+3 days (or, never successful, 3 days after its first run) is marked there, writes a
+warning to the event log and sends one DSM notification until it succeeds again.
+
+A run's details list the files it deleted, replaced, kept twice (conflict copies) or
+moved to another library, up to 200 of them; the service log has the complete list.
+Errors from Apple come with a line that explains them in words (wrong password, locked
+Apple ID, web access to iCloud data turned off, Apple throttling or down, no network).
+
+Jobs of different Apple IDs run side by side (two at a time); jobs of the same Apple ID
+take turns, since they share one iCloud session.
+
 Homeward keeps only the trusted session Apple hands out after the 2FA step (in
 `state/sessions/<account>/`, readable only by the package user), never the password.
 When Apple expires the session, the affected jobs fail and the Apple ID list asks you to
-sign in again. A failed sync also sends a DSM notification.
+sign in again. DSM notifications tell you when a sync fails, the delete brake stops a
+run, an Apple ID needs a new sign-in (once per Apple ID, not once per job), a
+bidirectional sync created conflict copies, or a task has not been backed up for 3 days.
+The sessions are left out of the backup the package keeps when it is uninstalled, so a
+reinstall asks for a new sign-in.
 
 NAS folders are picked with *Browse...*: it lists the shared folders the user
 `sc-homeward` can open, and *New folder* creates one in place. A share missing there
@@ -99,7 +116,16 @@ interval_minutes = 60     # every job runs once per interval (5 to 10080 minutes
 
 *Service* sets this interval under "Change". A sync pair or
 photos backup can also have its own `interval_minutes` (same range, field "Own
-interval" in its dialog); without one it follows the global schedule.
+interval" in its dialog); without one it follows the global schedule. A new photos
+backup in the app starts with 30 minutes.
+
+Two more optional keys apply to both sync pairs and photos backups (fields *Time window*
+and *Bandwidth* in their dialogs):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `window` | none | daily hours in NAS time, e.g. `"22:00-06:00"`: scheduled runs start only then; when the window closes, a run pauses, keeps what it transferred and goes on when the window opens. *Sync now* always runs. |
+| `max_rate_kb` | none | at most this many KB/s for the job's downloads and uploads (shared by its parallel downloads) |
 
 ### Photos backup
 
@@ -122,6 +148,7 @@ Optional settings with their defaults:
 | `libraries` | `["personal", "shared", "shared_albums"]` | which libraries to back up |
 | `folder_scheme` | `"{year}/{month}"` | folders by capture date; `{year}`, `{month}`, `{day}` |
 | `albums` | `true` | album folders with hard links to the originals |
+| `album_names` | `[]` | only these albums become folders (one name per line in the dialog); empty: all |
 | `favorites` | `true` | favorites folder with hard links |
 | `videos` | `true` | videos |
 | `live_videos` | `true` | the video part of Live Photos |
@@ -139,6 +166,18 @@ Optional settings with their defaults:
 | `hidden_folder` | `"Ausgeblendet"` | folder for hidden photos |
 | `shared_albums_folder` | `"Geteilte Alben"` | folder for shared albums |
 | `source_folders` | `true` | `false` puts the Shared Library and shared albums straight into the target folder, for a backup of just one of them |
+
+The dialog keeps `workers`, the delete brake and `trash_days` under *Advanced settings*.
+Albums belong to the Apple ID, not to a library, and can hold photos of the Shared
+Library, so a backup of only the Shared Library still reads all albums while `albums`
+is on; switch it off, or pick albums, to skip that.
+
+A photo moved between the personal and the Shared Library in iCloud is moved on the NAS
+too (into the other library's folder) instead of being downloaded again.
+
+Once a week a run checks that every backed-up photo still has the size it was
+downloaded with. A damaged file (cut off, overwritten) goes to the trash with its album
+links and is downloaded again; one iCloud no longer has stays as it is, with a warning.
 
 Switching an option off later keeps the files it already produced. Folder changes
 apply to newly downloaded photos; photos already on the NAS keep their place.
@@ -203,9 +242,16 @@ does not keep names apart that differ only in upper/lower case (`notes.txt`,
   share's recycle bin `#recycle` if it is enabled, otherwise
   `.homeward-papierkorb/<date>/` in the pair's folder; in iCloud, "Recently Deleted".
 - The first run of a pair never deletes or overwrites anything.
-- The delete brake stops a run that would delete too much. Check the plan with a dry
-  run and approve it once with *Approve deletions* on the pair's overview or
-  `hw sync --pair NAME --allow-deletes`.
+- The delete brake stops a run that would delete too much. The share
+  (`max_delete_ratio`) only counts from more than 5 deletions, so deleting 2 of 10 files
+  goes through. Check the plan with a dry run and approve it once with *Approve
+  deletions* on the pair's overview or `hw sync --pair NAME --allow-deletes`.
+- A run stops before changing anything when a folder it synced before is gone (a
+  renamed or deleted folder, a shared folder that is not mounted, an empty iCloud Drive
+  answer): an empty side is never read as "delete everything". It runs again as soon as
+  the folder is back.
+- File names iCloud allows but DSM treats specially (starting with `.`, `@` or `#`) are
+  stored on the NAS with a leading `_`.
 
 ## Command reference
 
@@ -232,6 +278,8 @@ The app's overview, runs and log tabs show the same information as these files:
 sudo cat /var/packages/homeward/var/status.json      # last result and next run per job
 sudo tail -n 50 /var/packages/homeward/var/homeward.log
 ```
+
+The service log rotates at 5 MB and keeps three older files (`homeward.log.1` to `.3`).
 
 | Symptom | Cause and fix |
 | --- | --- |

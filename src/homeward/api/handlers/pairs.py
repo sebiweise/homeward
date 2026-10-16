@@ -11,7 +11,7 @@ from typing import Any
 
 from homeward.api.errors import ApiError
 from homeward.api.handlers.common import check_name, without_none
-from homeward.api.handlers.settings import parse_interval
+from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 from homeward.core.config import REMOTE_PROVIDERS, PairConfig
@@ -37,6 +37,8 @@ def to_dict(pair: PairConfig) -> dict[str, Any]:
         "max_delete_ratio": pair.delete_brake.max_ratio,
         "max_delete_count": pair.delete_brake.max_count,
         "interval_minutes": pair.interval_minutes,
+        "window": str(pair.window) if pair.window else None,
+        "max_rate_kb": pair.max_rate_kb,
     }
 
 
@@ -164,6 +166,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "max_delete_ratio": ratio,
         "max_delete_count": count,
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
+        **parse_limits(data),
     }
 
 

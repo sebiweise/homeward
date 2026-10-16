@@ -17,6 +17,8 @@ class Provider(Protocol):
     # ``case_insensitive = True``; the planner then avoids uploads that would collide.
     # Optional: ``file_identity(version) -> str`` returns the part of a version token
     # that survives a rename or move, so the planner can recognise renames there.
+    # Optional: ``root_exists() -> bool`` tells, after ``list_files``, whether the
+    # root folder exists at all, so a missing folder is not taken for an empty one.
 
     def list_files(self) -> dict[str, FileMeta]:
         """Return every file below the root, keyed by relative path."""

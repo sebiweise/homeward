@@ -3,6 +3,7 @@
 import logging
 from dataclasses import dataclass, field, replace
 
+from homeward.core.limits import Throttle, throttled
 from homeward.core.models import Action, ActionKind, FileMeta, Plan
 from homeward.core.progress import Progress
 from homeward.core.provider import Provider
@@ -42,8 +43,10 @@ class Executor:
         state: StateDB,
         pair: str,
         progress: Progress | None = None,
+        throttle: Throttle | None = None,
     ) -> None:
         self.progress = progress or Progress()
+        self.throttle = throttle
         self.local = local
         self.remote = remote
         self.state = state
@@ -130,7 +133,7 @@ class Executor:
             # record it copies the file again.
             self.state.forget(self.pair, meta.path)
         with src.open_read(meta.path) as stream:
-            return dst.write(meta.path, stream, meta.mtime)
+            return dst.write(meta.path, throttled(stream, self.throttle), meta.mtime)
 
 
 def _need[T](value: T | None) -> T:

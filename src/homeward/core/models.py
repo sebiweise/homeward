@@ -40,6 +40,12 @@ class FileRecord:
     synced_at: float
 
 
+class FolderMissing(RuntimeError):
+    """A synced folder is gone (share unmounted, renamed or deleted) although the state
+    still knows its files. The run stops before planning anything: an empty listing
+    would otherwise read as "every file was deleted"."""
+
+
 class Change(StrEnum):
     """What happened to a file on one side since the last sync."""
 
