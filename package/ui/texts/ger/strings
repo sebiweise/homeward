@@ -223,6 +223,8 @@ source="Betrifft"
 event="Ereignis"
 
 [event]
+integrity_repaired="Die wöchentliche Prüfung hat eine beschädigte Datei gefunden. Sie liegt im Papierkorb und wird neu aus iCloud geladen."
+integrity_damaged="Die wöchentliche Prüfung hat eine beschädigte Datei gefunden, die es in iCloud nicht mehr gibt. Sie bleibt unverändert liegen."
 sync_paused="Das Zeitfenster hat sich geschlossen. Der Lauf hat angehalten, bereits übertragene Dateien bleiben erhalten; er geht weiter, sobald das Fenster wieder öffnet."
 not_backed_up="Seit mehr als 3 Tagen kein erfolgreicher Lauf. Prüfe die Hinweise und das Protokoll dieses Jobs."
 level_info="Info"
@@ -380,6 +382,7 @@ up_to_date="{0} aktuell"
 failed="{0} fehlgeschlagen"
 
 [progress]
+phase_verifying="Gesicherte Fotos prüfen (wöchentlich)"
 title="Fortschritt"
 phase="Schritt"
 phase_connecting="Anmelden bei iCloud"

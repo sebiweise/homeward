@@ -223,6 +223,8 @@ source="About"
 event="Event"
 
 [event]
+integrity_repaired="The weekly check found a damaged file. It is in the trash and is downloaded again from iCloud."
+integrity_damaged="The weekly check found a damaged file that iCloud no longer has. It stays as it is."
 sync_paused="The time window closed. The run paused and keeps the files already transferred; it goes on when the window opens again."
 not_backed_up="No successful run for more than 3 days. Check this job's notices and log."
 level_info="Info"
@@ -380,6 +382,7 @@ up_to_date="{0} up to date"
 failed="{0} failed"
 
 [progress]
+phase_verifying="Checking the backed-up photos (weekly)"
 title="Progress"
 phase="Step"
 phase_connecting="Signing in to iCloud"

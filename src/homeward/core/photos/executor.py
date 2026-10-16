@@ -15,6 +15,7 @@ from homeward.core.files import link_noreplace, rename_noreplace, temp_name
 from homeward.core.limits import Throttle, throttle_for, throttled
 from homeward.core.models import FolderMissing
 from homeward.core.photo_state import PhotoStateDB
+from homeward.core.photos.integrity import IntegrityResult, check_integrity, integrity_due
 from homeward.core.photos.model import (
     CHUNK,
     FILE_KINDS,
@@ -328,6 +329,7 @@ def _need[T](value: T | None) -> T:
 class PhotoOutcome:
     plan: PhotoPlan
     result: PhotoRunResult | None  # None for a dry run
+    integrity: IntegrityResult | None = None  # when this run did the weekly check
 
 
 def backup_photos(
@@ -356,6 +358,15 @@ def backup_photos(
             f"the backup folder {root} is missing, but earlier runs backed up photos "
             "there; nothing was changed. Check that the folder (or its shared folder) exists."
         )
+    integrity = None
+    if not dry_run and root.is_dir() and integrity_due(state, job, now()):
+        if state.records(job):
+            progress = progress or Progress()
+            progress.phase("verifying")
+            trash = Trash(root, recycle_bin=recycle_bin, today=today)
+            integrity = check_integrity(job, root, state, trash, now())
+        else:
+            state.set_integrity_checked(job, now())  # nothing to check yet: start the week
     plan = build_photo_plan(
         job, source, root, state, layout, albums=albums, progress=progress, now=now,
         mirror_deletes=mirror_deletes, selection=selection, brake=brake,
@@ -368,4 +379,4 @@ def backup_photos(
         recycle_bin=recycle_bin, throttle=throttle_for(max_rate_kb),
     )  # fmt: skip
     result = executor.run(plan, allow_deletes=allow_deletes)
-    return PhotoOutcome(plan, result)
+    return PhotoOutcome(plan, result, integrity)

@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS cursors (
     job TEXT PRIMARY KEY,
     cursor TEXT
 );
+CREATE TABLE IF NOT EXISTS integrity_checks (
+    job TEXT PRIMARY KEY,
+    checked_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS full_listings (
     job TEXT PRIMARY KEY,
     finished_at REAL NOT NULL,
@@ -141,6 +145,15 @@ class PhotoStateDB:
         self._conn.execute(
             "INSERT OR REPLACE INTO full_listings VALUES (?, ?, ?)", (job, at, selection)
         )
+
+    def integrity_checked_at(self, job: str) -> float | None:
+        row = self._conn.execute(
+            "SELECT checked_at FROM integrity_checks WHERE job = ?", (job,)
+        ).fetchone()
+        return None if row is None else float(row[0])
+
+    def set_integrity_checked(self, job: str, at: float) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO integrity_checks VALUES (?, ?)", (job, at))
 
     def clear_full_listing(self, job: str) -> None:
         """Make the next run read the whole library (its selection still counts)."""
