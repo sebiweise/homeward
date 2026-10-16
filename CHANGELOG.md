@@ -21,6 +21,21 @@ All notable changes to Homeward are listed here. Versions follow
   many of how many are done, data, speed, time left, the last file and the latest log
   message, including waits for Apple. The page refreshes every 3 s while a job runs.
 
+- *Service* shows "Is everything backed up?": last success, files and size per task. A
+  task without a successful run for 3 days is marked, logs a warning and sends one DSM
+  notification.
+- Per task: a daily time window (`window`) for scheduled runs, which pause when it
+  closes, and a bandwidth limit (`max_rate_kb`).
+- Weekly integrity check of photos backups: damaged files go to the trash and are
+  downloaded again.
+- Photos moved between the personal and the Shared Library are moved on the NAS instead
+  of downloaded again.
+- Photos dialog: *Advanced settings* (parallel downloads, delete brake, trash days) and
+  album selection (`album_names`).
+- Run details list the files a run deleted, replaced, kept twice or moved.
+- Apple's error messages are explained in words in the event log and at sign-in.
+- DSM notifications for a needed sign-in (once per Apple ID) and for conflict copies.
+
 ### Changed
 
 - "Waiting for iCloud": a library zone Apple is still indexing only holds up a photos
@@ -37,6 +52,16 @@ All notable changes to Homeward are listed here. Versions follow
   also marks photos removed in iCloud and updates album folders.
 - Photo downloads no longer pause after every 100 files: the next batch's download
   links are renewed and queued while the current batch still downloads.
+
+- Jobs of different Apple IDs run side by side (at most two at a time); the app polls
+  every 5 s only while something runs, and not while its tab is hidden.
+- The delete brake's share only counts from more than 5 deletions.
+- A run stops before changing anything when a folder it synced before is missing.
+- The service log rotates at 5 MB and keeps 3 old files; the daemon writes it itself.
+- iCloud sessions are left out of the uninstall backup.
+- The package is built from a hashed lock file (`requirements/icloud.txt`).
+- New photos backups default to a 30-minute interval.
+- NAS names starting with `.`, `@` or `#` get a leading `_`.
 
 ### Fixed
 

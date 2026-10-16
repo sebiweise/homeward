@@ -128,7 +128,9 @@ trash_days = 30                   # NAS trash retention, 0 = keep forever
 
 ## Photos backup
 
-Photos only go iCloud → NAS (`core/photos.py`, adapter `providers/icloud_photos.py`).
+Photos only go iCloud → NAS (`core/photos/`: `model`, `plan`, `executor`, `integrity`;
+adapter `providers/icloud_photos.py`, with every pyicloud internal it relies on in
+`providers/pyicloud_compat.py` and covered by contract tests).
 One `[[photos]]` job backs up one Apple ID into one NAS folder; several jobs give
 several Apple IDs, each with its own login session and state file
 (`<state_dir>/<account>.photos.sqlite3`).
@@ -158,6 +160,12 @@ several Apple IDs, each with its own login session and state file
   is the share's `#recycle` when enabled, else `.homeward-papierkorb/`. A changed original moves the old file to `.homeward-papierkorb/<date>/` first.
   When a photo leaves an album only its album link is removed; an album file that is no
   longer the same file as the original goes to the trash instead.
+- **Library moves**: a photo that disappears from one library while one with the same
+  resource and checksum appears in the other is moved on the NAS (`MOVE`), not
+  downloaded again.
+- **Weekly integrity check** (`integrity.py`): every recorded file is compared with its
+  downloaded size; a damaged one goes to the trash with its album links (same inode
+  only) so the plan restores it. Photos iCloud no longer has are only reported.
 - Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.
 - Downloads stream into a temp file, are checked against the size iCloud reports and are
   renamed into place without replacing (`RENAME_NOREPLACE`, so DSM's indexer sees them),
@@ -214,5 +222,19 @@ the venv in `target/env`, config, state, `status.json` and the log in `var/`. Th
 daemon `homeward-daemon` runs as the unprivileged package user and starts one
 `homeward sync --pair` or `homeward photos --job` process per due job. Details in
 [ADR 0003](adr/0003-dsm-package.md).
+
+Jobs run in lanes: all jobs of one Apple ID share the lane `account:<name>` (one
+session, one at a time), a job without iCloud is its own lane, and at most
+`MAX_PARALLEL_RUNS` (2) lanes run at once. `status.json` lists them in `running_jobs`.
+A job's `window` delays its next due time to the window's start, and the daemon stops a
+scheduled run (not a "sync now") when its window closes (result `window_closed`, due
+again at the next opening). `max_rate_kb` wraps every transfer stream in a shared
+token-bucket `Throttle` (`core/limits.py`); `tell`/`seek` pass through so uploads keep
+their length. The scheduler also keeps each job's `last_success` and warns once
+(`not_backed_up`) after `STALE_DAYS` (3) without one.
+
+Exit codes of the CLI: 0 ok, 1 failed, 2 config error, 3 delete brake, 4 waiting for
+iCloud, 5 stopped, 6 sign-in needed (one DSM notification per Apple ID). The daemon
+writes its own log and the runs' output through a rotating handler (5 MB, 3 backups).
 
 Architecture decisions are recorded in [`adr/`](adr/).
