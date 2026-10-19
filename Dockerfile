@@ -17,7 +17,7 @@ COPY requirements/icloud.txt /tmp/icloud.txt
 RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r /tmp/icloud.txt \
     && rm /tmp/icloud.txt
 COPY --from=build /wheels /wheels
-RUN pip install --no-cache-dir --no-deps /wheels/*.whl && rm -rf /wheels
+RUN pip install --no-cache-dir --no-deps --no-index /wheels/homeward-*.whl && rm -rf /wheels
 COPY package/ui /app/ui
 
 # HOME points into /config so libraries that write to ~ (cookies, caches) persist.
