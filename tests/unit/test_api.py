@@ -804,6 +804,7 @@ def volumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "volume1" / "photo" / "outside").symlink_to(root / "elsewhere")
     (root / "volume1" / "photo" / "alias").symlink_to(root / "volume1" / "homes")
     monkeypatch.setattr(folders, "ROOT", root)
+    monkeypatch.delenv("HOMEWARD_VOLUMES", raising=False)
     return root
 
 
@@ -827,6 +828,22 @@ def test_folders_lists_shares_then_subfolders(client: Client, volumes: Path) -> 
     year = client.call("folders.list", path=str(volumes / "volume1" / "photo" / "2024"))
     assert year["parent"] == str(volumes / "volume1" / "photo")
     assert year["folders"] == []
+
+
+def test_folders_use_the_configured_volumes_outside_dsm(
+    client: Client, volumes: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = volumes / "data"
+    (data / "photos" / "2024").mkdir(parents=True)
+    (data / ".hidden").mkdir()
+    monkeypatch.setenv("HOMEWARD_VOLUMES", f"{data}:relative:{volumes / 'missing'}")
+    assert _names(client.call("folders.list")) == ["photos"]
+    photos = client.call("folders.list", path=str(data / "photos"))
+    assert _names(photos) == ["2024"]
+    assert photos["parent"] is None
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.list", path=str(volumes / "volume1" / "photo"))
+    assert _error(excinfo) == "folder_not_found"
 
 
 def test_folders_stay_inside_the_shares(client: Client, volumes: Path) -> None:

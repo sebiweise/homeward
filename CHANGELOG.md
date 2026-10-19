@@ -3,6 +3,15 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
+## [Unreleased]
+
+### Added
+
+- Homeward runs as a Docker container (`Dockerfile`, `docker-compose.example.yml`,
+  [docs/docker.md](docs/docker.md)): headless from `config.toml`, or with the DSM app's
+  page behind a password (`HOMEWARD_WEB_PASSWORD`). The folder picker lists the folders
+  mounted below `/data` (`HOMEWARD_VOLUMES`).
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

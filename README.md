@@ -15,7 +15,8 @@ Homeward is a native Synology DSM 7.2+ package that brings your iCloud data home
   (iCloud → NAS) or `bidirectional` (beta).
 
 It runs as an ordinary DSM package under its own unprivileged user: no Docker, no root,
-no extra server.
+no extra server. Outside DSM it also runs as a Docker container, headless or with the
+same web page (see [docs/docker.md](docs/docker.md)).
 
 > [!WARNING]
 > Homeward is beta software (0.x). Keep an independent backup of anything you point
