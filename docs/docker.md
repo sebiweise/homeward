@@ -11,7 +11,8 @@ password, the same web page as the DSM app.
 ```sh
 git clone https://github.com/sebiweise/homeward.git
 cd homeward
-cp docker-compose.example.yml docker-compose.yml   # adjust paths and password
+cp docker-compose.example.yml docker-compose.yml   # adjust the paths
+echo "HOMEWARD_WEB_PASSWORD=<your password>" > .env
 docker compose up -d --build
 ```
 
