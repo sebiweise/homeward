@@ -8,6 +8,8 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import BinaryIO, Protocol
 
+from homeward.core.models import RuleHit
+
 CHUNK = 1024 * 1024
 _UNSAFE = re.compile(r"[\x00-\x1f/\\:]+")
 _RESERVED_PREFIXES = (".", "@", "#")
@@ -178,6 +180,9 @@ class PhotoActionKind(StrEnum):
     GONE = "gone"  # deleted in iCloud; the NAS copy stays
     RETURNED = "returned"  # back in iCloud after it was gone (e.g. restored there)
     DELETE = "delete"  # deleted in iCloud, mirrored: NAS file and album links to the trash
+    # A file rule archives the photo: its NAS files are checked against iCloud, then
+    # the photo is deleted in iCloud (into "Recently Deleted"). Runs last.
+    ARCHIVE = "archive"
 
 
 FILE_KINDS = frozenset({PhotoActionKind.DOWNLOAD, PhotoActionKind.RESTORE, PhotoActionKind.REPLACE})
@@ -197,6 +202,8 @@ class PhotoAction:
     target: str | None = None  # LINK/UNLINK: the Year/Month file the link points to
     album: str = ""  # LINK/UNLINK
     moved_from: str = ""  # MOVE: the key the photo had in its old library
+    archive_items: tuple[PhotoItem, ...] = ()  # ARCHIVE: every file of the photo
+    rule: str = ""  # ARCHIVE: the file rule
 
 
 @dataclass(slots=True)
@@ -211,6 +218,12 @@ class PhotoPlan:
     held: set[str] = field(default_factory=set)  # ...of these photo keys
     actions: list[PhotoAction] = field(default_factory=list)
     up_to_date: int = 0
+    rule_hits: list[RuleHit] = field(default_factory=list)
+    archive_blocked: str | None = None  # more archives than the job's limit: held back
+
+    @property
+    def archives(self) -> int:
+        return sum(1 for action in self.actions if action.kind is PhotoActionKind.ARCHIVE)
 
     def counts(self) -> dict[PhotoActionKind, int]:
         result: dict[PhotoActionKind, int] = {}

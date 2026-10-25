@@ -97,6 +97,8 @@ class PhotosConfig:
     interval_minutes: int | None = None  # None: the global interval
     window: TimeWindow | None = None  # scheduled runs start only in these hours
     max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
+    rules: tuple[FileRule, ...] = ()  # [[photos.rule]] tables; the first matching rule wins
+    archive_limit: int = DEFAULT_ARCHIVE_LIMIT  # more archives per run need an approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +234,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
         raise ConfigError(f"{where}: 'workers' must be a whole number from 1 to {MAX_WORKERS}")
     brake, trash_days = _brake_and_trash(entry, where)
+    archive_limit = _archive_limit(entry, where)
     album_names = _get(entry, "album_names", list, [], where)
     if not all(isinstance(n, str) for n in album_names):
         raise ConfigError(f"{where}: album_names must be a list of strings")
@@ -257,6 +260,8 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         interval_minutes=_get_interval(entry, where),
         window=_get_window(entry, where),
         max_rate_kb=_get_rate(entry, where),
+        rules=parse_rules(entry, where),
+        archive_limit=archive_limit,
         layout=PhotoLayout(
             scheme=scheme,
             source_folders=_get_bool(entry, "source_folders", True, where),
@@ -307,9 +312,7 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
     rules = parse_rules(entry, where)
     if mode is SyncMode.UPLOAD and any(r.action is RuleAction.ARCHIVE for r in rules):
         raise ConfigError(f"{where}: archive rules need a download or bidirectional pair")
-    archive_limit = _get(entry, "archive_limit", int, DEFAULT_ARCHIVE_LIMIT, where)
-    if archive_limit < 0:
-        raise ConfigError(f"{where}: archive_limit must be 0 or more")
+    archive_limit = _archive_limit(entry, where)
     return PairConfig(
         name=name,
         local=local,
@@ -328,6 +331,13 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         rules=rules,
         archive_limit=archive_limit,
     )
+
+
+def _archive_limit(entry: Mapping[str, Any], where: str) -> int:
+    limit: int = _get(entry, "archive_limit", int, DEFAULT_ARCHIVE_LIMIT, where)
+    if limit < 0:
+        raise ConfigError(f"{where}: archive_limit must be 0 or more")
+    return limit
 
 
 RULE_KEYS = frozenset(

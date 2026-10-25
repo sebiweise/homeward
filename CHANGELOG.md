@@ -3,6 +3,17 @@
 All notable changes to Homeward are listed here. Versions follow
 [Semantic Versioning](https://semver.org/); the version comes from the git tag.
 
+## [Unreleased]
+
+### Added
+
+- File rules for sync pairs and photos backups: filters on name or path, extension,
+  size and age pick an action per file. *Ignore* keeps files out of the sync in both
+  directions; *Archive* keeps files on the NAS and deletes them in iCloud (Drive trash or
+  "Recently Deleted") once their content is verified. New archive rules start in
+  preview, the first run never archives, and `archive_limit` (200) holds bigger runs
+  until approved. See "File rules" in the user guide.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

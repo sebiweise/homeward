@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.common import (
+    check_name,
+    parse_archive_limit,
+    parse_rules,
+    without_none,
+)
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
@@ -18,7 +23,6 @@ from homeward.core.config import REMOTE_PROVIDERS, PairConfig
 from homeward.core.models import SyncMode
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
-from homeward.core.workflow import DEFAULT_ARCHIVE_LIMIT
 from homeward.runtime import RunRequest, request_run
 
 # Changing one of these makes the stored sync state meaningless.
@@ -154,7 +158,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     if provider == "icloud_drive" and account not in accounts:
         raise ApiError("account_not_found", account)
     exclude = _exclude(data)
-    rules = _rules(data)
+    rules = parse_rules(data)
     ratio, count = _delete_brake(data)
     return {
         "name": check_name(text("name"), "pair"),
@@ -173,29 +177,8 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         **parse_limits(data),
         # Checked in full by the config parser when the store saves the pair.
         "rule": rules,
-        "archive_limit": _archive_limit(data),
+        "archive_limit": parse_archive_limit(data),
     }
-
-
-def _rules(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """The pair's file rules as config tables; empty values are left out."""
-    rules = data.get("rules", [])
-    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
-        raise ApiError("invalid_param", "rules")
-    tables = []
-    for rule in rules:
-        table = {k: v for k, v in rule.items() if v is not None and v != "" and v != []}
-        if isinstance(table.get("name"), str):
-            table["name"] = table["name"].strip()
-        tables.append(table)
-    return tables
-
-
-def _archive_limit(data: dict[str, Any]) -> int:
-    limit = data.get("archive_limit", DEFAULT_ARCHIVE_LIMIT)
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
-        raise ApiError("invalid_param", "archive_limit")
-    return limit
 
 
 def _exclude(data: dict[str, Any]) -> list[str]:
