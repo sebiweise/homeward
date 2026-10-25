@@ -963,6 +963,7 @@ function jobSettings(job) {
                   [t("pair:remote"), c.remote],
                   [t("pair:mode"), t("mode:" + c.mode)],
                   [t("pair:exclude"), c.exclude.length ? c.exclude.join(", ") : "–"],
+                  [t("rule:title"), rulesText(c.rules)],
                   [t("pair:brake_ratio"), Math.round(c.max_delete_ratio * 100) + " %"],
                   [t("pair:brake_count"), String(c.max_delete_count)],
                   [t("ui:schedule"), scheduleText(job)],
@@ -1161,6 +1162,121 @@ async function scheduleDialog() {
     });
 }
 
+// --- file rules ------------------------------------------------------------------------
+
+const SIZE_UNITS = ["KB", "MB", "GB", "TB"];
+const AGE_UNITS = ["d", "w", "m", "y"];
+
+// "500MB" -> ["500", "MB"], "3y" -> ["3", "y"]; empty for an unset filter.
+function splitAmount(text, units, fallback) {
+    const match = /^(\d+(?:[.,]\d+)?)\s*([a-z]*)$/i.exec(text || "");
+    if (!match) return ["", fallback];
+    const unit = units.find((u) => u.toLowerCase() === match[2].toLowerCase());
+    return unit ? [match[1], unit] : [match[1], match[2].toUpperCase() === "B" ? "B" : fallback];
+}
+
+function listText(values) {
+    return (values || []).join(", ");
+}
+
+function splitList(text) {
+    return text.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// The rule list of a pair: an editable card per rule, read back with values().
+// The inputs carry no name, so the dialog's own form values leave them out.
+function ruleEditor(initial) {
+    const rules = initial.map((rule) => ({ preview: true, enabled: true, ...rule }));
+    const list = el("div", { class: "rules" });
+
+    function amountInput(rule, key, units, fallback, unitText) {
+        const [amount, unit] = splitAmount(rule[key], units, fallback);
+        const number = el("input", { type: "number", min: 0, step: "any", value: amount, class: "amount" });
+        const choice = el("select", {}, units.map((u) => el("option", { value: u, selected: u === unit, text: unitText(u) })));
+        const update = () => {
+            rule[key] = number.value === "" ? "" : number.value + choice.value;
+        };
+        number.addEventListener("input", update);
+        choice.addEventListener("change", update);
+        return el("span", { class: "amount-row" }, number, choice);
+    }
+
+    function card(rule, index) {
+        const text = (key, placeholder) => {
+            const input = el("input", { value: key === "name" ? rule.name || "" : listText(rule[key]), placeholder: placeholder });
+            input.addEventListener("input", () => {
+                rule[key] = key === "name" ? input.value : splitList(input.value);
+            });
+            return input;
+        };
+        const action = select(null, [["ignore", t("rule:action_ignore")], ["archive", t("rule:action_archive")]], rule.action || "ignore");
+        const preview = el("input", { type: "checkbox", checked: rule.preview !== false });
+        const enabled = el("input", { type: "checkbox", checked: rule.enabled !== false });
+        const previewRow = el("label", { class: "check", hidden: rule.action !== "archive" }, preview, t("rule:preview"));
+        action.addEventListener("change", () => {
+            rule.action = action.value;
+            previewRow.hidden = rule.action !== "archive";
+        });
+        preview.addEventListener("change", () => (rule.preview = preview.checked));
+        enabled.addEventListener("change", () => (rule.enabled = enabled.checked));
+        const move = (delta) => {
+            const target = index + delta;
+            if (target < 0 || target >= rules.length) return;
+            [rules[index], rules[target]] = [rules[target], rules[index]];
+            render();
+        };
+        const sizeUnit = (u) => u;
+        const ageUnit = (u) => t("rule:unit_" + u);
+        return el(
+            "fieldset",
+            { class: "rule" },
+            el("legend", {}, t("rule:number", index + 1)),
+            el("div", { class: "row" }, field(t("rule:name"), text("name", t("rule:name_placeholder"))), field(t("rule:action"), action)),
+            el("div", { class: "row" },
+                field(t("rule:patterns"), text("patterns", "*.tmp, Scans/Alt"), t("rule:patterns_hint")),
+                field(t("rule:extensions"), text("extensions", "mp4, mov"))),
+            el("div", { class: "row" },
+                field(t("rule:min_size"), amountInput(rule, "min_size", SIZE_UNITS, "MB", sizeUnit)),
+                field(t("rule:max_size"), amountInput(rule, "max_size", SIZE_UNITS, "MB", sizeUnit))),
+            el("div", { class: "row" },
+                field(t("rule:older_than"), amountInput(rule, "older_than", AGE_UNITS, "y", ageUnit)),
+                field(t("rule:newer_than"), amountInput(rule, "newer_than", AGE_UNITS, "d", ageUnit))),
+            previewRow,
+            el("label", { class: "check" }, enabled, t("rule:enabled")),
+            el("div", { class: "toolbar" },
+                el("button", { type: "button", text: "↑", title: t("rule:up"), disabled: index === 0, onclick: () => move(-1) }),
+                el("button", { type: "button", text: "↓", title: t("rule:down"), disabled: index === rules.length - 1, onclick: () => move(1) }),
+                el("button", { type: "button", class: "danger", text: t("common:delete"), onclick: () => {
+                    rules.splice(index, 1);
+                    render();
+                } }))
+        );
+    }
+
+    function render() {
+        list.replaceChildren(...rules.map(card));
+        if (!rules.length) list.append(el("p", { class: "muted", text: t("rule:none") }));
+    }
+
+    render();
+    const add = el("button", { type: "button", text: t("rule:add"), onclick: () => {
+        rules.push({ name: "", action: "ignore", preview: true, enabled: true });
+        render();
+    } });
+    return {
+        node: el("fieldset", { class: "rules-box" }, el("legend", { text: t("rule:title") }), el("p", { class: "hint", text: t("rule:hint") }), list, add),
+        values: () => rules.map((rule) => ({ ...rule, name: (rule.name || "").trim() })),
+    };
+}
+
+function rulesText(rules) {
+    if (!rules || !rules.length) return "–";
+    return rules.map((rule) => {
+        const action = t("rule:action_" + rule.action) + (rule.action === "archive" && rule.preview ? " (" + t("rule:preview_short") + ")" : "");
+        return rule.name + ": " + action + (rule.enabled ? "" : " – " + t("rule:disabled"));
+    }).join("; ");
+}
+
 // --- pair dialog -----------------------------------------------------------------------
 
 function pairDialog(pair) {
@@ -1176,7 +1292,10 @@ function pairDialog(pair) {
         max_delete_ratio: 0.1,
         max_delete_count: 50,
         interval_minutes: null,
+        rules: [],
+        archive_limit: 200,
     };
+    const rules = ruleEditor(p.rules || []);
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
     if (p.account && !accountOptions.some(([name]) => name === p.account)) accountOptions.push([p.account, p.account]);
     const fields = [
@@ -1227,6 +1346,12 @@ function pairDialog(pair) {
                 el("input", { name: "count", type: "number", min: 0, step: 1, value: p.max_delete_count })
             )
         ),
+        rules.node,
+        field(
+            t("rule:archive_limit"),
+            el("input", { name: "archive_limit", type: "number", min: 0, step: 1, value: p.archive_limit ?? 200 }),
+            t("rule:archive_limit_hint")
+        ),
         jobIntervalField(p.interval_minutes),
         ...limitFields(p),
         editing ? el("p", { class: "hint", text: t("pair:reset_hint") }) : null,
@@ -1244,6 +1369,8 @@ function pairDialog(pair) {
             max_delete_count: Number(v.count),
             interval_minutes: jobInterval(v.interval),
             ...limitValues(v),
+            rules: rules.values(),
+            archive_limit: Number(v.archive_limit),
         };
         await api(editing ? "pairs.update" : "pairs.create", { pair: JSON.stringify(pair) }, true);
         view.key = "pair:" + pair.name;

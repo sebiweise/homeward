@@ -1,6 +1,7 @@
 """Builds a sync plan by comparing NAS, iCloud and last-synced state."""
 
-from collections.abc import Callable, Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import PurePosixPath
@@ -13,9 +14,11 @@ from homeward.core.models import (
     FileMeta,
     FileRecord,
     Plan,
+    RuleHit,
     SyncMode,
 )
 from homeward.core.rules import Decision, decide, is_excluded
+from homeward.core.workflow import DEFAULT_ARCHIVE_LIMIT, FileRule, RuleAction, first_match
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +272,111 @@ def _order(actions: list[Action]) -> list[Action]:
     return sorted(actions, key=rank)
 
 
+def _ignored(
+    rules: Sequence[FileRule],
+    path: str,
+    metas: Iterable[FileMeta | None],
+    record: FileRecord | None,
+    now: float,
+) -> FileRule | None:
+    """The ignore rule that matches the file on either side (or its last synced size)."""
+    candidates: list[tuple[int, float | None]] = [(m.size, m.mtime) for m in metas if m]
+    if not candidates and record is not None:
+        candidates.append((record.size, None))
+    for size, mtime in candidates:
+        rule = first_match(rules, path, size, mtime, now)
+        if rule is not None and rule.action is RuleAction.IGNORE:
+            return rule
+    return None
+
+
+def _apply_ignores(
+    rules: Sequence[FileRule],
+    local: dict[str, FileMeta],
+    remote: dict[str, FileMeta],
+    known: dict[str, FileRecord],
+    now: float,
+) -> list[RuleHit]:
+    """Drop every file an ignore rule matches from all three views, like an exclude."""
+    hits = []
+    for path in sorted(local.keys() | remote.keys() | known.keys()):
+        rule = _ignored(rules, path, (local.get(path), remote.get(path)), known.get(path), now)
+        if rule is not None:
+            local.pop(path, None)
+            remote.pop(path, None)
+            known.pop(path, None)
+            hits.append(RuleHit(path, rule.name, RuleAction.IGNORE))
+    return hits
+
+
+def _archive_step(
+    action: Action | None,
+    path: str,
+    local: FileMeta | None,
+    remote: FileMeta,
+    record: FileRecord | None,
+) -> Action | None:
+    """The archive action for a file whose normal step leaves the NAS with iCloud's
+    content, or None when another step must happen first (it changed on the NAS, a
+    conflict, an upload)."""
+    if action is None:
+        # Nothing to do: archive only what both sides still hold as last synced.
+        if (
+            record is None
+            or local is None
+            or local.version != record.local_version
+            or remote.version != record.remote_version
+        ):
+            return None
+        remote = replace(remote, sha256=remote.sha256 or record.sha256)
+        return Action(ActionKind.ARCHIVE, path, "in sync", local, remote)
+    if action.kind is ActionKind.RECORD:
+        return replace(action, kind=ActionKind.ARCHIVE)
+    if action.kind is ActionKind.DOWNLOAD:
+        return replace(action, kind=ActionKind.ARCHIVE)
+    return None
+
+
+def _apply_archives(
+    plan: Plan,
+    rules: Sequence[FileRule],
+    local: Mapping[str, FileMeta],
+    remote: Mapping[str, FileMeta],
+    known: Mapping[str, FileRecord],
+    now: float,
+) -> None:
+    """Turn the steps of files an archive rule matches into archive actions."""
+    by_path = {a.path: a for a in plan.actions}
+    for path, meta in sorted(remote.items()):
+        rule = first_match(rules, path, meta.size, meta.mtime, now)
+        if rule is None or rule.action is not RuleAction.ARCHIVE:
+            continue
+        if rule.preview:
+            plan.rule_hits.append(RuleHit(path, rule.name, rule.action, "preview"))
+            continue
+        if plan.first_run:
+            plan.rule_hits.append(RuleHit(path, rule.name, rule.action, "first run"))
+            continue
+        current = by_path.get(path)
+        step = _archive_step(current, path, local.get(path), meta, known.get(path))
+        if step is None:
+            plan.rule_hits.append(RuleHit(path, rule.name, rule.action, "needs another sync"))
+            continue
+        step = replace(step, rule=rule.name, reason=f"{step.reason}, rule {rule.name!r}")
+        plan.rule_hits.append(RuleHit(path, rule.name, rule.action))
+        if current is None:
+            plan.actions.append(step)
+        else:
+            plan.actions[plan.actions.index(current)] = step
+
+
+def _blocked(plan: Plan, brake: DeleteBrake, archive_limit: int) -> str | None:
+    reason = brake.check(plan.deletes, plan.tracked)
+    if reason is None and plan.archives > archive_limit:
+        reason = f"{plan.archives} files would be archived, more than the limit of {archive_limit}"
+    return reason
+
+
 def build_plan(
     pair: str,
     mode: SyncMode,
@@ -281,15 +389,30 @@ def build_plan(
     today: date | None = None,
     remote_case_insensitive: bool = False,
     remote_identity: Identity | None = None,
+    rules: Sequence[FileRule] = (),
+    archived: Iterable[str] = (),
+    archive_limit: int = DEFAULT_ARCHIVE_LIMIT,
+    now: float | None = None,
 ) -> Plan:
-    """Compare both sides with the last common state and decide every path."""
+    """Compare both sides with the last common state and decide every path.
+
+    ``rules`` are the pair's file rules: ignored files drop out like excluded ones,
+    archive rules turn the step of a matching iCloud file into an archive action.
+    ``archived`` lists paths archived before: while iCloud does not have them again,
+    their NAS copy is left alone (never uploaded, never deleted).
+    """
+    now = time.time() if now is None else now
     patterns = tuple(excludes)
     local = {p: m for p, m in local_files.items() if not is_excluded(p, patterns)}
     remote = {p: m for p, m in remote_files.items() if not is_excluded(p, patterns)}
     known = {p: r for p, r in records.items() if not is_excluded(p, patterns)}
+    for path in archived:
+        if path not in remote:
+            local.pop(path, None)
+    hits = _apply_ignores(rules, local, remote, known, now)
 
     first_run = not known
-    plan = Plan(pair=pair, mode=mode, first_run=first_run, tracked=len(known))
+    plan = Plan(pair=pair, mode=mode, first_run=first_run, tracked=len(known), rule_hits=hits)
     builder = _Builder(local, remote, today or date.today())
     for path in sorted(local.keys() | remote.keys() | known.keys()):
         record = known.get(path)
@@ -305,6 +428,8 @@ def build_plan(
     if remote_case_insensitive:
         plan.actions = _guard_case(plan.actions, remote)
     plan.actions = _match_renames(plan.actions, known, remote_identity)
+    if mode is not SyncMode.UPLOAD:
+        _apply_archives(plan, rules, local, remote, known, now)
     plan.actions = _order(plan.actions)
-    plan.blocked = (brake or DeleteBrake()).check(plan.deletes, plan.tracked)
+    plan.blocked = _blocked(plan, brake or DeleteBrake(), archive_limit)
     return plan

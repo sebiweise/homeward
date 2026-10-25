@@ -9,7 +9,8 @@ from typing import Self
 
 from homeward.core.models import FileMeta, FileRecord
 
-SCHEMA_VERSION = 1
+# 2: archived files. An older Homeward must not open it: it would upload them again.
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -31,6 +32,16 @@ CREATE TABLE IF NOT EXISTS runs (
     actions INTEGER NOT NULL,
     errors INTEGER NOT NULL,
     blocked TEXT
+);
+CREATE TABLE IF NOT EXISTS archived (
+    pair TEXT NOT NULL,
+    path TEXT NOT NULL,
+    local_version TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    archived_at REAL NOT NULL,
+    PRIMARY KEY (pair, path)
 );
 """
 
@@ -102,14 +113,42 @@ class StateDB:
             (pair, rec.path, rec.local_version, rec.remote_version, rec.size, rec.sha256,
              rec.synced_at),
         )  # fmt: skip
+        # Synced again (it came back to iCloud): no longer an archived NAS-only copy.
+        self._conn.execute("DELETE FROM archived WHERE pair = ? AND path = ?", (pair, rec.path))
         return rec
+
+    def archive(self, pair: str, local: FileMeta, sha256: str, rule: str) -> None:
+        """Remember that ``local`` was removed from iCloud and lives on only on the NAS."""
+        self._conn.execute("DELETE FROM files WHERE pair = ? AND path = ?", (pair, local.path))
+        self._conn.execute(
+            "INSERT OR REPLACE INTO archived VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pair, local.path, local.version, local.size, sha256, rule, time.time()),
+        )
+
+    def archived(self, pair: str) -> set[str]:
+        """Paths of the pair's archived files."""
+        rows = self._conn.execute("SELECT path FROM archived WHERE pair = ?", (pair,))
+        return {row[0] for row in rows}
+
+    def archived_totals(self, pair: str) -> tuple[int, int]:
+        """Number and total size of the pair's archived files."""
+        count, size = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM archived WHERE pair = ?", (pair,)
+        ).fetchone()
+        return int(count), int(size)
 
     def forget(self, pair: str, path: str) -> None:
         self._conn.execute("DELETE FROM files WHERE pair = ? AND path = ?", (pair, path))
 
-    def reset(self, pair: str) -> int:
-        """Forget every file of a pair, so its next run is a first run again."""
+    def reset(self, pair: str, *, archived: bool = False) -> int:
+        """Forget every file of a pair, so its next run is a first run again.
+
+        Archived files stay remembered unless ``archived`` is set (the pair is
+        removed): otherwise a bidirectional pair would upload them again.
+        """
         cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
+        if archived:
+            self._conn.execute("DELETE FROM archived WHERE pair = ?", (pair,))
         return cursor.rowcount
 
     def totals(self, pair: str) -> tuple[int, int]:

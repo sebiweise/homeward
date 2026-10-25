@@ -1,7 +1,9 @@
 """Executes a sync plan against providers."""
 
+import hashlib
 import logging
 from dataclasses import dataclass, field, replace
+from typing import BinaryIO
 
 from homeward.core.limits import Throttle, throttled
 from homeward.core.models import Action, ActionKind, FileMeta, Plan
@@ -80,6 +82,9 @@ class Executor:
 
     def _apply(self, action: Action) -> None:
         path = action.path
+        if action.kind is ActionKind.ARCHIVE:
+            self._archive(action)
+            return
         if action.verify_content and self._record_if_same(action):
             return
         match action.kind:
@@ -107,6 +112,42 @@ class Executor:
                 # Skipped actions are only reported, never executed.
                 pass
 
+    def _archive(self, action: Action) -> None:
+        """Make sure the NAS holds exactly iCloud's file, then move it to the iCloud trash.
+
+        The NAS copy is checked by its SHA-256 against iCloud's content (hashed while
+        downloading, or known from the last sync, or read from iCloud). Any mismatch
+        stops here and iCloud keeps the file.
+        """
+        remote = _need(action.remote)
+        local = action.local
+        expected = remote.sha256
+        download = local is None or action.overwrite
+        if action.verify_content and local is not None:
+            expected = self.remote.sha256(remote.path)
+            if self.local.sha256(local.path) == expected:
+                download = False
+                self.state.record(self.pair, replace(local, sha256=expected), remote)
+        if download:
+            digest = hashlib.sha256()
+            local = self._transfer(self.remote, self.local, remote, local is not None, digest)
+            expected = digest.hexdigest()
+            self.state.record(self.pair, replace(local, sha256=expected), remote)
+        assert local is not None
+        if expected is None:
+            expected = self.remote.sha256(remote.path)
+        actual = self.local.sha256(local.path)
+        if local.size != remote.size or actual != expected:
+            raise ArchiveMismatch(
+                f"the NAS copy of {action.path} differs from iCloud; iCloud keeps the file"
+            )
+        self.remote.delete(remote.path)  # into the iCloud trash, recoverable there
+        self.state.archive(self.pair, local, actual, action.rule or "")
+        log.info(
+            "archived %s: kept on the NAS, moved to the iCloud trash (rule %r)",
+            action.path, action.rule,
+        )  # fmt: skip
+
     def _record_if_same(self, action: Action) -> bool:
         local, remote = _need(action.local), _need(action.remote)
         digest = self.local.sha256(local.path)
@@ -125,7 +166,14 @@ class Executor:
         uploaded = self._transfer(self.local, self.remote, moved, overwrite=False)
         self.state.record(self.pair, moved, uploaded)
 
-    def _transfer(self, src: Provider, dst: Provider, meta: FileMeta, overwrite: bool) -> FileMeta:
+    def _transfer(
+        self,
+        src: Provider,
+        dst: Provider,
+        meta: FileMeta,
+        overwrite: bool,
+        digest: "hashlib._Hash | None" = None,
+    ) -> FileMeta:
         if overwrite:
             dst.delete(meta.path)  # into the trash, so it stays recoverable
             # If the write does not finish (an error, a cancelled run), the next run
@@ -133,7 +181,30 @@ class Executor:
             # record it copies the file again.
             self.state.forget(self.pair, meta.path)
         with src.open_read(meta.path) as stream:
-            return dst.write(meta.path, throttled(stream, self.throttle), meta.mtime)
+            data = throttled(stream, self.throttle)
+            if digest is not None:
+                data = _Hashing(data, digest)  # type: ignore[assignment]
+            return dst.write(meta.path, data, meta.mtime)
+
+
+class ArchiveMismatch(RuntimeError):
+    """The NAS copy of a file to archive does not match iCloud's content."""
+
+
+class _Hashing:
+    """Feeds every byte read from ``stream`` into ``digest``."""
+
+    def __init__(self, stream: BinaryIO, digest: "hashlib._Hash") -> None:
+        self._stream = stream
+        self._digest = digest
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._stream.read(size)
+        self._digest.update(chunk)
+        return chunk
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
 
 
 def _need[T](value: T | None) -> T:
