@@ -39,7 +39,7 @@ Details in `docs/architecture.md` and `docs/adr/`; read those before reading cod
 ## graphify (code knowledge graph)
 The SessionStart hook (`.claude/hooks/session-start.sh`) rebuilds `graphify-out/`
 from the checked-out code (AST only, no LLM, not committed). In cloud sessions it
-also installs graphify and the dev dependencies.
+also installs graphify from `requirements/graphify.txt` (pinned, with hashes).
 
 - For codebase questions run `graphify query "<question>"` before grepping or
   reading source files; `graphify explain "<symbol>"` and
@@ -47,5 +47,5 @@ also installs graphify and the dev dependencies.
   the graph located. Put this rule in every subagent prompt that explores code.
 - `graphify-out/GRAPH_REPORT.md` gives hubs and communities for broad reviews.
 - After changing code run `graphify update .` to keep the graph current.
-- If `graphify` is missing: `pip install graphifyy` (double y), then `graphify update .`.
+- If `graphify` is missing: `pip install --require-hashes -r requirements/graphify.txt`, then `graphify update .`.
 - Skill `/graphify` lives in `.claude/skills/graphify/`.
