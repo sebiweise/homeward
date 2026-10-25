@@ -52,6 +52,9 @@ def sync_pair(
         today=today,
         remote_case_insensitive=getattr(remote, "case_insensitive", False),
         remote_identity=getattr(remote, "file_identity", None),
+        rules=pair.rules,
+        archived=state.archived(pair.name),
+        archive_limit=pair.archive_limit,
     )
     result = None
     if not dry_run:

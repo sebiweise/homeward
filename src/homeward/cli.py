@@ -32,6 +32,7 @@ from homeward.core.provider import Provider
 from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.core.trash import Trash
+from homeward.core.workflow import RuleAction
 from homeward.dsm.notify import Event, notify
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
@@ -136,6 +137,12 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
     if plan.renames:
         summary += f"; {plan.renames} of the deletes are renames, the delete brake skips them"
     print(f"  {summary or 'nothing to do'}")
+    for hit in plan.rule_hits:
+        if hit.action == RuleAction.ARCHIVE and hit.pending:
+            print(f"  would archive  {hit.path}  [rule {hit.rule!r}, not now: {hit.pending}]")
+    ignored = sum(1 for hit in plan.rule_hits if hit.action == RuleAction.IGNORE)
+    if ignored:
+        print(f"  {ignored} file(s) ignored by rules")
     if plan.blocked and (outcome.result is None or outcome.result.blocked):
         print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
     if dry_run:
@@ -259,6 +266,7 @@ def _sync_one(
             notifier(Event.CONFLICTS, pair.name, str(conflicts))
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
+    counts.update(_rule_counts(outcome))
     _log_summary(f"pair {pair.name}", counts, failed, _pair_files(outcome))
     if not args.dry_run:
         purged = local.purge_trash(pair.trash_days)
@@ -439,7 +447,25 @@ def _pair_files(outcome: SyncOutcome) -> list[dict[str, str]]:
         elif action.overwrite and action.kind in (ActionKind.UPLOAD, ActionKind.DOWNLOAD):
             side = "replaced-remote" if action.kind is ActionKind.UPLOAD else "replaced-local"
             files.append({"kind": side, "path": action.path, "to": ""})
+        elif action.kind is ActionKind.ARCHIVE:
+            files.append({"kind": "archived", "path": action.path, "to": action.rule or ""})
+    for hit in outcome.plan.rule_hits:
+        if hit.action == RuleAction.ARCHIVE and hit.pending:
+            kind = "archive-" + hit.pending.replace(" ", "-")
+            files.append({"kind": kind, "path": hit.path, "to": hit.rule})
     return files
+
+
+def _rule_counts(outcome: SyncOutcome) -> dict[str, int]:
+    """Files the pair's rules ignored, and archives still in preview or waiting."""
+    counts: dict[str, int] = {}
+    for hit in outcome.plan.rule_hits:
+        key = "ignored" if hit.action == RuleAction.IGNORE else None
+        if hit.action == RuleAction.ARCHIVE and hit.pending:
+            key = "archive-preview" if hit.pending == "preview" else "archive-waiting"
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _photo_files(outcome: PhotoOutcome) -> list[dict[str, str]]:
