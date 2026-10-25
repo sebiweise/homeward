@@ -24,9 +24,15 @@ from homeward.core.config import (
     PhotosConfig,
     load_config,
 )
-from homeward.core.models import ActionKind, FolderMissing, SyncMode
+from homeward.core.models import ActionKind, FolderMissing, RuleHit, SyncMode
 from homeward.core.photo_state import PhotoStateDB
-from homeward.core.photos import PhotoActionKind, PhotoOutcome, PhotoSource, backup_photos
+from homeward.core.photos import (
+    PhotoActionKind,
+    PhotoOutcome,
+    PhotoRules,
+    PhotoSource,
+    backup_photos,
+)
 from homeward.core.progress import Progress, ProgressLogHandler
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
@@ -137,12 +143,7 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
     if plan.renames:
         summary += f"; {plan.renames} of the deletes are renames, the delete brake skips them"
     print(f"  {summary or 'nothing to do'}")
-    for hit in plan.rule_hits:
-        if hit.action == RuleAction.ARCHIVE and hit.pending:
-            print(f"  would archive  {hit.path}  [rule {hit.rule!r}, not now: {hit.pending}]")
-    ignored = sum(1 for hit in plan.rule_hits if hit.action == RuleAction.IGNORE)
-    if ignored:
-        print(f"  {ignored} file(s) ignored by rules")
+    _print_rule_hits(plan.rule_hits)
     if plan.blocked and (outcome.result is None or outcome.result.blocked):
         print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
     if dry_run:
@@ -150,6 +151,15 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
     elif outcome.result:
         for failure in outcome.result.failed:
             print(f"  FAILED {failure.action.kind} {failure.action.path}: {failure.error}")
+
+
+def _print_rule_hits(hits: list[RuleHit]) -> None:
+    for hit in hits:
+        if hit.action == RuleAction.ARCHIVE and hit.pending:
+            print(f"  would archive  {hit.path}  [rule {hit.rule!r}, not now: {hit.pending}]")
+    ignored = sum(1 for hit in hits if hit.action == RuleAction.IGNORE)
+    if ignored:
+        print(f"  {ignored} file(s) ignored by rules")
 
 
 @contextlib.contextmanager
@@ -266,7 +276,7 @@ def _sync_one(
             notifier(Event.CONFLICTS, pair.name, str(conflicts))
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
-    counts.update(_rule_counts(outcome))
+    counts.update(_rule_counts(outcome.plan.rule_hits))
     _log_summary(f"pair {pair.name}", counts, failed, _pair_files(outcome))
     if not args.dry_run:
         purged = local.purge_trash(pair.trash_days)
@@ -340,6 +350,9 @@ def _print_photos(job: PhotosConfig, outcome: PhotoOutcome, dry_run: bool) -> No
     print(f"  {summary or 'nothing to do'}; {plan.up_to_date} up to date")
     if plan.blocked:
         print(f"  Delete brake: {plan.blocked}. Re-run with --allow-deletes to approve.")
+    if plan.archive_blocked:
+        print(f"  Archive limit: {plan.archive_blocked}. Re-run with --allow-deletes to approve.")
+    _print_rule_hits(plan.rule_hits)
     if outcome.integrity is not None:
         check = outcome.integrity
         print(f"  Weekly check: {check.checked} photos checked, {len(check.damaged)} damaged"
@@ -386,11 +399,13 @@ def _photos_one(
                 brake=job.delete_brake, allow_deletes=args.allow_deletes,
                 remove_gone=args.remove_gone, recycle_bin=find_recycle_bin(job.target),
                 max_rate_kb=job.max_rate_kb,
+                rules=PhotoRules(job.rules, job.archive_limit, hasattr(source, "delete_photo")),
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0
     counts = {str(kind): n for kind, n in outcome.plan.counts().items()}
     counts["up_to_date"] = outcome.plan.up_to_date
+    counts.update(_rule_counts(outcome.plan.rule_hits))
     _log_summary(f"photos {job.name}", counts, failed, _photo_files(outcome))
     if not args.dry_run:
         # Also without mirror_deletes: replaced files land there too. Only the
@@ -449,17 +464,22 @@ def _pair_files(outcome: SyncOutcome) -> list[dict[str, str]]:
             files.append({"kind": side, "path": action.path, "to": ""})
         elif action.kind is ActionKind.ARCHIVE:
             files.append({"kind": "archived", "path": action.path, "to": action.rule or ""})
-    for hit in outcome.plan.rule_hits:
-        if hit.action == RuleAction.ARCHIVE and hit.pending:
-            kind = "archive-" + hit.pending.replace(" ", "-")
-            files.append({"kind": kind, "path": hit.path, "to": hit.rule})
-    return files
+    return files + _pending_archives(outcome.plan.rule_hits)
 
 
-def _rule_counts(outcome: SyncOutcome) -> dict[str, int]:
-    """Files the pair's rules ignored, and archives still in preview or waiting."""
+def _pending_archives(hits: list[RuleHit]) -> list[dict[str, str]]:
+    """Files an archive rule matched that this run did not archive, and why."""
+    return [
+        {"kind": "archive-" + hit.pending.replace(" ", "-"), "path": hit.path, "to": hit.rule}
+        for hit in hits
+        if hit.action == RuleAction.ARCHIVE and hit.pending
+    ]
+
+
+def _rule_counts(hits: list[RuleHit]) -> dict[str, int]:
+    """Files the job's rules ignored, and archives still in preview or waiting."""
     counts: dict[str, int] = {}
-    for hit in outcome.plan.rule_hits:
+    for hit in hits:
         key = "ignored" if hit.action == RuleAction.IGNORE else None
         if hit.action == RuleAction.ARCHIVE and hit.pending:
             key = "archive-preview" if hit.pending == "preview" else "archive-waiting"
@@ -478,7 +498,9 @@ def _photo_files(outcome: PhotoOutcome) -> list[dict[str, str]]:
             files.append({"kind": "move", "path": action.target or "", "to": action.path})
         elif action.kind in kinds:
             files.append({"kind": kinds[action.kind], "path": action.path, "to": ""})
-    return files
+        elif action.kind is PhotoActionKind.ARCHIVE:
+            files.append({"kind": "archived-photo", "path": action.path, "to": action.rule})
+    return files + _pending_archives(outcome.plan.rule_hits)
 
 
 @contextlib.contextmanager

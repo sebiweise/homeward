@@ -3,14 +3,16 @@
 import logging
 import os
 import time
-from collections.abc import Callable, Iterable
-from dataclasses import replace
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from homeward.core.models import RuleHit
 from homeward.core.photo_state import PhotoRecord, PhotoStateDB
 from homeward.core.photos.model import (
     FILE_KINDS,
     FULL_LISTING_HOURS,
+    Library,
     PhotoAction,
     PhotoActionKind,
     PhotoItem,
@@ -22,6 +24,7 @@ from homeward.core.photos.model import (
 from homeward.core.planner import DeleteBrake
 from homeward.core.progress import Progress
 from homeward.core.trash import numbered
+from homeward.core.workflow import DEFAULT_ARCHIVE_LIMIT, FileRule, RuleAction, first_match
 
 # One logger for the whole photos package, as before the split.
 log = logging.getLogger("homeward.core.photos")
@@ -104,9 +107,28 @@ def _listing(root: Path, folder: PurePosixPath, cache: dict[PurePosixPath, set[s
 
 
 def _all_present(root: Path, records: Iterable[PhotoRecord], links: Iterable[str]) -> bool:
-    return all((root / r.path).exists() for r in records if r.gone_at is None) and all(
+    """Every file iCloud still has is on the NAS (archived ones cannot be fetched again)."""
+    live = (r for r in records if r.gone_at is None and r.archived_at is None)
+    return all((root / r.path).exists() for r in live) and all(
         (root / path).exists() for path in links
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PhotoRules:
+    """A photos job's file rules and whether its source can delete photos in iCloud."""
+
+    rules: Sequence[FileRule] = ()
+    archive_limit: int = DEFAULT_ARCHIVE_LIMIT
+    can_delete: bool = False
+
+    def decide(self, item: PhotoItem, layout: PhotoLayout, now: float) -> FileRule | None:
+        """The rule for one file: matched against its backup path, size and the date
+        the photo was taken."""
+        if not self.rules:
+            return None
+        path = str(layout.folder(item) / safe_name(item.filename, "photo"))
+        return first_match(self.rules, path, item.size, item.created.timestamp(), now)
 
 
 def build_photo_plan(
@@ -123,6 +145,7 @@ def build_photo_plan(
     selection: str | None = None,
     brake: DeleteBrake | None = None,
     remove_gone: bool = False,
+    rules: PhotoRules | None = None,
 ) -> PhotoPlan:
     """Compare iCloud with the state of the last run and decide what to fetch or link.
 
@@ -140,8 +163,14 @@ def build_photo_plan(
     read when the source cannot tell for sure, when a file is missing on the NAS, and
     at least every ``FULL_LISTING_HOURS``; that run also catches up on photos removed
     in iCloud and on changed album memberships.
+
+    ``rules`` are the job's file rules: ignored files are neither downloaded nor
+    marked as gone; archive rules (whole listings only) delete a backed-up photo in
+    iCloud once all its files are verified on the NAS. Archived photos stay on the NAS
+    for good, whatever ``mirror_deletes`` says.
     """
     layout = layout or PhotoLayout()
+    rules = rules or PhotoRules()
     progress = progress or Progress()
     progress.phase("checking")
     records = state.records(job)
@@ -156,7 +185,12 @@ def build_photo_plan(
             for key, r in sorted(records.items())
             if r.gone_at is not None
         ]
-    if cursor is not None and cursor == previous and present:
+    if (
+        cursor is not None
+        and cursor == previous
+        and present
+        and not _archive_due(job, state, plan, rules)
+    ):
         plan.unchanged = True
         plan.up_to_date = sum(1 for r in records.values() if r.gone_at is None)
         return plan
@@ -170,8 +204,9 @@ def build_photo_plan(
         plan.actions = [a for a in plan.actions if a.key not in changed]  # back in iCloud
         moves = _Moves(root, records, changed)
         _, wanted_links = _plan_items(
-            plan, changes, root, records, paths, layout, progress, albums, moves
-        )
+            plan, changes, root, records, paths, layout, progress, albums, moves,
+            _Ignore(rules, layout, plan.started_at),
+        )  # fmt: skip
         plan.actions = [a for a in plan.actions if a.key not in moves.old_keys]
         links = moves.rekey(links)
         fetched = {a.key for a in plan.actions if a.kind in FILE_KINDS}
@@ -188,9 +223,11 @@ def build_photo_plan(
     listed = {i.key for i in items}
     moves = _Moves(root, records, listed)
     seen, wanted_links = _plan_items(
-        plan, items, root, records, paths, layout, progress, albums, moves
-    )
+        plan, items, root, records, paths, layout, progress, albums, moves,
+        _Ignore(rules, layout, plan.started_at),
+    )  # fmt: skip
     seen |= moves.old_keys  # moved, not deleted
+    seen |= {k for k, r in records.items() if r.archived_at is not None}
     links = moves.rekey(links)
     delete = mirror_deletes and _same_selection(job, state, selection)
     live = sum(1 for r in records.values() if r.gone_at is None)
@@ -212,7 +249,104 @@ def build_photo_plan(
     existing = {(key, album): path for path, (key, album) in links.items()}
     _plan_links(plan, root, layout, paths, existing, wanted_links)
     _plan_unlinks(plan, records, existing, wanted_links, seen)
+    if rules.rules:
+        _plan_archives(plan, items, root, records, layout, rules)
     return plan
+
+
+def _archive_due(job: str, state: PhotoStateDB, plan: PhotoPlan, rules: PhotoRules) -> bool:
+    """Archive rules depend on time, not only on changes in iCloud: with one, the
+    library is read in full at least every ``FULL_LISTING_HOURS`` even if unchanged."""
+    if not any(r.enabled and r.action is RuleAction.ARCHIVE for r in rules.rules):
+        return False
+    full_at = state.full_listing_at(job)
+    return full_at is None or plan.started_at - full_at >= FULL_LISTING_HOURS * 3600
+
+
+class _Ignore:
+    """Files an ignore rule matches: recorded as hits, never downloaded."""
+
+    def __init__(self, rules: PhotoRules, layout: PhotoLayout, now: float) -> None:
+        self.rules, self.layout, self.now = rules, layout, now
+
+    def __call__(self, plan: PhotoPlan, item: PhotoItem) -> bool:
+        rule = self.rules.decide(item, self.layout, self.now)
+        if rule is None or rule.action is not RuleAction.IGNORE:
+            return False
+        plan.rule_hits.append(RuleHit(item.filename, rule.name, RuleAction.IGNORE))
+        return True
+
+
+def _plan_archives(
+    plan: PhotoPlan,
+    items: list[PhotoItem],
+    root: Path,
+    records: dict[str, PhotoRecord],
+    layout: PhotoLayout,
+    rules: PhotoRules,
+) -> None:
+    """Archive photos whose original an archive rule matches, all files backed up.
+
+    A photo goes as a whole (original, Live Photo video, RAW, edits): iCloud deletes
+    them together. Only the personal library: deleting in the Shared Library would
+    take the photo from everyone who shares it.
+    """
+    busy = {a.key for a in plan.actions}
+    by_asset: dict[tuple[str, str], list[PhotoItem]] = {}
+    for item in items:
+        by_asset.setdefault((item.library, item.asset_id), []).append(item)
+    for files in by_asset.values():
+        original = next((f for f in files if f.resource == "original"), None)
+        if original is None:
+            continue
+        rule = rules.decide(original, layout, plan.started_at)
+        if rule is None or rule.action is not RuleAction.ARCHIVE:
+            continue
+        pending = _archive_pending(original, files, root, records, busy, rule, rules)
+        record = records.get(original.key)
+        shown = record.path if record is not None else original.filename
+        plan.rule_hits.append(RuleHit(shown, rule.name, rule.action, pending))
+        if pending is None:
+            plan.actions.append(
+                PhotoAction(PhotoActionKind.ARCHIVE, records[original.key].path, original,
+                            original.key, archive_items=tuple(files), rule=rule.name)
+            )  # fmt: skip
+    if plan.archives > rules.archive_limit:
+        plan.archive_blocked = (
+            f"{plan.archives} photos would be archived, more than the limit of "
+            f"{rules.archive_limit}"
+        )
+
+
+def _archive_pending(
+    original: PhotoItem,
+    files: list[PhotoItem],
+    root: Path,
+    records: dict[str, PhotoRecord],
+    busy: set[str],
+    rule: FileRule,
+    rules: PhotoRules,
+) -> str | None:
+    """Why the photo is not archived in this run, or None when it can be."""
+    if rule.preview:
+        return "preview"
+    if original.library is not Library.PERSONAL:
+        return "shared library"
+    if not rules.can_delete:
+        return "not supported"
+    if not records:
+        return "first run"
+    for item in files:
+        record = records.get(item.key)
+        if (
+            record is None
+            or item.key in busy
+            or record.gone_at is not None
+            or not (root / record.path).is_file()
+            or _changed(record, item)
+        ):
+            return "needs another sync"
+    return None
 
 
 def _same_selection(job: str, state: PhotoStateDB, selection: str | None) -> bool:
@@ -264,6 +398,7 @@ def _plan_items(
     progress: Progress,
     albums: bool,
     moves: "_Moves",
+    ignore: "_Ignore",
 ) -> tuple[set[str], dict[tuple[str, str], str]]:
     """Download what is new, restore or replace what changed, move what changed library.
     Returns the keys seen in iCloud and the album links wanted, as (key, album) ->
@@ -278,6 +413,12 @@ def _plan_items(
             continue
         seen.add(item.key)
         record = records.get(item.key)
+        if ignore(plan, item):
+            if record is not None:  # backed up before the rule: keep it and its links
+                assigned[item.key] = record.path
+                if albums:
+                    wanted_links.update(((item.key, a), record.path) for a in item.albums)
+            continue
         old = moves.match(item) if record is None else None
         if old is not None:
             wanted = _new_path(item, layout, assigned)
@@ -316,7 +457,12 @@ class _Moves:
     def __init__(self, root: Path, records: dict[str, PhotoRecord], listed: set[str]) -> None:
         self._by_content: dict[tuple[str, str], PhotoRecord] = {}
         for key, record in sorted(records.items()):
-            if record.checksum and key not in listed and (root / record.path).exists():
+            if (
+                record.checksum
+                and record.archived_at is None
+                and key not in listed
+                and (root / record.path).exists()
+            ):
                 self._by_content.setdefault((_resource(key), record.checksum), record)
         self.old_keys: set[str] = set()
         self._new_keys: dict[str, str] = {}  # old key -> new key
@@ -358,7 +504,7 @@ def _record_action(root: Path, record: PhotoRecord, item: PhotoItem) -> PhotoAct
         return PhotoActionKind.RESTORE
     if _changed(record, item):
         return PhotoActionKind.REPLACE
-    if record.gone_at is not None:
+    if record.gone_at is not None or record.archived_at is not None:
         return PhotoActionKind.RETURNED
     return None
 
@@ -403,8 +549,10 @@ def _plan_unlinks(
 ) -> None:
     """Remove the links of photos that left an album but are still in iCloud."""
     for (key, album), link_path in sorted(existing.items()):
+        owner = records.get(key)
+        if owner is not None and owner.archived_at is not None:
+            continue  # gone from iCloud on purpose: the album folders keep it
         if (key, album) not in wanted_links and key in seen:
-            owner = records.get(key)
             plan.actions.append(
                 PhotoAction(
                     PhotoActionKind.UNLINK,

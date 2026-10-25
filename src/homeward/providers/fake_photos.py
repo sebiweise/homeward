@@ -24,6 +24,7 @@ class FakePhotoSource(PhotoSource):
         self.listed = 0
         self.downloads: list[str] = []
         self.prepared: list[list[str]] = []
+        self.deleted: list[str] = []  # asset ids deleted through ``delete_photo``
         # change log: (cursor after the change, key or None for an album change)
         self.changes_reliable = False  # tests switch the change feed on
         self.changes_listed = 0
@@ -103,3 +104,11 @@ class FakePhotoSource(PhotoSource):
             raise OSError(f"simulated failure for {item.key}")
         self.downloads.append(item.key)
         return io.BytesIO(self.data[item.key])
+
+    def delete_photo(self, item: PhotoItem) -> None:
+        """Delete the whole photo (all its files), like iCloud's "Recently Deleted"."""
+        if item.key in self.fail_keys:
+            raise OSError(f"simulated failure for {item.key}")
+        for key in [k for k, i in self.items.items() if i.asset_id == item.asset_id]:
+            self.remove(key)
+        self.deleted.append(item.asset_id)

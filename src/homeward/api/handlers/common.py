@@ -12,6 +12,7 @@ from homeward.api.errors import ApiError
 from homeward.apple_errors import classify
 from homeward.core.config import Config
 from homeward.core.state import StateDB
+from homeward.core.workflow import DEFAULT_ARCHIVE_LIMIT
 from homeward.runtime import Event, Level
 
 # Pair and account names become file names (run requests, state databases).
@@ -65,3 +66,24 @@ def event_dict(event: Event) -> dict[str, Any]:
     if event.level != Level.INFO and event.message:
         result["hint"] = classify(event.message)
     return result
+
+
+def parse_rules(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """A job's file rules as config tables; empty values are left out."""
+    rules = data.get("rules", [])
+    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
+        raise ApiError("invalid_param", "rules")
+    tables = []
+    for rule in rules:
+        table = {k: v for k, v in rule.items() if v is not None and v != "" and v != []}
+        if isinstance(table.get("name"), str):
+            table["name"] = table["name"].strip()
+        tables.append(table)
+    return tables
+
+
+def parse_archive_limit(data: dict[str, Any]) -> int:
+    limit = data.get("archive_limit", DEFAULT_ARCHIVE_LIMIT)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        raise ApiError("invalid_param", "archive_limit")
+    return limit

@@ -953,6 +953,7 @@ function jobSettings(job) {
                   ...PHOTO_SWITCHES.map((key) => [t("photos:" + key), onOff(c[key])]),
                   [t("photos:source_folders"), onOff(c.source_folders)],
                   ...PHOTO_FOLDERS.map((key) => [t("photos:" + key), c[key]]),
+                  [t("rule:title"), rulesText(c.rules)],
                   [t("ui:schedule"), scheduleText(job)],
                   ...limitRows(c),
               ]
@@ -1185,7 +1186,7 @@ function splitList(text) {
 
 // The rule list of a pair: an editable card per rule, read back with values().
 // The inputs carry no name, so the dialog's own form values leave them out.
-function ruleEditor(initial) {
+function ruleEditor(initial, hint) {
     const rules = initial.map((rule) => ({ preview: true, enabled: true, ...rule }));
     const list = el("div", { class: "rules" });
 
@@ -1264,7 +1265,7 @@ function ruleEditor(initial) {
         render();
     } });
     return {
-        node: el("fieldset", { class: "rules-box" }, el("legend", { text: t("rule:title") }), el("p", { class: "hint", text: t("rule:hint") }), list, add),
+        node: el("fieldset", { class: "rules-box" }, el("legend", { text: t("rule:title") }), el("p", { class: "hint", text: t("rule:hint") + " " + hint }), list, add),
         values: () => rules.map((rule) => ({ ...rule, name: (rule.name || "").trim() })),
     };
 }
@@ -1295,7 +1296,7 @@ function pairDialog(pair) {
         rules: [],
         archive_limit: 200,
     };
-    const rules = ruleEditor(p.rules || []);
+    const rules = ruleEditor(p.rules || [], t("rule:hint_pair"));
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
     if (p.account && !accountOptions.some(([name]) => name === p.account)) accountOptions.push([p.account, p.account]);
     const fields = [
@@ -1394,6 +1395,7 @@ async function photosDialog(job) {
     const editing = Boolean(job);
     const j = job || { name: "", account: accountsCache.length ? accountsCache[0].name : "", target: "", ...photoDefaults };
     const accountOptions = accountsCache.map((a) => [a.name, a.name + " (" + a.apple_id + ")"]);
+    const rules = ruleEditor(j.rules || [], t("rule:hint_photos"));
     const fields = [
         field(t("photos:name"), el("input", { name: "name", value: j.name, required: true, readonly: editing })),
         field(t("photos:account"), select("account", accountOptions, j.account)),
@@ -1411,6 +1413,10 @@ async function photosDialog(job) {
             PHOTO_FOLDERS.map((key) =>
                 field(t("photos:" + key), el("input", { name: key, value: j[key], required: true }),
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
+        rules.node,
+        field(t("rule:archive_limit_photos"),
+            el("input", { name: "archive_limit", type: "number", min: 0, step: 1, value: j.archive_limit ?? 200 }),
+            t("rule:archive_limit_photos_hint")),
         jobIntervalField(j.interval_minutes),
         ...limitFields(j),
         el("details", { class: "advanced" }, el("summary", { text: t("photos:advanced") }),
@@ -1434,6 +1440,8 @@ async function photosDialog(job) {
         for (const key of PHOTO_SWITCHES) photos[key] = v[key] === "on";
         photos.source_folders = v.source_folders === "on";
         for (const key of PHOTO_FOLDERS) photos[key] = v[key];
+        photos.rules = rules.values();
+        photos.archive_limit = Number(v.archive_limit);
         await api(editing ? "photos.update" : "photos.create", { photos: JSON.stringify(photos) }, true);
         view.key = "photos:" + photos.name;
         await refresh();
