@@ -47,5 +47,5 @@ also installs graphify from `requirements/graphify.txt` (pinned, with hashes).
   the graph located. Put this rule in every subagent prompt that explores code.
 - `graphify-out/GRAPH_REPORT.md` gives hubs and communities for broad reviews.
 - After changing code run `graphify update .` to keep the graph current.
-- If `graphify` is missing: `pip install --require-hashes -r requirements/graphify.txt`, then `graphify update .`.
+- If `graphify` is missing: `pip install --only-binary :all: --require-hashes -r requirements/graphify.txt`, then `graphify update .`.
 - Skill `/graphify` lives in `.claude/skills/graphify/`.
