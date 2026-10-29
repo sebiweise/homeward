@@ -1,0 +1,167 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for Homeward (Synology DSM package, iCloud sync).
+language: de-DE
+tone_instructions: >-
+  Sachlich und knapp auf Deutsch. Datensicherheit zuerst: Risiken für
+  Datenverlust (Überschreiben, Löschen, Verschieben ohne Kopie) immer zuerst
+  und deutlich nennen.
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+  collapse_walkthrough: true
+  sequence_diagrams: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - master
+    ignore_usernames:
+      - dependabot[bot]
+
+  path_filters:
+    - "!graphify-out/**"
+    - "!build/**"
+    - "!dist/**"
+    - "!**/*.spk"
+    - "!**/*.whl"
+    - "!coverage.xml"
+    - "!package/icons/**"
+    - "!package/ui/images/**"
+    - "!requirements/*.txt"
+
+  path_instructions:
+    - path: "src/homeward/**/*.py"
+      instructions: >-
+        Python 3.12, durchgehend Typannotationen (mypy strict), englischer
+        Code und Kommentare. Lint und Format übernimmt Ruff, Code-Smells
+        meldet SonarCloud: diese nicht wiederholen. Wichtigster Maßstab:
+        Kein Pfad darf Daten verlieren. Überschreiben oder Löschen nur mit
+        wiederherstellbarer Kopie (Papierkorb in core/trash.py).
+        Jedes Warten, jeder Retry und jeder Fehler muss für Nutzer sichtbar
+        sein: Log auf INFO/WARNING (nicht DEBUG) mit verständlichem Satz und
+        ein Eintrag über runtime.record_event mit passendem Code aus
+        EVENT_CODES (bei bewusstem Warten mit `until`). Stille
+        except-Blöcke und rohe Tracebacks in der UI sind Fehler.
+        Zugangsdaten, Session-Cookies, 2FA-Codes und Tokens dürfen nie
+        geloggt oder in Events/API-Antworten auftauchen.
+    - path: "src/homeward/core/**/*.py"
+      instructions: >-
+        Reiner Sync-Kern: darf weder DSM-Code (homeward.dsm) noch pyicloud
+        importieren, auch nicht indirekt über providers/ (abgesichert durch
+        tests/unit/test_core_isolation.py). Zugriff auf iCloud und NAS nur
+        über die Provider-Protokolle in core/provider.py. Planner/rules:
+        jede Änderung an Sync-Entscheidungen braucht einen Szenario-Test in
+        tests/scenarios/; jede Regel der bidirektionalen Entscheidungstabelle
+        muss einen Test haben. Delete-Bremse und First-Run-Guard nicht
+        abschwächen. Executor: State erst
+        nach erfolgreicher Aktion fortschreiben, Abbruch und Neustart
+        mitten im Lauf dürfen keinen inkonsistenten State hinterlassen.
+    - path: "src/homeward/providers/**/*.py"
+      instructions: >-
+        Einzige Stelle mit iCloud-Zugriff (pyicloud nur hier und in auth/).
+        NAS-Schreibzugriffe atomar (temp_name + rename_noreplace in nas.py).
+        Uploads müssen gestreamt werden (multipart.py), nie die ganze Datei
+        im RAM halten. Apple-Fehler über apple_errors.py abbilden; 503,
+        abgelaufene Download-Links und Indexierung als sichtbares Warten
+        bzw. Retry mit Event melden. fake*.py müssen das Verhalten der echten
+        Adapter für Tests treu nachbilden; bei neuen Adapter-Funktionen auch
+        die Fakes ergänzen. Protocol-Implementierungen erben explizit vom
+        Protocol (Sonar).
+    - path: "src/homeward/auth/**/*.py"
+      instructions: >-
+        pyicloud-Session und 2FA. Keine Passwörter, Cookies oder Codes in
+        Logs, Events oder Fehlermeldungen. Ein abgelaufenes Login muss als
+        login_required sichtbar werden und darf keinen Sync-Lauf mit leerem
+        iCloud-Stand starten (Gefahr von Löschungen).
+    - path: "src/homeward/api/**/*.py"
+      instructions: >-
+        JSON-API hinter der DSM-UI (CGI) und dem Docker-Webmodus. Prüfe
+        Eingabevalidierung, Pfade nur innerhalb erlaubter freigegebener
+        Ordner (kein Path Traversal), Authentifizierung jedes Handlers und
+        dass Fehler als strukturierte JSON-Antwort statt Traceback
+        zurückkommen.
+    - path: "src/homeward/daemon/**/*.py"
+      instructions: >-
+        Intervall-Scheduler mit einer Lane pro Apple-ID. Prüfe, dass Läufe
+        derselben Apple-ID nie parallel laufen, Abbrechen sauber greift und
+        Throttling (core/limits.py) eingehalten wird.
+    - path: "src/homeward/cli.py"
+      instructions: >-
+        Exit-Codes müssen zu docs/architecture.md passen; neue Codes dort
+        dokumentieren.
+    - path: "package/ui/**/*.js"
+      instructions: >-
+        Ext.js-UI für DSM 7.2. SonarCloud-Muster einhalten: Fire-and-forget-
+        Promises (Event-Handler, load(...)-Aufrufe) mit `void` präfixen,
+        ein Arrow mit Block-Body reicht nicht; `setTimeout(asyncFn, ms)` als
+        `setTimeout(() => void asyncFn(), ms)` schreiben. Keine hartkodierten
+        Texte: alle UI-Strings über die Texte in package/ui/texts. Wartezustände,
+        Retries und Fehler aus dem Event-Log sichtbar darstellen.
+    - path: "package/ui/texts/{enu,ger}/strings"
+      instructions: >-
+        enu und ger müssen dieselben Schlüssel haben. Deutsche Texte in
+        korrekter Rechtschreibung, Ansprache wie im Bestand, DSM-Begriffe
+        (z. B. "Freigegebener Ordner") wie in DSM selbst.
+    - path: "package/{scripts,conf}/**"
+      instructions: >-
+        DSM-7.2-Paket ohne Root-Rechte. Prüfe, dass Upgrade und
+        Deinstallation Nutzerdaten und Konfiguration in var/ erhalten und
+        keine Rechte über privilege/resource hinaus nötig werden.
+    - path: "spksrc/**"
+      instructions: >-
+        SynoCommunity-Rezept (spksrc). Konventionen von spksrc einhalten
+        (Makefile-Variablen, SPK_VERS/SPK_REV, Abhängigkeit zu python312).
+    - path: "tests/**/*.py"
+      instructions: >-
+        pytest mit den Fake-Providern, nie mit echtem iCloud. Neue
+        Funktionen brauchen Tests, Änderungen an Sync-Entscheidungen einen
+        Szenario-Test in tests/scenarios/. Keine Tests überspringen oder
+        abschwächen. Zeitabhängiges über injizierte Uhren, nicht über
+        echtes Warten.
+    - path: "{.github/workflows/**,.claude/hooks/**}"
+      instructions: >-
+        Fremde Actions per Commit-SHA mit Versionskommentar pinnen
+        (`owner/action@<sha> # vX.Y.Z`), minimale permissions setzen. Neue
+        `pip install`-Zeilen nur als `pip install --only-binary :all:
+        --require-hashes -r requirements/<x>.txt` (Sonar-Security-Gate),
+        in YAML quoten. In Bash `[[ ]]` statt `[ ]`.
+    - path: "{README.md,docs/user-guide.md}"
+      instructions: >-
+        Richtet sich an Endnutzer mit Synology-NAS, nicht an Entwickler. Auf
+        Verständlichkeit und passende DSM-Begriffe achten.
+
+  tools:
+    ruff:
+      enabled: true
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    markdownlint:
+      enabled: false
+    gitleaks:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CLAUDE.md"
+      - "CONTRIBUTING.md"
+  learnings:
+    scope: local
