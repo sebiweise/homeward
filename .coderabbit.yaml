@@ -33,7 +33,6 @@ reviews:
     - "!coverage.xml"
     - "!package/icons/**"
     - "!package/ui/images/**"
-    - "!requirements/*.txt"
 
   path_instructions:
     - path: "src/homeward/**/*.py"
