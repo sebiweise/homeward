@@ -32,18 +32,9 @@ service_postinst ()
     install_python_virtualenv
     install_python_wheels
 
-    mkdir -p "${SYNOPKG_PKGVAR}/state"
-    if [ ! -f "${HOMEWARD_CONFIG}" ]; then
-        echo "Writing the default configuration to ${HOMEWARD_CONFIG}"
-        cat > "${HOMEWARD_CONFIG}" <<CONF
-# Homeward configuration. Add accounts, photos backups and sync pairs in the
-# Homeward app in DSM. All options: https://github.com/sebiweise/homeward/blob/master/docs/user-guide.md
-state_dir = "state"
-
-[daemon]
-interval_minutes = 60
-CONF
-    fi
+    # The default config and the state folder, the same as the package from
+    # tools/build_spk.py writes (homeward.api.migrate).
+    "${SYNOPKG_PKGDEST}/env/bin/python3" -m homeward.api.migrate --init
 }
 
 service_postupgrade ()
@@ -58,20 +49,14 @@ service_preuninst ()
     if [ "${SYNOPKG_PKG_STATUS}" = "UPGRADE" ]; then
         return
     fi
-    # Copy config and state into the shared folder, so a reinstall can pick them up.
-    # The synced files themselves live in shared folders and are never touched. The
-    # iCloud sessions stay behind: anyone who can read the share could use them to
-    # reach the Apple ID, so a reinstall asks to sign in again instead.
+    # Copy config and state (without the iCloud sessions) into the shared folder, so
+    # a reinstall can pick them up (homeward.api.migrate.backup). Should Python not
+    # run any more, at least the config is saved.
     if [ -n "${SHARE_PATH}" ] && [ -d "${SHARE_PATH}" ] && [ -f "${HOMEWARD_CONFIG}" ]; then
+        "${SYNOPKG_PKGDEST}/env/bin/python3" -m homeward.api.migrate --backup "${SHARE_PATH}" \
+            && return
         dest="${SHARE_PATH}/.homeward-backup/$(date +%Y-%m-%d_%H%M%S)"
-        echo "Saving configuration and state (without the iCloud sessions) to ${dest}"
-        mkdir -p "${dest}/state" && cp -p "${HOMEWARD_CONFIG}" "${dest}/" || return
-        for entry in "${SYNOPKG_PKGVAR}/state"/* "${SYNOPKG_PKGVAR}/state"/.[!.]*; do
-            [ -e "${entry}" ] || continue
-            case "$(basename "${entry}")" in
-                sessions | sessions-pending) continue ;;
-            esac
-            cp -pR "${entry}" "${dest}/state/"
-        done
+        echo "Saving only the configuration to ${dest}"
+        mkdir -p "${dest}" && cp -p "${HOMEWARD_CONFIG}" "${dest}/"
     fi
 }
