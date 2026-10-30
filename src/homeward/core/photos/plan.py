@@ -3,7 +3,7 @@
 import logging
 import os
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -123,6 +123,7 @@ def build_photo_plan(
     selection: str | None = None,
     brake: DeleteBrake | None = None,
     remove_gone: bool = False,
+    damaged: Collection[str] = frozenset(),
 ) -> PhotoPlan:
     """Compare iCloud with the state of the last run and decide what to fetch or link.
 
@@ -140,6 +141,11 @@ def build_photo_plan(
     read when the source cannot tell for sure, when a file is missing on the NAS, and
     at least every ``FULL_LISTING_HOURS``; that run also catches up on photos removed
     in iCloud and on changed album memberships.
+
+    ``damaged`` are the keys the integrity check found damaged on the NAS. They make
+    this run read the whole library, so that a photo deleted in iCloud since the last
+    complete reading is known as gone: only a photo iCloud still lists is replaced
+    (the damaged copy goes to the trash), any other one stays as it is.
     """
     layout = layout or PhotoLayout()
     progress = progress or Progress()
@@ -156,13 +162,17 @@ def build_photo_plan(
             for key, r in sorted(records.items())
             if r.gone_at is not None
         ]
-    if cursor is not None and cursor == previous and present:
+    if cursor is not None and cursor == previous and present and not damaged:
         plan.unchanged = True
         plan.up_to_date = sum(1 for r in records.values() if r.gone_at is None)
         return plan
 
     paths = _Paths(root, [r.path for r in records.values()] + list(links))
-    changes = _changes(job, source, state, cursor, previous, present, plan.started_at)
+    if damaged:
+        log.info("reading the whole photo library: the integrity check found damaged files")
+        changes = None
+    else:
+        changes = _changes(job, source, state, cursor, previous, present, plan.started_at)
     if changes is not None:
         plan.full = False
         progress.phase("planning", total=len(changes))
@@ -188,8 +198,15 @@ def build_photo_plan(
     listed = {i.key for i in items}
     moves = _Moves(root, records, listed)
     seen, wanted_links = _plan_items(
-        plan, items, root, records, paths, layout, progress, albums, moves
+        plan, items, root, records, paths, layout, progress, albums, moves, damaged
     )
+    for key in sorted(set(damaged) - seen):
+        if key in records:
+            log.warning(
+                "integrity check: %s is damaged, but iCloud no longer has it, "
+                "so it stays as it is", records[key].path,
+                extra={"event": "integrity_damaged"},
+            )  # fmt: skip
     seen |= moves.old_keys  # moved, not deleted
     links = moves.rekey(links)
     delete = mirror_deletes and _same_selection(job, state, selection)
@@ -264,6 +281,7 @@ def _plan_items(
     progress: Progress,
     albums: bool,
     moves: "_Moves",
+    damaged: Collection[str] = frozenset(),
 ) -> tuple[set[str], dict[tuple[str, str], str]]:
     """Download what is new, restore or replace what changed, move what changed library.
     Returns the keys seen in iCloud and the album links wanted, as (key, album) ->
@@ -292,6 +310,12 @@ def _plan_items(
         else:
             path = record.path
             kind = _record_action(root, record, item)
+            if kind is None and item.key in damaged:
+                log.warning(
+                    "integrity check: %s is damaged; moving it to the trash and "
+                    "downloading it again", path, extra={"event": "integrity_repaired"},
+                )  # fmt: skip
+                kind = PhotoActionKind.REPLACE
             if kind is None:
                 plan.up_to_date += 1
             else:

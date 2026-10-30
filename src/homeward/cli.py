@@ -335,7 +335,7 @@ def _print_photos(job: PhotosConfig, outcome: PhotoOutcome, dry_run: bool) -> No
     if outcome.integrity is not None:
         check = outcome.integrity
         print(f"  Weekly check: {check.checked} photos checked, {len(check.damaged)} damaged"
-              + " (moved to the trash, downloaded again)" * bool(check.damaged))  # fmt: skip
+              + " (downloaded again if iCloud still has them)" * bool(check.damaged))  # fmt: skip
     if dry_run:
         print("  Dry run: nothing was changed.")
     elif outcome.result:
