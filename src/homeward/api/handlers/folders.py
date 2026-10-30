@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
+from homeward.api.handlers.common import HIDDEN_FOLDERS
 from homeward.api.server import Context, Request
 
 # Where the volumes are mounted; tests and the UI dev server point it elsewhere.
 ROOT = Path("/")
 MAX_ENTRIES = 2000
-_HIDDEN = {"#recycle", "#snapshot", ".homeward-papierkorb"}
 
 
 def list_folders(_ctx: Context, request: Request) -> dict[str, Any]:
@@ -67,7 +67,7 @@ def _volumes() -> list[Path]:
 
 
 def _hidden(name: str) -> bool:
-    return name.startswith(("@", ".")) or name in _HIDDEN
+    return name.startswith(("@", ".")) or name in HIDDEN_FOLDERS
 
 
 def _readable(path: Path) -> bool:

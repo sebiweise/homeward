@@ -6,11 +6,10 @@ first run again, which never deletes or overwrites anything.
 """
 
 import json
-from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.common import check_name, check_nas_folder, without_none
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
@@ -141,15 +140,16 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     provider = data.get("remote_provider", "icloud_drive")
     if provider not in REMOTE_PROVIDERS:
         raise ApiError("invalid_param", "remote_provider")
-    local = Path(text("local"))
-    if not local.is_absolute() or ".." in local.parts:
-        raise ApiError("invalid_param", "local")
+    local = check_nas_folder(ctx, text("local"), "local")
     if not local.is_dir():
         raise ApiError("local_missing", str(local))
     account = check_name(text("account"), "account")
     accounts = _accounts(ctx)
     if provider == "icloud_drive" and account not in accounts:
         raise ApiError("account_not_found", account)
+    remote = text("remote")
+    if provider == "folder":  # a NAS folder too, see cli._remote_provider
+        remote = str(check_nas_folder(ctx, remote, "remote"))
     exclude = _exclude(data)
     ratio, count = _delete_brake(data)
     return {
@@ -157,7 +157,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "account": account,
         **({"apple_id": accounts[account]} if account in accounts else {}),
         "local": str(local),
-        "remote": text("remote"),
+        "remote": remote,
         "mode": mode,
         # Choosing "Both directions (beta)" in the UI is the opt-in the config asks for.
         "beta": mode == SyncMode.BIDIRECTIONAL,

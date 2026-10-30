@@ -15,6 +15,7 @@ def test_window_parse_and_text() -> None:
     assert str(TimeWindow.parse(" 22:00 - 6:30 ")) == "22:00-06:30"
     whole_day = TimeWindow.parse("00:00-24:00")
     assert whole_day.contains(_at(0)) and whole_day.contains(_at(23, 59))
+    assert TimeWindow.parse(str(whole_day)) == whole_day  # saved, then read again
     for bad in ("22-06", "25:00-06:00", "10:00-10:00", "10:60-11:00", ""):
         with pytest.raises(ValueError):
             TimeWindow.parse(bad)

@@ -32,7 +32,8 @@ no extra server.
 - **Never loses data**: nothing is overwritten or deleted without a recoverable copy.
   NAS deletions go to the Synology recycle bin (or Homeward's own trash), iCloud
   deletions to "Recently Deleted". The first run of a pair never deletes, and a
-  *delete brake* stops any run that would delete more than 10 % or more than 50 files.
+  *delete brake* stops any run that would delete more than 50 files, or more than 10 %
+  of them once it deletes more than 5.
 - Dry runs that show the plan without changing anything.
 - Interval scheduler as a DSM service; every wait, retry and error shows up in the log.
 - A DSM app (German and English) for accounts with 2FA sign-in, photos backups, sync

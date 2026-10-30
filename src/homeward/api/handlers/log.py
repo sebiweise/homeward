@@ -33,10 +33,11 @@ def runs(ctx: Context, request: Request) -> dict[str, Any]:
     return {"runs": result[:limit]}
 
 
-# Codes the daemon writes when a run ends (with ``exit_code``), see daemon.scheduler.
+# Codes the daemon writes when a run ends (with ``exit_code``): the values of
+# daemon.scheduler._EVENTS plus its fallback "sync_failed" (a test keeps them in step).
 RUN_END = frozenset(
-    {"sync_finished", "sync_failed", "sync_stopped", "sync_cancelled", "sync_postponed",
-     "delete_brake", "config_error"}
+    {"sync_finished", "sync_failed", "sync_stopped", "sync_cancelled", "sync_paused",
+     "sync_postponed", "delete_brake", "config_error"}
 )  # fmt: skip
 MAX_HISTORY_EVENTS = 20_000
 

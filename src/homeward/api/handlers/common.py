@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
+from homeward.api.server import Context
 from homeward.apple_errors import classify
 from homeward.core.config import Config
+from homeward.core.rules import DEFAULT_EXCLUDES, TRASH_DIR
 from homeward.core.state import StateDB
 from homeward.runtime import Event, Level
 
@@ -23,6 +25,29 @@ def check_name(value: str, what: str) -> str:
     if not _NAME.match(value):
         raise ApiError("invalid_name", f"invalid {what} name: {value!r}")
     return value
+
+
+# Folders a job never syncs into: Synology's #recycle and #snapshot and Homeward's own
+# trash (DSM's "@" folders such as @eaDir are hidden by their prefix).
+HIDDEN_FOLDERS = frozenset({TRASH_DIR, *(n for n in DEFAULT_EXCLUDES if n.startswith("#"))})
+PACKAGE_DIR = Path("/var/packages/homeward")
+
+
+def check_nas_folder(ctx: Context, value: str, key: str) -> Path:
+    """A NAS folder a pair or photos backup may use: absolute, without ``..``, none of
+    the hidden folders above, and neither inside nor around the package's own data
+    (config, Apple ID sessions, state), which the daemon could otherwise read or
+    overwrite: a sync of a folder that contains it would copy the sessions too."""
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ApiError("invalid_param", key)
+    if any(part.startswith("@") or part in HIDDEN_FOLDERS for part in path.parts):
+        raise ApiError("invalid_param", key)
+    real = path.resolve()
+    private = [f.resolve() for f in (PACKAGE_DIR, ctx.paths.var_dir, ctx.store.load().state_dir)]
+    if any(real.is_relative_to(folder) or folder.is_relative_to(real) for folder in private):
+        raise ApiError("invalid_param", key)
+    return path
 
 
 def without_none(table: dict[str, Any]) -> dict[str, Any]:

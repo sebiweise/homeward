@@ -73,7 +73,7 @@ def test_custom_scheme(source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: 
 
 
 def test_bad_schemes_are_rejected() -> None:
-    for scheme in ("{album}", "/{year}", "../{year}", "{0}"):
+    for scheme in ("{album}", "/{year}", "../{year}", "{0}", "{year.real}"):
         with pytest.raises(ValueError):
             check_scheme(scheme)
     check_scheme("{year}/{month}")
@@ -352,20 +352,20 @@ def test_truncated_download_leaves_no_file(
 
 
 def test_two_apple_ids_keep_separate_state(tmp_path: Path) -> None:
-    seb, anna = FakePhotoSource("seb"), FakePhotoSource("anna")
-    seb.add("x", "seb.jpg", created=at(2024, 5))
+    alice, anna = FakePhotoSource("alice"), FakePhotoSource("anna")
+    alice.add("x", "alice.jpg", created=at(2024, 5))
     anna.add("x", "anna.jpg", created=at(2024, 5))  # same asset id in another account
 
     with (
-        PhotoStateDB(tmp_path / "seb.photos.sqlite3") as s1,
+        PhotoStateDB(tmp_path / "alice.photos.sqlite3") as s1,
         PhotoStateDB(tmp_path / "anna.photos.sqlite3") as s2,
     ):
-        run(seb, tmp_path / "Seb", s1, job="seb")
+        run(alice, tmp_path / "Alice", s1, job="alice")
         run(anna, tmp_path / "Anna", s2, job="anna")
 
-    assert (tmp_path / "Seb" / "2024" / "05" / "seb.jpg").exists()
+    assert (tmp_path / "Alice" / "2024" / "05" / "alice.jpg").exists()
     assert (tmp_path / "Anna" / "2024" / "05" / "anna.jpg").exists()
-    assert not (tmp_path / "Seb" / "2024" / "05" / "anna.jpg").exists()
+    assert not (tmp_path / "Alice" / "2024" / "05" / "anna.jpg").exists()
 
 
 def test_unsafe_names_stay_inside_target(
