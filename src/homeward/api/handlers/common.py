@@ -35,16 +35,17 @@ PACKAGE_DIR = Path("/var/packages/homeward")
 
 def check_nas_folder(ctx: Context, value: str, key: str) -> Path:
     """A NAS folder a pair or photos backup may use: absolute, without ``..``, none of
-    the hidden folders above, and outside the package's own data (config, Apple ID
-    sessions, state), which the daemon could otherwise read or overwrite."""
+    the hidden folders above, and neither inside nor around the package's own data
+    (config, Apple ID sessions, state), which the daemon could otherwise read or
+    overwrite: a sync of a folder that contains it would copy the sessions too."""
     path = Path(value)
     if not path.is_absolute() or ".." in path.parts:
         raise ApiError("invalid_param", key)
     if any(part.startswith("@") or part in HIDDEN_FOLDERS for part in path.parts):
         raise ApiError("invalid_param", key)
     real = path.resolve()
-    private = (PACKAGE_DIR, ctx.paths.var_dir, ctx.store.load().state_dir)
-    if any(real.is_relative_to(folder.resolve()) for folder in private):
+    private = [f.resolve() for f in (PACKAGE_DIR, ctx.paths.var_dir, ctx.store.load().state_dir)]
+    if any(real.is_relative_to(folder) or folder.is_relative_to(real) for folder in private):
         raise ApiError("invalid_param", key)
     return path
 

@@ -215,6 +215,7 @@ def test_pair_folders_stay_out_of_hidden_and_package_folders(
     recycle.mkdir(parents=True)
     cases = (
         _pair(tmp_path, local=str(client.paths.var_dir)),  # config and Apple ID sessions
+        _pair(tmp_path, local=str(tmp_path)),  # contains them: they would be synced too
         _pair(tmp_path, local=str(recycle)),
         _pair(tmp_path, remote=str(client.paths.var_dir / "state")),
         _pair(tmp_path, remote="cloud"),  # a folder remote must be an absolute path
