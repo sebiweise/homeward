@@ -136,7 +136,7 @@ def info(version: str, arch: str, checksum: str, has_ui: bool) -> str:
         "description": DESCRIPTION,
         "description_ger": DESCRIPTION_GER,
         "arch": ARCHS[arch][1],
-        "maintainer": "Sebastian Goscinski",
+        "maintainer": "sebiweise",
         "maintainer_url": "https://github.com/sebiweise/homeward",
         "support_url": "https://github.com/sebiweise/homeward/issues",
         "install_dep_packages": DEPENDENCIES,
