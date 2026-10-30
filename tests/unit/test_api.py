@@ -207,6 +207,29 @@ def test_pair_validation(client: Client, tmp_path: Path) -> None:
     assert not client.paths.config.exists()
 
 
+def test_pair_folders_stay_out_of_hidden_and_package_folders(
+    client: Client, tmp_path: Path
+) -> None:
+    client.paths.var_dir.mkdir(parents=True, exist_ok=True)
+    recycle = tmp_path / "nas" / "#recycle"
+    recycle.mkdir(parents=True)
+    cases = (
+        _pair(tmp_path, local=str(client.paths.var_dir)),  # config and Apple ID sessions
+        _pair(tmp_path, local=str(recycle)),
+        _pair(tmp_path, remote=str(client.paths.var_dir / "state")),
+        _pair(tmp_path, remote="cloud"),  # a folder remote must be an absolute path
+    )
+    for pair in cases:
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.create", post=True, pair=pair)
+        assert _error(excinfo) == "invalid_param", pair
+    assert not client.paths.config.exists()
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.create", post=True, photos=_photos(tmp_path, target=str(recycle)))
+    assert _error(excinfo) == "invalid_param"
+
+
 def test_pair_interval(client: Client, tmp_path: Path) -> None:
     created = client.call("pairs.create", post=True, pair=_pair(tmp_path, interval_minutes=15))
     assert created["interval_minutes"] == 15

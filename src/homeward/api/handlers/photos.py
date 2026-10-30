@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.common import check_name, check_nas_folder, without_none
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
@@ -172,9 +172,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     accounts = {a["name"]: a for a in ctx.store.read().get("account", []) if isinstance(a, dict)}
     if account not in accounts:
         raise ApiError("account_not_found", account)
-    target = Path(text("target"))
-    if not target.is_absolute() or ".." in target.parts:
-        raise ApiError("invalid_param", "target")
+    target = check_nas_folder(ctx, text("target"), "target")
     if not target.is_dir():
         raise ApiError("local_missing", str(target))
     entry: dict[str, Any] = {
