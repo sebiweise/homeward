@@ -12,6 +12,8 @@ updates:
       # (see docs/adr/0002-drive-provider.md). Raise the pin by hand after testing.
       - dependency-name: pyicloud
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # pyicloud 2.7.x requires exactly tzlocal==5.3.1; it follows the pyicloud pin.
+      - dependency-name: tzlocal
 
   # The lock file the .spk is built from (requirements/icloud.txt, with hashes) and
   # the SynoCommunity package's pins of the same versions, in one pull request so
@@ -32,6 +34,8 @@ updates:
     ignore:
       - dependency-name: pyicloud
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # pyicloud 2.7.x requires exactly tzlocal==5.3.1; it follows the pyicloud pin.
+      - dependency-name: tzlocal
       # Set from the release tag (tools/spksrc_requirements.py --version).
       - dependency-name: homeward
       # spksrc builds cryptography only up to 48.x (HELD_BACK in
