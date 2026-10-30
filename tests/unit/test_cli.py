@@ -149,10 +149,10 @@ def test_icloud_sign_in_uses_the_stored_session(
     config = _config(tmp_path, provider="icloud_drive")
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_USAGE
     assert "set apple_id" in capsys.readouterr().err
-    config.write_text(config.read_text() + 'apple_id = "seb@example.com"\n')
+    config.write_text(config.read_text() + 'apple_id = "alice@example.com"\n')
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_LOGIN
     assert "homeward login --account default" in capsys.readouterr().err
-    assert calls == [("default", "seb@example.com", tmp_path / "state")]
+    assert calls == [("default", "alice@example.com", tmp_path / "state")]
 
 
 def test_sync_with_icloud_drive(
@@ -196,6 +196,37 @@ def test_sync_purges_old_nas_trash(tmp_path: Path, capsys: pytest.CaptureFixture
     assert "Emptied 1 day folder" in capsys.readouterr().out
 
 
+def test_sync_purges_old_trash_of_a_folder_remote(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = _config(tmp_path)
+    old = tmp_path / "cloud" / ".homeward-papierkorb" / "2020-01-01"
+    old.mkdir(parents=True)
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert not old.exists()
+    assert "Emptied 1 day folder" in capsys.readouterr().out
+
+
+def test_sync_refuses_a_second_run_of_the_same_pair(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import fcntl
+
+    config = _config(tmp_path)
+    (tmp_path / "nas" / "a.txt").write_text("a")
+    lock = tmp_path / "state" / "pair-docs.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock.open("a") as other_run:
+        fcntl.flock(other_run, fcntl.LOCK_EX)
+        assert main(["sync", "--config", str(config)]) == EXIT_FAILED
+    assert "still running" in capsys.readouterr().err
+    assert not (tmp_path / "cloud" / "a.txt").exists()
+
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert (tmp_path / "cloud" / "a.txt").exists()
+
+
 def test_sync_bad_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sync", "--config", str(tmp_path / "missing.toml")]) == EXIT_USAGE
     assert "not found" in capsys.readouterr().err
@@ -208,8 +239,8 @@ def _photos_config(tmp_path: Path) -> Path:
 state_dir = "state"
 
 [[photos]]
-name = "seb"
-account = "seb@example.com"
+name = "alice"
+account = "alice@example.com"
 target = "{tmp_path / "photos"}"
 """
     )
@@ -237,10 +268,10 @@ def test_photos_dry_run_then_real(
     assert "Dry run" in out
     assert not (tmp_path / "photos").exists()
 
-    assert main(["photos", "--config", str(config), "--job", "seb"]) == EXIT_OK
+    assert main(["photos", "--config", str(config), "--job", "alice"]) == EXIT_OK
     assert (tmp_path / "photos" / "2024" / "05" / "a.jpg").read_bytes() == b"img"
     assert (tmp_path / "photos" / "Alben" / "Urlaub" / "a.jpg").exists()
-    assert (tmp_path / "state" / "seb@example.com.photos.sqlite3").exists()
+    assert (tmp_path / "state" / "alice@example.com.photos.sqlite3").exists()
 
     capsys.readouterr()
     assert main(["photos", "--config", str(config)]) == EXIT_OK
@@ -264,14 +295,14 @@ def test_photos_failed_download_exit_code(
     assert "FAILED download" in capsys.readouterr().out
     (summary,) = [e for e in _events(tmp_path) if e.code == "sync_summary"]
     assert summary.details["counts"] == {"download": 1, "failed": 1}
-    assert summary.source == "photos:seb"
+    assert summary.source == "photos:alice"
 
 
 def test_photos_without_session_asks_for_login(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["photos", "--config", str(_photos_config(tmp_path))]) == EXIT_LOGIN
-    assert "homeward login --account seb@example.com" in capsys.readouterr().err
+    assert "homeward login --account alice@example.com" in capsys.readouterr().err
 
 
 def test_photos_none_configured(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -292,9 +323,9 @@ def test_login_flow(
     monkeypatch.setattr("builtins.input", lambda prompt: "123456")
     config = _photos_config(tmp_path)
 
-    assert main(["login", "--config", str(config), "--account", "seb@example.com"]) == EXIT_OK
+    assert main(["login", "--config", str(config), "--account", "alice@example.com"]) == EXIT_OK
     assert "is logged in" in capsys.readouterr().out
-    assert (tmp_path / "state" / "sessions" / "seb@example.com" / "trusted").exists()
+    assert (tmp_path / "state" / "sessions" / "alice@example.com" / "trusted").exists()
 
     monkeypatch.setattr("builtins.input", lambda prompt: "000000")
     assert (
@@ -329,7 +360,7 @@ def test_photos_progress_file_while_running(
 
     source = FakePhotoSource()
     source.add("a1", "a.jpg")
-    progress_file = tmp_path / "progress" / "photos-seb.json"
+    progress_file = tmp_path / "progress" / "photos-alice.json"
     seen: list[dict[str, object]] = []
     open_read = source.open_read
 
@@ -409,7 +440,7 @@ def test_photos_refuses_a_second_run_for_the_same_account(
     source.add("a1", "a.jpg")
     monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
     config = _photos_config(tmp_path)
-    lock = tmp_path / "state" / "seb@example.com.photos.lock"
+    lock = tmp_path / "state" / "alice@example.com.photos.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
 
     with lock.open("a") as other_run:

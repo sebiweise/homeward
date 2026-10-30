@@ -189,8 +189,8 @@ recycle bin (`#recycle`, same path below it as in the share) when it is enabled 
 share, so DSM's own emptying schedule applies; otherwise `<target>/.homeward-papierkorb/<date>/`,
 whose day folders older than `trash_days` are emptied. Photos in iCloud's "Recently Deleted"
 count as deleted. A run that would delete more than `max_delete_count` photos or more
-than `max_delete_ratio` of them only holds those deletions back (the rest of the backup
-runs) until you approve them with *Approve deletions* or `--allow-deletes`. Photos that
+than `max_delete_ratio` of them (the share only counts from more than 5 deletions on)
+only holds those deletions back (the rest of the backup runs) until you approve them with *Approve deletions* or `--allow-deletes`. Photos that
 only drop out because you changed the libraries or file types are not deleted, and
 neither are photos that were already marked deleted before the option was switched on.
 
@@ -225,7 +225,7 @@ Optional settings:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `exclude` | `[]` | glob patterns, matched against every file and folder name in a path |
-| `max_delete_ratio` | `0.10` | delete brake: stop if a run would delete more than this share of files |
+| `max_delete_ratio` | `0.10` | delete brake: stop if a run would delete more than this share of files (only counts from more than 5 deletions) |
 | `max_delete_count` | `50` | delete brake: stop if a run would delete more files than this |
 | `trash_days` | `30` | days to keep files in Homeward's NAS trash, `0` keeps them forever |
 

@@ -19,13 +19,10 @@ import io
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import tarfile
 import time
-import zlib
-from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,48 +117,16 @@ def check_wheel(wheel: Path, machine: str) -> None:
         raise SystemExit(f"{wheel.name}: wrong platform for {machine}")
 
 
-def png(size: int, pixel: Callable[[float, float], tuple[int, int, int, int]]) -> bytes:
-    """Encode an RGBA PNG; ``pixel`` gets coordinates in 0..1."""
-    rows = bytearray()
-    for y in range(size):
-        rows.append(0)
-        for x in range(size):
-            # 2x2 supersampling for smooth edges.
-            offsets = ((0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75))
-            samples = [pixel((x + dx) / size, (y + dy) / size) for dx, dy in offsets]
-            rows.extend(sum(s[i] for s in samples) // 4 for i in range(4))
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        body = kind + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
-
-    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
-        + chunk(b"IEND", b"")
-    )
-
-
-def default_icon(x: float, y: float) -> tuple[int, int, int, int]:
-    """A white house on a rounded blue square, used until package/icons has real icons."""
-    radius = 0.18
-    cx, cy = min(max(x, radius), 1 - radius), min(max(y, radius), 1 - radius)
-    if (x - cx) ** 2 + (y - cy) ** 2 > radius**2:
-        return (0, 0, 0, 0)
-    white = (255, 255, 255, 255)
-    roof = 0.22 <= y <= 0.5 and abs(x - 0.5) <= (y - 0.22) / 0.28 * 0.3
-    body = 0.5 <= y <= 0.78 and 0.29 <= x <= 0.71
-    door = 0.6 <= y <= 0.78 and 0.45 <= x <= 0.55
-    if (roof or body) and not door:
-        return white
-    return (int(40 + 40 * y), int(110 + 50 * y), 220, 255)
-
-
 def icon(size: int) -> bytes:
-    custom = PACKAGE_SRC / "icons" / f"icon_{size}.png"
-    return custom.read_bytes() if custom.exists() else png(size, default_icon)
+    """The package icon: package/icons if it has one, else the app's own icon
+    (package/ui/images, drawn by tools/make_icons.py)."""
+    for folder in (PACKAGE_SRC / "icons", PACKAGE_SRC / "ui" / "images"):
+        candidate = folder / f"icon_{size}.png"
+        if candidate.exists():
+            return candidate.read_bytes()
+    raise SystemExit(
+        f"build_spk: no icon_{size}.png; run python tools/make_icons.py package/ui/images"
+    )
 
 
 def info(version: str, arch: str, checksum: str, has_ui: bool) -> str:
@@ -173,7 +138,7 @@ def info(version: str, arch: str, checksum: str, has_ui: bool) -> str:
         "description": DESCRIPTION,
         "description_ger": DESCRIPTION_GER,
         "arch": ARCHS[arch][1],
-        "maintainer": "Sebastian Goscinski",
+        "maintainer": "sebiweise",
         "maintainer_url": "https://github.com/sebiweise/homeward",
         "support_url": "https://github.com/sebiweise/homeward/issues",
         "install_dep_packages": DEPENDENCIES,
@@ -220,6 +185,9 @@ def build(arch: str, out_dir: Path, work: Path) -> Path:
             add_tree(tgz, ui, "ui")
     package_tgz = buf.getvalue()
 
+    # Before the .spk is opened for writing: a missing icon must not leave a broken
+    # package in place of one built before.
+    icons = {"PACKAGE_ICON.PNG": icon(72), "PACKAGE_ICON_256.PNG": icon(256)}
     out_dir.mkdir(parents=True, exist_ok=True)
     spk = out_dir / f"{PACKAGE_NAME}-{version}-{arch}.spk"
     # DSM's INFO file wants an MD5 of package.tgz; it is an integrity check, not security.
@@ -227,8 +195,8 @@ def build(arch: str, out_dir: Path, work: Path) -> Path:
     with tarfile.open(spk, mode="w", format=tarfile.GNU_FORMAT) as tar:
         add_bytes(tar, "INFO", info(version, arch, checksum, has_ui).encode())
         add_bytes(tar, "package.tgz", package_tgz)
-        add_bytes(tar, "PACKAGE_ICON.PNG", icon(72))
-        add_bytes(tar, "PACKAGE_ICON_256.PNG", icon(256))
+        for name, data in icons.items():
+            add_bytes(tar, name, data)
         add_bytes(tar, "LICENSE", (ROOT / "LICENSE").read_bytes())
         for name in ("privilege", "resource"):
             add_bytes(tar, f"conf/{name}", (PACKAGE_SRC / "conf" / name).read_bytes())
