@@ -1,8 +1,10 @@
 """Sync pairs: list, create, update, delete and "run now".
 
 A pair's name is its key in the state database, so it cannot be renamed. When a
-pair's folders or account change, its sync state is reset: the next run is a
-first run again, which never deletes or overwrites anything.
+pair's folders or account change (``PairConfig.identity``), its sync state is
+reset: the next run is a first run again, which never deletes or overwrites
+anything. The sync itself checks the identity too, so a run that was still going
+with the old folders cannot leave state behind for the new ones.
 """
 
 import json
@@ -18,9 +20,6 @@ from homeward.core.models import SyncMode
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
 from homeward.runtime import RunRequest, request_run
-
-# Changing one of these makes the stored sync state meaningless.
-_IDENTITY = ("local", "remote", "account", "remote_provider")
 
 
 def to_dict(pair: PairConfig) -> dict[str, Any]:
@@ -71,9 +70,9 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
 
     config = ctx.store.update(change)
     new = config.pair(entry["name"])
-    old_identity = to_dict(old)
-    new_identity = to_dict(new)
-    if any(old_identity[key] != new_identity[key] for key in _IDENTITY):
+    if old.identity != new.identity:
+        # A run still going with the old folders may record files after this reset;
+        # the next run sees the identity no longer matches and starts over anyway.
         _reset_state(ctx, old)
         _reset_state(ctx, new)
     return to_dict(new)
