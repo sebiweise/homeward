@@ -31,7 +31,9 @@ class TimeWindow:
         return cls(start, end % (24 * 60))
 
     def __str__(self) -> str:
-        return f"{_clock_time(self.start)}-{_clock_time(self.end)}"
+        # start == end only for the whole day, 00:00-24:00, which parses back
+        end = "24:00" if self.start == self.end else _clock_time(self.end)
+        return f"{_clock_time(self.start)}-{end}"
 
     def contains(self, at: float) -> bool:
         minute = _minute(at)

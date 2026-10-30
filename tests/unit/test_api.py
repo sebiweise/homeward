@@ -207,6 +207,30 @@ def test_pair_validation(client: Client, tmp_path: Path) -> None:
     assert not client.paths.config.exists()
 
 
+def test_pair_folders_stay_out_of_hidden_and_package_folders(
+    client: Client, tmp_path: Path
+) -> None:
+    client.paths.var_dir.mkdir(parents=True, exist_ok=True)
+    recycle = tmp_path / "nas" / "#recycle"
+    recycle.mkdir(parents=True)
+    cases = (
+        _pair(tmp_path, local=str(client.paths.var_dir)),  # config and Apple ID sessions
+        _pair(tmp_path, local=str(tmp_path)),  # contains them: they would be synced too
+        _pair(tmp_path, local=str(recycle)),
+        _pair(tmp_path, remote=str(client.paths.var_dir / "state")),
+        _pair(tmp_path, remote="cloud"),  # a folder remote must be an absolute path
+    )
+    for pair in cases:
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.create", post=True, pair=pair)
+        assert _error(excinfo) == "invalid_param", pair
+    assert not client.paths.config.exists()
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.create", post=True, photos=_photos(tmp_path, target=str(recycle)))
+    assert _error(excinfo) == "invalid_param"
+
+
 def test_pair_interval(client: Client, tmp_path: Path) -> None:
     created = client.call("pairs.create", post=True, pair=_pair(tmp_path, interval_minutes=15))
     assert created["interval_minutes"] == 15
@@ -275,7 +299,7 @@ def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:
     assert status["pairs"][0]["pending"] is True
     assert status["pairs"][0]["last_run"] is None
 
-    (request,) = take_requests(client.paths)
+    (request,) = take_requests(client.paths.requests_dir)
     assert request.pair == "docs"
     assert request.allow_deletes
     assert not request.dry_run
@@ -708,6 +732,24 @@ def test_run_history_of_one_job(client: Client) -> None:
     assert [e["source"] for e in events] == ["pair:docs"]
 
 
+def test_run_history_ends_a_run_its_window_closed(client: Client) -> None:
+    paths = client.paths
+    paths.events_file.parent.mkdir(parents=True, exist_ok=True)
+    _run_event(paths, 800, "sync_started", dry_run=False)
+    _run_event(paths, 700, "sync_paused", exit_code=5)
+    _run_event(paths, 100, "sync_started", dry_run=False)
+    runs = client.call("log.history", source="photos:fotos")["runs"]
+    assert [r["result"] for r in runs] == [None, "sync_paused"]
+    assert runs[1]["events"] == []
+
+
+def test_run_end_codes_cover_the_daemon_results() -> None:
+    from homeward.api.handlers.log import RUN_END
+    from homeward.daemon.scheduler import _EVENTS
+
+    assert {code for _, code in _EVENTS.values()} | {"sync_failed"} <= RUN_END
+
+
 def test_event_log_rotates_and_never_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -732,7 +774,7 @@ def test_photos_run_and_status(client: Client, tmp_path: Path) -> None:
     (photos,) = client.call("status.get")["photos"]
     assert photos["pending"]
     assert photos["job"]["result"] == "ok"
-    (request,) = take_requests(client.paths)
+    (request,) = take_requests(client.paths.requests_dir)
     assert request.pair == "photos:fotos"
     assert request.dry_run
     with pytest.raises(ApiError):
@@ -919,7 +961,7 @@ def test_photos_cleanup_shows_the_count_and_queues_a_request(
     assert (photos["gone"], photos["files"], photos["bytes"]) == (2, 3, 3)
 
     client.call("photos.run", post=True, name="fotos", remove_gone="true")
-    (request,) = take_requests(client.paths)
+    (request,) = take_requests(client.paths.requests_dir)
     assert request.pair == "photos:fotos"
     assert request.remove_gone
     assert not request.allow_deletes

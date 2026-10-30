@@ -11,7 +11,7 @@ state_dir = "state"
 
 [[pair]]
 name = "docs"
-local = "/volume1/homes/seb/Docs"
+local = "/volume1/homes/alice/Docs"
 remote = "Documents"
 mode = "bidirectional"
 beta = true
@@ -94,9 +94,9 @@ PHOTOS = """
 state_dir = "/state"
 
 [[photos]]
-name = "seb"
-account = "seb"
-apple_id = "seb@example.com"
+name = "alice"
+account = "alice"
+apple_id = "alice@example.com"
 target = "/volume1/photo/Alice"
 
 [[photos]]
@@ -121,21 +121,21 @@ def test_photos_jobs() -> None:
     from homeward.core.photos import Library
 
     config = parse_config(tomllib.loads(PHOTOS))
-    seb = config.photos_job("seb")
-    assert seb.apple_id == "seb@example.com"
-    assert seb.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
-    assert seb.albums
-    assert seb.videos
-    assert seb.live_videos
-    assert seb.raw_alternative
-    assert seb.edited
-    assert seb.favorites
-    assert seb.xmp
-    assert not seb.hidden
-    assert seb.workers == 4
-    assert seb.layout.favorites_folder == "Favoriten"
-    assert seb.layout.scheme == "{year}/{month}"
-    assert seb.layout.source_folders
+    alice = config.photos_job("alice")
+    assert alice.apple_id == "alice@example.com"
+    assert alice.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
+    assert alice.albums
+    assert alice.videos
+    assert alice.live_videos
+    assert alice.raw_alternative
+    assert alice.edited
+    assert alice.favorites
+    assert alice.xmp
+    assert not alice.hidden
+    assert alice.workers == 4
+    assert alice.layout.favorites_folder == "Favoriten"
+    assert alice.layout.scheme == "{year}/{month}"
+    assert alice.layout.source_folders
     anna = config.photos_job("anna")
     assert anna.apple_id is None
     assert not anna.albums
