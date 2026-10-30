@@ -176,8 +176,9 @@ A photo moved between the personal and the Shared Library in iCloud is moved on 
 too (into the other library's folder) instead of being downloaded again.
 
 Once a week a run checks that every backed-up photo still has the size it was
-downloaded with. A damaged file (cut off, overwritten) goes to the trash with its album
-links and is downloaded again; one iCloud no longer has stays as it is, with a warning.
+downloaded with. A damaged file (cut off, overwritten) is downloaded again and the
+damaged copy goes to the trash, but only when iCloud still has the photo; one iCloud no
+longer has stays as it is, with a warning.
 
 Switching an option off later keeps the files it already produced. Folder changes
 apply to newly downloaded photos; photos already on the NAS keep their place.
@@ -188,8 +189,8 @@ recycle bin (`#recycle`, same path below it as in the share) when it is enabled 
 share, so DSM's own emptying schedule applies; otherwise `<target>/.homeward-papierkorb/<date>/`,
 whose day folders older than `trash_days` are emptied. Photos in iCloud's "Recently Deleted"
 count as deleted. A run that would delete more than `max_delete_count` photos or more
-than `max_delete_ratio` of them only holds those deletions back (the rest of the backup
-runs) until you approve them with *Approve deletions* or `--allow-deletes`. Photos that
+than `max_delete_ratio` of them (the share only counts from more than 5 deletions on)
+only holds those deletions back (the rest of the backup runs) until you approve them with *Approve deletions* or `--allow-deletes`. Photos that
 only drop out because you changed the libraries or file types are not deleted, and
 neither are photos that were already marked deleted before the option was switched on.
 
@@ -224,7 +225,7 @@ Optional settings:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `exclude` | `[]` | glob patterns, matched against every file and folder name in a path |
-| `max_delete_ratio` | `0.10` | delete brake: stop if a run would delete more than this share of files |
+| `max_delete_ratio` | `0.10` | delete brake: stop if a run would delete more than this share of files (only counts from more than 5 deletions) |
 | `max_delete_count` | `50` | delete brake: stop if a run would delete more files than this |
 | `trash_days` | `30` | days to keep files in Homeward's NAS trash, `0` keeps them forever |
 
