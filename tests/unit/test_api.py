@@ -298,7 +298,7 @@ def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:
     assert status["pairs"][0]["pending"] is True
     assert status["pairs"][0]["last_run"] is None
 
-    (request,) = take_requests(client.paths)
+    (request,) = take_requests(client.paths.requests_dir)
     assert request.pair == "docs"
     assert request.allow_deletes
     assert not request.dry_run
@@ -773,7 +773,7 @@ def test_photos_run_and_status(client: Client, tmp_path: Path) -> None:
     (photos,) = client.call("status.get")["photos"]
     assert photos["pending"]
     assert photos["job"]["result"] == "ok"
-    (request,) = take_requests(client.paths)
+    (request,) = take_requests(client.paths.requests_dir)
     assert request.pair == "photos:fotos"
     assert request.dry_run
     with pytest.raises(ApiError):
@@ -960,7 +960,7 @@ def test_photos_cleanup_shows_the_count_and_queues_a_request(
     assert (photos["gone"], photos["files"], photos["bytes"]) == (2, 3, 3)
 
     client.call("photos.run", post=True, name="fotos", remove_gone="true")
-    (request,) = take_requests(client.paths)
+    (request,) = take_requests(client.paths.requests_dir)
     assert request.pair == "photos:fotos"
     assert request.remove_gone
     assert not request.allow_deletes

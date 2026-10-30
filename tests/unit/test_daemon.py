@@ -19,8 +19,8 @@ from homeward.daemon.scheduler import (
     load_plan,
     main,
     parse_settings,
-    take_requests,
 )
+from homeward.runtime import take_requests
 
 
 class Clock:

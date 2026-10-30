@@ -13,8 +13,9 @@
 import json
 import logging
 import os
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -107,25 +108,34 @@ def request_run(paths: Paths, request: RunRequest) -> None:
 
 
 def pending_requests(paths: Paths) -> list[RunRequest]:
-    return [request for _, request in _read_requests(paths)]
+    return [request for _, request in _read_requests(paths.requests_dir) if request]
 
 
-def take_requests(paths: Paths) -> list[RunRequest]:
-    """Return and remove all pending run requests (for the daemon)."""
+def take_requests(
+    requests_dir: Path, accept: Callable[[RunRequest], bool] = lambda _request: True
+) -> list[RunRequest]:
+    """Return and remove the pending requests ``accept`` takes now (for the daemon);
+    the others stay queued (and shown as queued) for a later cycle. Unreadable files
+    are dropped."""
     taken = []
-    for file, request in _read_requests(paths):
-        file.unlink(missing_ok=True)
-        taken.append(request)
+    for file, request in _read_requests(requests_dir):
+        if request is None:
+            log.warning("ignoring unreadable run request %s", file.name)
+            file.unlink(missing_ok=True)
+        elif accept(request):
+            taken.append(request)
+            file.unlink(missing_ok=True)
     return taken
 
 
-def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
-    if not paths.requests_dir.is_dir():
+def _read_requests(requests_dir: Path) -> Iterator[tuple[Path, RunRequest | None]]:
+    """Each request file with its request, or None when it cannot be read."""
+    if not requests_dir.is_dir():
         return
-    for file in sorted(paths.requests_dir.glob("*.json")):
+    for file in sorted(requests_dir.glob("*.json")):
         try:
             data = json.loads(file.read_text(encoding="utf-8"))
-            request = RunRequest(
+            request: RunRequest | None = RunRequest(
                 pair=str(data["pair"]),
                 dry_run=bool(data.get("dry_run", False)),
                 allow_deletes=bool(data.get("allow_deletes", False)),
@@ -133,7 +143,7 @@ def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
                 requested_at=float(data.get("requested_at", 0.0)),
             )
         except (OSError, ValueError, KeyError, TypeError):
-            continue
+            request = None
         yield file, request
 
 

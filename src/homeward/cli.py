@@ -33,6 +33,15 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.core.trash import Trash
 from homeward.dsm.notify import Event, notify
+from homeward.exitcodes import (
+    EXIT_BLOCKED,
+    EXIT_CANCELLED,
+    EXIT_FAILED,
+    EXIT_LOGIN,
+    EXIT_OK,
+    EXIT_USAGE,
+    EXIT_WAITING,
+)
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
 from homeward.providers.icloud_photos import ICloudPhotosSource, PhotoOptions, PhotosNotReady
@@ -43,13 +52,6 @@ from homeward.runtime import EventLogHandler, Paths, clear_progress, write_progr
 # and only loggers below "homeward" reach the event log.
 log = logging.getLogger("homeward.cli")
 
-EXIT_OK = 0
-EXIT_FAILED = 1
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
-EXIT_WAITING = 4  # iCloud is not ready yet (e.g. still indexing); the next run tries again
-EXIT_CANCELLED = 5  # ended on SIGTERM (cancelled, or the service stops)
-EXIT_LOGIN = 6  # the Apple ID needs a new sign-in (the daemon notifies the admins)
 # how bad an exit code is, to report the worst one when a command runs several jobs
 _SEVERITY = {
     EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_LOGIN: 3, EXIT_BLOCKED: 4, EXIT_USAGE: 5,
