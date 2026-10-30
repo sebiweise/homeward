@@ -30,6 +30,10 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # Set from the release tag (tools/spksrc_requirements.py --version).
       - dependency-name: homeward
+      # spksrc builds cryptography only up to 48.x (HELD_BACK in
+      # tools/spksrc_requirements.py); raise major versions by hand.
+      - dependency-name: cryptography
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /

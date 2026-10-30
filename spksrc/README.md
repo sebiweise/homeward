@@ -22,7 +22,10 @@ with spksrc's own build container on every pull request that touches it.
 The Python pins in `requirements-*.txt` are the versions of `requirements/icloud.txt`,
 the lock file the `.spk` from `tools/build_spk.py` is built and tested with:
 `python tools/spksrc_requirements.py` copies them (CI runs it with `--check`), and
-Dependabot updates both in one pull request. The release workflow sets the version
+Dependabot updates both in one pull request. Packages spksrc cannot cross-compile
+in the lock file's version yet are listed in `HELD_BACK` in the tool, with the
+reason; their pin follows the lock file only up to the given major version
+(currently cryptography 48.x). The release workflow sets the version
 from the tag and attaches the folder as `homeward-spksrc-X.Y.Z.tar.gz`.
 
 ### Updating the pinned spksrc

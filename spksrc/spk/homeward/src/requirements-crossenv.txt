@@ -1,8 +1,9 @@
 # Wheels with compiled extensions, cross-compiled by spksrc.
 # Versions from requirements/icloud.txt (tools/spksrc_requirements.py); a bump here
-# needs the SynoCommunity package workflow to build it once.
+# needs the SynoCommunity package workflow to build it once. cryptography stays on
+# 48.x until spksrc can cross-compile newer versions (HELD_BACK in the tool).
 
 cffi==2.1.1
 charset_normalizer==3.5.2
-cryptography==50.0.2
+cryptography==48.0.1
 pydantic_core==2.50.1

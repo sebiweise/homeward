@@ -46,6 +46,17 @@ def test_update_pins_keeps_names_and_comments(tool: ModuleType) -> None:
     assert names == {"homeward", "certifi", "jaraco-classes"}
 
 
+def test_held_back_pins_follow_the_lock_file_only_up_to_their_major(tool: ModuleType) -> None:
+    pins = {"cryptography": "50.0.2"}
+    updated, _ = tool.update_pins("cryptography==48.0.1\n", pins, "0.4.0")
+    assert updated == "cryptography==48.0.1\n"  # what spksrc can build
+    assert tool.held_back_problems(updated) == []
+    updated, _ = tool.update_pins("cryptography==48.0.0\n", {"cryptography": "48.0.1"}, "0.4.0")
+    assert updated == "cryptography==48.0.1\n"
+    (problem,) = tool.held_back_problems("cryptography==50.0.2\n")
+    assert "above 48.x" in problem
+
+
 def test_the_repository_is_in_step(tool: ModuleType) -> None:
     assert tool.main(["--check"]) == 0
 

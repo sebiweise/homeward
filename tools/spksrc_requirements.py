@@ -24,6 +24,16 @@ CROSS = SRC / "requirements-crossenv.txt"
 SPK_MAKEFILE = ROOT / "spksrc" / "spk" / "homeward" / "Makefile"
 CROSS_MAKEFILE = ROOT / "spksrc" / "cross" / "homeward" / "Makefile"
 
+# Packages spksrc cannot cross-compile in the lock file's version yet: their pin
+# follows the lock file only up to this major version. Remove an entry once the
+# "SynoCommunity package" workflow builds the newer version.
+HELD_BACK: dict[str, tuple[int, str]] = {
+    # From 49 on, cryptography-cffi compiles its C part in a Rust build script that
+    # does not get spksrc's Python include path ("Python.h: No such file or
+    # directory"). 48.x is also the newest any spksrc package uses.
+    "cryptography": (48, "newer versions do not cross-compile in spksrc yet"),
+}
+
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[^\s;\\]+)")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -50,7 +60,8 @@ def lock_pins(text: str) -> dict[str, str]:
 
 def update_pins(text: str, pins: dict[str, str], version: str) -> tuple[str, set[str]]:
     """``text`` with every pin set to the lock file's version (``homeward`` to
-    ``version``); also returns the normalized names it pins."""
+    ``version``, a ``HELD_BACK`` one only up to its major version); also returns
+    the normalized names it pins."""
     lines, names = [], set()
     for line in text.splitlines():
         match = _PIN.match(line)
@@ -58,10 +69,30 @@ def update_pins(text: str, pins: dict[str, str], version: str) -> tuple[str, set
             name = normalize(match["name"])
             names.add(name)
             new = version if name == "homeward" else pins.get(name)
+            if new is not None and name in HELD_BACK and _major(new) > HELD_BACK[name][0]:
+                new = None  # keep the version spksrc can build
             if new is not None:
                 line = f"{match['name']}=={new}"
         lines.append(line)
     return "\n".join(lines) + "\n", names
+
+
+def held_back_problems(text: str) -> list[str]:
+    """Held-back pins above the major version spksrc can build."""
+    problems = []
+    for line in text.splitlines():
+        match = _PIN.match(line)
+        if match is None or normalize(match["name"]) not in HELD_BACK:
+            continue
+        name = normalize(match["name"])
+        cap, reason = HELD_BACK[name]
+        if _major(match["version"]) > cap:
+            problems.append(f"{name}=={match['version']} is above {cap}.x: {reason}")
+    return problems
+
+
+def _major(version: str) -> int:
+    return int(version.split(".", 1)[0])
 
 
 def set_make_var(text: str, var: str, value: str) -> str:
@@ -106,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         problems.append(f"in the lock file but in neither spksrc file: {', '.join(missing)}")
     if extra:
         problems.append(f"in a spksrc file but not in the lock file: {', '.join(extra)}")
+    for path in (PURE, CROSS):
+        problems += held_back_problems(files[path])
     changed = [p for p, text in files.items() if p.read_text(encoding="utf-8") != text]
     if args.check:
         problems += [f"{p.relative_to(ROOT).as_posix()} is out of date" for p in changed]
