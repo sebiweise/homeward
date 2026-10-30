@@ -176,8 +176,9 @@ A photo moved between the personal and the Shared Library in iCloud is moved on 
 too (into the other library's folder) instead of being downloaded again.
 
 Once a week a run checks that every backed-up photo still has the size it was
-downloaded with. A damaged file (cut off, overwritten) goes to the trash with its album
-links and is downloaded again; one iCloud no longer has stays as it is, with a warning.
+downloaded with. A damaged file (cut off, overwritten) is downloaded again and the
+damaged copy goes to the trash, but only when iCloud still has the photo; one iCloud no
+longer has stays as it is, with a warning.
 
 Switching an option off later keeps the files it already produced. Folder changes
 apply to newly downloaded photos; photos already on the NAS keep their place.

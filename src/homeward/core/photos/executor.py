@@ -363,14 +363,13 @@ def backup_photos(
         if state.records(job):
             progress = progress or Progress()
             progress.phase("verifying")
-            trash = Trash(root, recycle_bin=recycle_bin, today=today)
-            integrity = check_integrity(job, root, state, trash, now())
+            integrity = check_integrity(job, root, state)
         else:
             state.set_integrity_checked(job, now())  # nothing to check yet: start the week
     plan = build_photo_plan(
         job, source, root, state, layout, albums=albums, progress=progress, now=now,
         mirror_deletes=mirror_deletes, selection=selection, brake=brake,
-        remove_gone=remove_gone,
+        remove_gone=remove_gone, damaged=integrity.keys if integrity else frozenset(),
     )  # fmt: skip
     if dry_run:
         return PhotoOutcome(plan, None)
@@ -379,4 +378,7 @@ def backup_photos(
         recycle_bin=recycle_bin, throttle=throttle_for(max_rate_kb),
     )  # fmt: skip
     result = executor.run(plan, allow_deletes=allow_deletes)
+    # A damaged photo whose new download failed is checked again by the next run.
+    if integrity is not None and not any(f.action.key in integrity.keys for f in result.failed):
+        state.set_integrity_checked(job, now())
     return PhotoOutcome(plan, result, integrity)
