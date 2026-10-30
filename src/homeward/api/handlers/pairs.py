@@ -189,9 +189,4 @@ def _delete_brake(data: dict[str, Any]) -> tuple[float, int]:
 
 def _accounts(ctx: Context) -> dict[str, str]:
     """Account name -> Apple ID."""
-    accounts = ctx.store.read().get("account", [])
-    return {
-        a["name"]: str(a.get("apple_id", ""))
-        for a in accounts
-        if isinstance(a, dict) and isinstance(a.get("name"), str)
-    }
+    return {account.name: account.apple_id for account in ctx.store.load().accounts}
