@@ -79,6 +79,31 @@ def test_duplicate_names() -> None:
         parse_config({"pair": [pair, pair]})
 
 
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"local": "/volume1/docs/#recycle/x"}, "recycle bin"),
+        ({"local": "/volume1/@eaDir"}, "DSM system folder"),
+        ({"local": "/volume1/docs/../x"}, "'\\.\\.'"),
+        ({"local": "/srv"}, "state folder"),  # contains /srv/homeward/state
+        ({"local": "/srv/homeward/state/sessions"}, "state folder"),
+        ({"remote": "/volume1/.homeward-papierkorb", "remote_provider": "folder"}, "trash"),
+    ],
+)
+def test_folders_written_by_hand_are_checked(entry: dict[str, object], message: str) -> None:
+    pair = {"name": "x", "local": "/volume1/docs", "remote": "r", "mode": "upload"} | entry
+    with pytest.raises(ConfigError, match=message):
+        parse_config({"state_dir": "/srv/homeward/state", "pair": [pair]})
+
+
+def test_folder_checks_leave_cloud_paths_and_good_folders_alone() -> None:
+    pair = {"name": "x", "local": "/volume1/docs", "remote": "#recycle", "mode": "upload"}
+    photos = {"name": "p", "target": "/volume1/photo/@eaDir"}
+    assert parse_config({"state_dir": "/srv/state", "pair": [pair]}).pairs[0].remote == "#recycle"
+    with pytest.raises(ConfigError, match="photos 'p': target"):
+        parse_config({"state_dir": "/srv/state", "photos": [photos]})
+
+
 def test_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.toml")
