@@ -110,7 +110,8 @@ notifier: Callable[..., bool] = notify
 
 def _remote_provider(pair: PairConfig, config: Config) -> Provider:
     if pair.remote_provider == "folder":
-        return NasProvider(Path(pair.remote), name="remote")
+        remote = Path(pair.remote)
+        return NasProvider(remote, name="remote", recycle_bin=find_recycle_bin(remote))
     cache = FolderCache(config.state_dir / f"{pair.account}.drive-folders.json")
     return ICloudDriveProvider(
         drive_api_factory(pair, config), pair.remote, excludes=pair.exclude, cache=cache
@@ -234,6 +235,19 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _sync_one(
     args: argparse.Namespace, config: Config, pair: PairConfig, progress: Progress
 ) -> int:
+    # Also keeps a manual `homeward sync` apart from the daemon's run of the same pair.
+    with _run_lock(config.state_dir / f"pair-{pair.name}.lock") as locked:
+        if not locked:
+            message = f"another sync of pair {pair.name} is still running"
+            print(f"homeward: {message}", file=sys.stderr)
+            log.warning("%s", message, extra={"event": "already_running"})
+            return EXIT_FAILED
+        return _sync_locked(args, config, pair, progress)
+
+
+def _sync_locked(
+    args: argparse.Namespace, config: Config, pair: PairConfig, progress: Progress
+) -> int:
     status = EXIT_OK
     progress.phase("connecting")
     remote = _remote_provider(pair, config)
@@ -262,6 +276,8 @@ def _sync_one(
     _log_summary(f"pair {pair.name}", counts, failed, _pair_files(outcome))
     if not args.dry_run:
         purged = local.purge_trash(pair.trash_days)
+        if isinstance(remote, NasProvider):  # a "folder" pair has a NAS trash on both sides
+            purged += remote.purge_trash(pair.trash_days)
         if purged:
             print(f"  Emptied {purged} day folder(s) older than {pair.trash_days} days "
                   "from the NAS trash.")  # fmt: skip

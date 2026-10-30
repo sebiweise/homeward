@@ -196,6 +196,37 @@ def test_sync_purges_old_nas_trash(tmp_path: Path, capsys: pytest.CaptureFixture
     assert "Emptied 1 day folder" in capsys.readouterr().out
 
 
+def test_sync_purges_old_trash_of_a_folder_remote(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = _config(tmp_path)
+    old = tmp_path / "cloud" / ".homeward-papierkorb" / "2020-01-01"
+    old.mkdir(parents=True)
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert not old.exists()
+    assert "Emptied 1 day folder" in capsys.readouterr().out
+
+
+def test_sync_refuses_a_second_run_of_the_same_pair(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import fcntl
+
+    config = _config(tmp_path)
+    (tmp_path / "nas" / "a.txt").write_text("a")
+    lock = tmp_path / "state" / "pair-docs.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock.open("a") as other_run:
+        fcntl.flock(other_run, fcntl.LOCK_EX)
+        assert main(["sync", "--config", str(config)]) == EXIT_FAILED
+    assert "still running" in capsys.readouterr().err
+    assert not (tmp_path / "cloud" / "a.txt").exists()
+
+    assert main(["sync", "--config", str(config)]) == EXIT_OK
+    assert (tmp_path / "cloud" / "a.txt").exists()
+
+
 def test_sync_bad_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sync", "--config", str(tmp_path / "missing.toml")]) == EXIT_USAGE
     assert "not found" in capsys.readouterr().err
