@@ -19,13 +19,10 @@ import io
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import tarfile
 import time
-import zlib
-from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,48 +117,14 @@ def check_wheel(wheel: Path, machine: str) -> None:
         raise SystemExit(f"{wheel.name}: wrong platform for {machine}")
 
 
-def png(size: int, pixel: Callable[[float, float], tuple[int, int, int, int]]) -> bytes:
-    """Encode an RGBA PNG; ``pixel`` gets coordinates in 0..1."""
-    rows = bytearray()
-    for y in range(size):
-        rows.append(0)
-        for x in range(size):
-            # 2x2 supersampling for smooth edges.
-            offsets = ((0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75))
-            samples = [pixel((x + dx) / size, (y + dy) / size) for dx, dy in offsets]
-            rows.extend(sum(s[i] for s in samples) // 4 for i in range(4))
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        body = kind + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
-
-    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
-        + chunk(b"IEND", b"")
-    )
-
-
-def default_icon(x: float, y: float) -> tuple[int, int, int, int]:
-    """A white house on a rounded blue square, used until package/icons has real icons."""
-    radius = 0.18
-    cx, cy = min(max(x, radius), 1 - radius), min(max(y, radius), 1 - radius)
-    if (x - cx) ** 2 + (y - cy) ** 2 > radius**2:
-        return (0, 0, 0, 0)
-    white = (255, 255, 255, 255)
-    roof = 0.22 <= y <= 0.5 and abs(x - 0.5) <= (y - 0.22) / 0.28 * 0.3
-    body = 0.5 <= y <= 0.78 and 0.29 <= x <= 0.71
-    door = 0.6 <= y <= 0.78 and 0.45 <= x <= 0.55
-    if (roof or body) and not door:
-        return white
-    return (int(40 + 40 * y), int(110 + 50 * y), 220, 255)
-
-
 def icon(size: int) -> bytes:
-    custom = PACKAGE_SRC / "icons" / f"icon_{size}.png"
-    return custom.read_bytes() if custom.exists() else png(size, default_icon)
+    """The package icon: package/icons if it has one, else the app's own icon
+    (package/ui/images, drawn by tools/make_icons.py)."""
+    for folder in (PACKAGE_SRC / "icons", PACKAGE_SRC / "ui" / "images"):
+        candidate = folder / f"icon_{size}.png"
+        if candidate.exists():
+            return candidate.read_bytes()
+    raise SystemExit(f"build_spk: no icon_{size}.png; run python tools/make_icons.py")
 
 
 def info(version: str, arch: str, checksum: str, has_ui: bool) -> str:
