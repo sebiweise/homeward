@@ -305,6 +305,23 @@ def test_login_flow(
     assert main(["login", "--config", str(config), "--account", "nobody"]) == EXIT_USAGE
 
 
+def test_login_takes_the_apple_id_of_the_account_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import homeward.auth.twofa
+    from tests.unit.test_auth import FakeService
+
+    monkeypatch.setattr(homeward.auth.twofa, "pyicloud_service", lambda: FakeService)
+    monkeypatch.setenv("HOMEWARD_PASSWORD", "secret")
+    monkeypatch.setattr("builtins.input", lambda prompt: "123456")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'state_dir = "state"\n[[account]]\nname = "family"\napple_id = "family@example.com"\n'
+    )
+    assert main(["login", "--config", str(config), "--account", "family"]) == EXIT_OK
+    assert "Account family (family@example.com) is logged in." in capsys.readouterr().out
+
+
 def test_photos_progress_on_stderr(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

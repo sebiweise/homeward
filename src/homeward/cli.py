@@ -85,7 +85,7 @@ def _version() -> str:
 
 def _icloud_drive_api(pair: PairConfig, config: Config) -> DriveApi:
     """Sign in with the account's stored trusted session (see ``homeward login``)."""
-    service = open_service(pair.account, _pair_apple_id(pair), config.state_dir)
+    service = open_service(pair.account, _pair_apple_id(pair, config), config.state_dir)
     return PyiCloudDriveApi(service.drive)
 
 
@@ -94,12 +94,11 @@ def _log_login_required(exc: LoginRequired, account: str) -> None:
     log.error("%s", exc, extra={"event": "login_required", "account": account})
 
 
-def _pair_apple_id(pair: PairConfig) -> str:
-    if pair.apple_id:
-        return pair.apple_id
-    if "@" in pair.account:
-        return pair.account
-    raise ConfigError(f"pair {pair.name!r}: set apple_id (or use the Apple ID as account)")
+def _pair_apple_id(pair: PairConfig, config: Config) -> str:
+    apple_id = config.apple_id_for(pair.account, pair.apple_id)
+    if apple_id is None:
+        raise ConfigError(f"pair {pair.name!r}: set apple_id (or use the Apple ID as account)")
+    return apple_id
 
 
 # Returns a signed-in Drive API for the pair's account; tests replace it.
@@ -272,12 +271,11 @@ def _sync_one(
     return status
 
 
-def _apple_id(job: PhotosConfig) -> str:
-    if job.apple_id:
-        return job.apple_id
-    if "@" in job.account:
-        return job.account
-    raise ConfigError(f"photos {job.name!r}: set apple_id")
+def _apple_id(job: PhotosConfig, config: Config) -> str:
+    apple_id = config.apple_id_for(job.account, job.apple_id)
+    if apple_id is None:
+        raise ConfigError(f"photos {job.name!r}: set apple_id")
+    return apple_id
 
 
 class _StderrHandler(logging.Handler):
@@ -297,7 +295,7 @@ def _setup_logging() -> None:
 
 
 def _photo_source(config: Config, job: PhotosConfig, progress: Progress) -> PhotoSource:
-    service = open_service(job.account, _apple_id(job), config.state_dir)
+    service = open_service(job.account, _apple_id(job, config), config.state_dir)
     return ICloudPhotosSource(
         service,
         job.libraries,
@@ -475,12 +473,11 @@ def _cmd_login(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     apple_id = args.apple_id
     if not apple_id:
-        jobs = [job for job in config.photos if job.account == args.account]
-        pairs = [p for p in config.pairs if p.account == args.account and p.apple_id]
-        if jobs:
-            apple_id = _apple_id(jobs[0])
-        elif pairs:
-            apple_id = pairs[0].apple_id
+        # The one the runs sign in with: set on a photos job or pair, else the
+        # [[account]] table's, else the account name when it is an Apple ID.
+        named = [j.apple_id for j in config.photos if j.account == args.account and j.apple_id]
+        named += [p.apple_id for p in config.pairs if p.account == args.account and p.apple_id]
+        apple_id = config.apple_id_for(args.account, named[0] if named else None)
     if not apple_id:
         raise ConfigError(f"no apple_id known for account {args.account!r}: pass --apple-id")
     password = os.environ.get("HOMEWARD_PASSWORD") or getpass.getpass("Apple ID password: ")
@@ -533,7 +530,9 @@ def main(argv: list[str] | None = None) -> int:
     login = sub.add_parser("login", help="log in to an Apple ID (password and 2FA)")
     _add_config_arg(login)
     login.add_argument("--account", required=True, help="account name used in the config")
-    login.add_argument("--apple-id", help="Apple ID (default: from the account's photos job)")
+    login.add_argument(
+        "--apple-id", help="Apple ID (default: from the account's jobs or [[account]] table)"
+    )
 
     args = parser.parse_args(argv)
     _setup_logging()

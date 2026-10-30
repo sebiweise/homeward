@@ -169,8 +169,8 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
 
     name = check_name(text("name"), "photos")
     account = check_name(text("account"), "account")
-    accounts = {a["name"]: a for a in ctx.store.read().get("account", []) if isinstance(a, dict)}
-    if account not in accounts:
+    table = ctx.store.load().account(account)
+    if table is None:
         raise ApiError("account_not_found", account)
     target = Path(text("target"))
     if not target.is_absolute() or ".." in target.parts:
@@ -180,7 +180,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "name": name,
         "account": account,
-        "apple_id": accounts[account].get("apple_id", ""),
+        "apple_id": table.apple_id,
         "target": str(target),
         "libraries": _libraries(data),
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global

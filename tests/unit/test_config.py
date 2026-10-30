@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from homeward.core.config import ConfigError, load_config, parse_config
+from homeward.core.config import AccountConfig, ConfigError, load_config, parse_config
 from homeward.core.models import SyncMode
 
 VALID = """
@@ -77,6 +77,41 @@ def test_duplicate_names() -> None:
     pair = {"name": "x", "local": "/a", "remote": "r", "mode": "upload"}
     with pytest.raises(ConfigError, match="duplicate"):
         parse_config({"pair": [pair, pair]})
+
+
+def test_accounts() -> None:
+    config = parse_config(
+        {
+            "account": [{"name": "me", "apple_id": " me@example.com "}, {"name": "x"}],
+            "pair": [
+                {"name": "a", "local": "/a", "remote": "r", "mode": "upload", "account": "me"}
+            ],
+        }
+    )
+    assert config.accounts == (AccountConfig("me", "me@example.com"), AccountConfig("x"))
+    assert config.account("x") == AccountConfig("x") and config.account("nope") is None
+    assert config.apple_id_for("me") == "me@example.com"
+    assert config.apple_id_for("me", "other@example.com") == "other@example.com"
+    assert config.apple_id_for("x") is None  # no Apple ID in its table
+    assert config.apple_id_for("y@example.com") == "y@example.com"
+    assert config.apple_id_for("nope") is None
+    assert parse_config({}).accounts == ()
+
+
+@pytest.mark.parametrize(
+    ("accounts", "message"),
+    [
+        ({"name": "me"}, "list"),
+        (["me"], "must be a table"),
+        ([{"apple_id": "me@example.com"}], "'name' is required"),
+        ([{"name": " "}], "must not be empty"),
+        ([{"name": "me", "apple_id": 1}], "wrong type"),
+        ([{"name": "me"}, {"name": "me"}], "duplicate account names: me"),
+    ],
+)
+def test_invalid_accounts(accounts: object, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        parse_config({"account": accounts})
 
 
 def test_missing_file(tmp_path: Path) -> None:
