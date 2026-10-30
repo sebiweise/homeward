@@ -708,6 +708,24 @@ def test_run_history_of_one_job(client: Client) -> None:
     assert [e["source"] for e in events] == ["pair:docs"]
 
 
+def test_run_history_ends_a_run_its_window_closed(client: Client) -> None:
+    paths = client.paths
+    paths.events_file.parent.mkdir(parents=True, exist_ok=True)
+    _run_event(paths, 800, "sync_started", dry_run=False)
+    _run_event(paths, 700, "sync_paused", exit_code=5)
+    _run_event(paths, 100, "sync_started", dry_run=False)
+    runs = client.call("log.history", source="photos:fotos")["runs"]
+    assert [r["result"] for r in runs] == [None, "sync_paused"]
+    assert runs[1]["events"] == []
+
+
+def test_run_end_codes_cover_the_daemon_results() -> None:
+    from homeward.api.handlers.log import RUN_END
+    from homeward.daemon.scheduler import _EVENTS
+
+    assert {code for _, code in _EVENTS.values()} | {"sync_failed"} <= RUN_END
+
+
 def test_event_log_rotates_and_never_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
