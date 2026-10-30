@@ -1,16 +1,17 @@
 """Sync pairs: list, create, update, delete and "run now".
 
 A pair's name is its key in the state database, so it cannot be renamed. When a
-pair's folders or account change, its sync state is reset: the next run is a
-first run again, which never deletes or overwrites anything.
+pair's folders or account change (``PairConfig.identity``), its sync state is
+reset: the next run is a first run again, which never deletes or overwrites
+anything. The sync itself checks the identity too, so a run that was still going
+with the old folders cannot leave state behind for the new ones.
 """
 
 import json
-from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.common import check_name, check_nas_folder, without_none
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
@@ -19,9 +20,6 @@ from homeward.core.models import SyncMode
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
 from homeward.runtime import RunRequest, request_run
-
-# Changing one of these makes the stored sync state meaningless.
-_IDENTITY = ("local", "remote", "account", "remote_provider")
 
 
 def to_dict(pair: PairConfig) -> dict[str, Any]:
@@ -72,9 +70,9 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
 
     config = ctx.store.update(change)
     new = config.pair(entry["name"])
-    old_identity = to_dict(old)
-    new_identity = to_dict(new)
-    if any(old_identity[key] != new_identity[key] for key in _IDENTITY):
+    if old.identity != new.identity:
+        # A run still going with the old folders may record files after this reset;
+        # the next run sees the identity no longer matches and starts over anyway.
         _reset_state(ctx, old)
         _reset_state(ctx, new)
     return to_dict(new)
@@ -141,15 +139,16 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     provider = data.get("remote_provider", "icloud_drive")
     if provider not in REMOTE_PROVIDERS:
         raise ApiError("invalid_param", "remote_provider")
-    local = Path(text("local"))
-    if not local.is_absolute() or ".." in local.parts:
-        raise ApiError("invalid_param", "local")
+    local = check_nas_folder(ctx, text("local"), "local")
     if not local.is_dir():
         raise ApiError("local_missing", str(local))
     account = check_name(text("account"), "account")
     accounts = _accounts(ctx)
     if provider == "icloud_drive" and account not in accounts:
         raise ApiError("account_not_found", account)
+    remote = text("remote")
+    if provider == "folder":  # a NAS folder too, see cli._remote_provider
+        remote = str(check_nas_folder(ctx, remote, "remote"))
     exclude = _exclude(data)
     ratio, count = _delete_brake(data)
     return {
@@ -157,7 +156,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "account": account,
         **({"apple_id": accounts[account]} if account in accounts else {}),
         "local": str(local),
-        "remote": text("remote"),
+        "remote": remote,
         "mode": mode,
         # Choosing "Both directions (beta)" in the UI is the opt-in the config asks for.
         "beta": mode == SyncMode.BIDIRECTIONAL,

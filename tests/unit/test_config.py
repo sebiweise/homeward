@@ -11,7 +11,7 @@ state_dir = "state"
 
 [[pair]]
 name = "docs"
-local = "/volume1/homes/seb/Docs"
+local = "/volume1/homes/alice/Docs"
 remote = "Documents"
 mode = "bidirectional"
 beta = true
@@ -114,6 +114,31 @@ def test_invalid_accounts(accounts: object, message: str) -> None:
         parse_config({"account": accounts})
 
 
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"local": "/volume1/docs/#recycle/x"}, "recycle bin"),
+        ({"local": "/volume1/@eaDir"}, "DSM system folder"),
+        ({"local": "/volume1/docs/../x"}, "'\\.\\.'"),
+        ({"local": "/srv"}, "state folder"),  # contains /srv/homeward/state
+        ({"local": "/srv/homeward/state/sessions"}, "state folder"),
+        ({"remote": "/volume1/.homeward-papierkorb", "remote_provider": "folder"}, "trash"),
+    ],
+)
+def test_folders_written_by_hand_are_checked(entry: dict[str, object], message: str) -> None:
+    pair = {"name": "x", "local": "/volume1/docs", "remote": "r", "mode": "upload"} | entry
+    with pytest.raises(ConfigError, match=message):
+        parse_config({"state_dir": "/srv/homeward/state", "pair": [pair]})
+
+
+def test_folder_checks_leave_cloud_paths_and_good_folders_alone() -> None:
+    pair = {"name": "x", "local": "/volume1/docs", "remote": "#recycle", "mode": "upload"}
+    photos = {"name": "p", "target": "/volume1/photo/@eaDir"}
+    assert parse_config({"state_dir": "/srv/state", "pair": [pair]}).pairs[0].remote == "#recycle"
+    with pytest.raises(ConfigError, match="photos 'p': target"):
+        parse_config({"state_dir": "/srv/state", "photos": [photos]})
+
+
 def test_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.toml")
@@ -129,9 +154,9 @@ PHOTOS = """
 state_dir = "/state"
 
 [[photos]]
-name = "seb"
-account = "seb"
-apple_id = "seb@example.com"
+name = "alice"
+account = "alice"
+apple_id = "alice@example.com"
 target = "/volume1/photo/Alice"
 
 [[photos]]
@@ -156,21 +181,21 @@ def test_photos_jobs() -> None:
     from homeward.core.photos import Library
 
     config = parse_config(tomllib.loads(PHOTOS))
-    seb = config.photos_job("seb")
-    assert seb.apple_id == "seb@example.com"
-    assert seb.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
-    assert seb.albums
-    assert seb.videos
-    assert seb.live_videos
-    assert seb.raw_alternative
-    assert seb.edited
-    assert seb.favorites
-    assert seb.xmp
-    assert not seb.hidden
-    assert seb.workers == 4
-    assert seb.layout.favorites_folder == "Favoriten"
-    assert seb.layout.scheme == "{year}/{month}"
-    assert seb.layout.source_folders
+    alice = config.photos_job("alice")
+    assert alice.apple_id == "alice@example.com"
+    assert alice.libraries == (Library.PERSONAL, Library.SHARED, Library.SHARED_ALBUMS)
+    assert alice.albums
+    assert alice.videos
+    assert alice.live_videos
+    assert alice.raw_alternative
+    assert alice.edited
+    assert alice.favorites
+    assert alice.xmp
+    assert not alice.hidden
+    assert alice.workers == 4
+    assert alice.layout.favorites_folder == "Favoriten"
+    assert alice.layout.scheme == "{year}/{month}"
+    assert alice.layout.source_folders
     anna = config.photos_job("anna")
     assert anna.apple_id is None
     assert not anna.albums
