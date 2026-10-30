@@ -62,7 +62,9 @@ text in the `[error]` section of the strings.
   file is copied to `var/config-backups/` (last 20 kept) and replaced atomically.
 - Removing a pair, a photos backup or an account never touches files.
 - Changing a pair's folders or account resets its sync state, so the next run is a
-  first run (no deletes, no overwrites).
+  first run (no deletes, no overwrites). The state database also stores what the
+  state belongs to (`pair_identity`), so a run that was still going with the old
+  folders, or a change made by hand in `config.toml`, leads to a first run too.
 - The delete brake is approved per run from a pair's overview ("Approve deletions").
 - "Cancel" in a task's *Manage* menu (`status.cancel`) drops a queued run, or stops the
   running one: the daemon sends the sync process SIGTERM, which ends it cleanly
