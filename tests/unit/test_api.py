@@ -871,6 +871,31 @@ def test_folders_lists_shares_then_subfolders(client: Client, volumes: Path) -> 
     assert year["folders"] == []
 
 
+def test_on_dsm_pair_and_photos_folders_must_be_in_a_shared_folder(
+    client: Client, tmp_path: Path, volumes: Path
+) -> None:
+    photo = volumes / "volume1" / "photo"
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    for local in (tmp_path / "nas", volumes / "volume1", photo / "outside"):
+        local.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.create", post=True, pair=_pair(tmp_path, local=str(local)))
+        assert _error(excinfo) == "invalid_param", local
+    with pytest.raises(ApiError) as excinfo:  # a folder remote, too
+        client.call(
+            "pairs.create", post=True, pair=_pair(tmp_path, local=str(photo), remote="/tmp/x")
+        )
+    assert _error(excinfo) == "invalid_param"
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.create", post=True, photos=_photos(tmp_path))
+    assert _error(excinfo) == "invalid_param"
+
+    pair = _pair(tmp_path, local=str(photo / "2024"), remote=str(photo / "alias"))
+    assert client.call("pairs.create", post=True, pair=pair)["local"] == str(photo / "2024")
+    target = _photos(tmp_path, target=str(volumes / "volumeUSB1" / "usbshare"))
+    assert client.call("photos.create", post=True, photos=target)["target"].endswith("usbshare")
+
+
 def test_folders_stay_inside_the_shares(client: Client, volumes: Path) -> None:
     photo = volumes / "volume1" / "photo"
     cases = {

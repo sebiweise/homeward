@@ -119,6 +119,21 @@ def _checked(raw: str) -> Path:
     return path
 
 
+def check_shared_folder(path: Path, key: str) -> None:
+    """On DSM, a folder of a pair or photos backup must lie inside a shared folder
+    (``/volumeN/<share>/...``), and where it or a folder above it is a symlink, its
+    target too. The same rule as the folder picker's, for paths typed in or saved
+    by an older UI. A system without ``/volumeN`` (a container, plain Linux, tests)
+    has no shared folders to check against."""
+    volumes = _volumes()
+    if not volumes:
+        return
+    if not any(path.is_relative_to(v) and path != v for v in volumes):
+        raise ApiError("invalid_param", key)
+    if not _on_volume(path.resolve()):
+        raise ApiError("invalid_param", key)
+
+
 def _on_volume(real: Path) -> bool:
     return any(real.is_relative_to(v.resolve()) and real != v.resolve() for v in _volumes())
 
