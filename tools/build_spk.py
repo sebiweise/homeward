@@ -124,7 +124,9 @@ def icon(size: int) -> bytes:
         candidate = folder / f"icon_{size}.png"
         if candidate.exists():
             return candidate.read_bytes()
-    raise SystemExit(f"build_spk: no icon_{size}.png; run python tools/make_icons.py")
+    raise SystemExit(
+        f"build_spk: no icon_{size}.png; run python tools/make_icons.py package/ui/images"
+    )
 
 
 def info(version: str, arch: str, checksum: str, has_ui: bool) -> str:
@@ -183,6 +185,9 @@ def build(arch: str, out_dir: Path, work: Path) -> Path:
             add_tree(tgz, ui, "ui")
     package_tgz = buf.getvalue()
 
+    # Before the .spk is opened for writing: a missing icon must not leave a broken
+    # package in place of one built before.
+    icons = {"PACKAGE_ICON.PNG": icon(72), "PACKAGE_ICON_256.PNG": icon(256)}
     out_dir.mkdir(parents=True, exist_ok=True)
     spk = out_dir / f"{PACKAGE_NAME}-{version}-{arch}.spk"
     # DSM's INFO file wants an MD5 of package.tgz; it is an integrity check, not security.
@@ -190,8 +195,8 @@ def build(arch: str, out_dir: Path, work: Path) -> Path:
     with tarfile.open(spk, mode="w", format=tarfile.GNU_FORMAT) as tar:
         add_bytes(tar, "INFO", info(version, arch, checksum, has_ui).encode())
         add_bytes(tar, "package.tgz", package_tgz)
-        add_bytes(tar, "PACKAGE_ICON.PNG", icon(72))
-        add_bytes(tar, "PACKAGE_ICON_256.PNG", icon(256))
+        for name, data in icons.items():
+            add_bytes(tar, name, data)
         add_bytes(tar, "LICENSE", (ROOT / "LICENSE").read_bytes())
         for name in ("privilege", "resource"):
             add_bytes(tar, f"conf/{name}", (PACKAGE_SRC / "conf" / name).read_bytes())
