@@ -77,7 +77,7 @@ text in the `[error]` section of the strings.
 Below `/var/packages/homeward/var` (`$HOMEWARD_VAR`):
 
 - `config.toml`: accounts (`[[account]]` with `name`, `apple_id`) and pairs.
-- `requests/<pair>.json`: "sync now" requests; the daemon calls `take_requests()`.
+- `requests/<pair>.json`: "sync now" requests; the daemon takes them with `runtime.take_requests()`.
 - `cancel/<pair>.json`: "cancel" requests for the running sync (pair name or
   `photos:<job>`); a watcher thread in the daemon calls `take_cancels()` every second.
 - `status.json`: written by the daemon, e.g. `{"running": "<pair>"}` or `{}` when idle.
