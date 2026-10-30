@@ -73,7 +73,7 @@ def test_custom_scheme(source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: 
 
 
 def test_bad_schemes_are_rejected() -> None:
-    for scheme in ("{album}", "/{year}", "../{year}", "{0}"):
+    for scheme in ("{album}", "/{year}", "../{year}", "{0}", "{year.real}"):
         with pytest.raises(ValueError):
             check_scheme(scheme)
     check_scheme("{year}/{month}")
