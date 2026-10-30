@@ -16,6 +16,14 @@ from homeward.core.photos import (
     check_scheme,
 )
 from homeward.core.planner import DeleteBrake
+from homeward.core.workflow import (
+    DEFAULT_ARCHIVE_LIMIT,
+    FileRule,
+    RuleAction,
+    check_rules,
+    parse_age,
+    parse_size,
+)
 
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
 REMOTE_PROVIDERS = ("icloud_drive", "folder")
@@ -49,6 +57,8 @@ class PairConfig:
     interval_minutes: int | None = None  # None: the global interval
     window: TimeWindow | None = None  # scheduled runs start only in these hours
     max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
+    rules: tuple[FileRule, ...] = ()  # [[pair.rule]] tables; the first matching rule wins
+    archive_limit: int = DEFAULT_ARCHIVE_LIMIT  # more archives per run need an approval
 
 
 FOLDER_OPTIONS = (
@@ -87,6 +97,8 @@ class PhotosConfig:
     interval_minutes: int | None = None  # None: the global interval
     window: TimeWindow | None = None  # scheduled runs start only in these hours
     max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
+    rules: tuple[FileRule, ...] = ()  # [[photos.rule]] tables; the first matching rule wins
+    archive_limit: int = DEFAULT_ARCHIVE_LIMIT  # more archives per run need an approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +234,7 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
         raise ConfigError(f"{where}: 'workers' must be a whole number from 1 to {MAX_WORKERS}")
     brake, trash_days = _brake_and_trash(entry, where)
+    archive_limit = _archive_limit(entry, where)
     album_names = _get(entry, "album_names", list, [], where)
     if not all(isinstance(n, str) for n in album_names):
         raise ConfigError(f"{where}: album_names must be a list of strings")
@@ -247,6 +260,8 @@ def _parse_photos(entry: object, index: int) -> PhotosConfig:
         interval_minutes=_get_interval(entry, where),
         window=_get_window(entry, where),
         max_rate_kb=_get_rate(entry, where),
+        rules=parse_rules(entry, where),
+        archive_limit=archive_limit,
         layout=PhotoLayout(
             scheme=scheme,
             source_folders=_get_bool(entry, "source_folders", True, where),
@@ -294,6 +309,10 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
     if not local.is_absolute():
         raise ConfigError(f"{where}: local must be an absolute path")
     brake, trash_days = _brake_and_trash(entry, where)
+    rules = parse_rules(entry, where)
+    if mode is SyncMode.UPLOAD and any(r.action is RuleAction.ARCHIVE for r in rules):
+        raise ConfigError(f"{where}: archive rules need a download or bidirectional pair")
+    archive_limit = _archive_limit(entry, where)
     return PairConfig(
         name=name,
         local=local,
@@ -309,7 +328,81 @@ def _parse_pair(entry: object, index: int) -> PairConfig:
         interval_minutes=_get_interval(entry, where),
         window=_get_window(entry, where),
         max_rate_kb=_get_rate(entry, where),
+        rules=rules,
+        archive_limit=archive_limit,
     )
+
+
+def _archive_limit(entry: Mapping[str, Any], where: str) -> int:
+    limit: int = _get(entry, "archive_limit", int, DEFAULT_ARCHIVE_LIMIT, where)
+    if limit < 0:
+        raise ConfigError(f"{where}: archive_limit must be 0 or more")
+    return limit
+
+
+RULE_KEYS = frozenset(
+    {"name", "action", "patterns", "extensions", "min_size", "max_size", "older_than",
+     "newer_than", "preview", "enabled"}
+)  # fmt: skip
+
+
+def parse_rules(entry: Mapping[str, Any], where: str) -> tuple[FileRule, ...]:
+    """The ``[[<job>.rule]]`` tables of a pair or photos job."""
+    tables = entry.get("rule", [])
+    if not isinstance(tables, list):
+        raise ConfigError(f"{where}: 'rule' must be a list of rule tables")
+    rules = tuple(_parse_rule(table, f"{where}, rule #{i}") for i, table in enumerate(tables, 1))
+    try:
+        check_rules(rules)
+    except ValueError as exc:
+        raise ConfigError(f"{where}: {exc}") from None
+    return rules
+
+
+def _parse_rule(table: object, where: str) -> FileRule:
+    if not isinstance(table, dict):
+        raise ConfigError(f"{where} must be a table")
+    unknown = sorted(set(table) - RULE_KEYS)
+    if unknown:
+        raise ConfigError(f"{where}: unknown keys {', '.join(unknown)}")
+    name = _get(table, "name", str, None, where)
+    where = f"{where.rsplit(', ', 1)[0]}, rule {name!r}"
+    try:
+        action = RuleAction(_get(table, "action", str, None, where))
+    except ValueError:
+        choices = ", ".join(a.value for a in RuleAction)
+        raise ConfigError(f"{where}: action must be one of {choices}") from None
+    lists = {key: _get(table, key, list, [], where) for key in ("patterns", "extensions")}
+    for key, values in lists.items():
+        if not all(isinstance(v, str) and v.strip() for v in values):
+            raise ConfigError(f"{where}: {key} must be a list of non-empty strings")
+    try:
+        sizes = {k: _optional(table, k, parse_size, where) for k in ("min_size", "max_size")}
+        ages = {k: _optional(table, k, parse_age, where) for k in ("older_than", "newer_than")}
+    except ValueError as exc:
+        raise ConfigError(f"{where}: {exc}") from None
+    return FileRule(
+        name=name,
+        action=action,
+        patterns=tuple(p.strip() for p in lists["patterns"]),
+        extensions=tuple(e.strip() for e in lists["extensions"]),
+        min_size=sizes["min_size"],
+        max_size=sizes["max_size"],
+        older_than_days=ages["older_than"],
+        newer_than_days=ages["newer_than"],
+        preview=_get_bool(table, "preview", True, where),
+        enabled=_get_bool(table, "enabled", True, where),
+    )
+
+
+def _optional(table: Mapping[str, Any], key: str, parse: Any, where: str) -> int | None:
+    value = table.get(key)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f'{where}: \'{key}\' must be a text like "500MB" or "3y"')
+    result: int = parse(value)
+    return result
 
 
 def _brake_and_trash(entry: dict[str, Any], where: str) -> tuple[DeleteBrake, int]:

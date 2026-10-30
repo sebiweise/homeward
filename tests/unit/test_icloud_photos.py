@@ -946,3 +946,21 @@ def test_list_changes_gives_up_on_an_error_in_the_feed() -> None:
     records = [asset_change("n"), ErrorItem("x")]
     source, _client, _ = changed_source(records, [image("n")])  # type: ignore[list-item]
     assert source.list_changes(old_cursor(source)) is None
+
+
+def test_delete_photo_looks_the_asset_up_again_and_deletes_it() -> None:
+    service = make_service()
+    source = ICloudPhotosSource(service, [Library.PERSONAL, Library.SHARED], lookup=by_name)
+    items = {i.key: i for i in source.list_items()}
+    deleted: list[str] = []
+    for asset in service.photos.libraries["root"].all.photos:
+        asset.delete = lambda asset=asset: deleted.append(asset.id)  # type: ignore[attr-defined]
+
+    source.delete_photo(items["personal/a/original"])
+
+    assert deleted == ["a"]
+    with pytest.raises(RuntimeError, match="personal library"):
+        source.delete_photo(next(i for k, i in items.items() if k.startswith("shared/")))
+    service.photos.libraries["root"].all.photos.pop(0)
+    with pytest.raises(RuntimeError, match="no longer in iCloud"):
+        source.delete_photo(items["personal/a/original"])

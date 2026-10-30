@@ -5,6 +5,7 @@ import pytest
 
 from homeward.core.config import ConfigError, load_config, parse_config
 from homeward.core.models import SyncMode
+from homeward.core.workflow import RuleAction
 
 VALID = """
 state_dir = "state"
@@ -230,3 +231,65 @@ def test_time_window_and_rate() -> None:
 def test_invalid_limits(entry: dict[str, object], match: str) -> None:
     with pytest.raises(ConfigError, match=match):
         parse_config({"photos": [{"name": "p", "target": "/a", **entry}]})
+
+
+RULES = """
+[[pair]]
+name = "docs"
+local = "/volume1/docs"
+remote = "Documents"
+mode = "download"
+archive_limit = 50
+
+[[pair.rule]]
+name = "Videos"
+action = "ignore"
+extensions = ["mp4", ".MOV"]
+min_size = "500MB"
+
+[[pair.rule]]
+name = "Alt"
+action = "archive"
+patterns = ["Scans/*"]
+older_than = "3y"
+preview = false
+"""
+
+
+def test_pair_rules() -> None:
+    pair = parse_config(tomllib.loads(RULES)).pair("docs")
+    videos, old = pair.rules
+    assert pair.archive_limit == 50
+    assert videos.action is RuleAction.IGNORE
+    assert videos.extensions == ("mp4", ".MOV")
+    assert videos.min_size == 500 * 1024**2
+    assert videos.preview  # archive rules start in preview unless switched off
+    assert old.action is RuleAction.ARCHIVE
+    assert old.patterns == ("Scans/*",)
+    assert old.older_than_days == 1095
+    assert not old.preview
+
+
+def test_pair_without_rules() -> None:
+    pair = parse_config(tomllib.loads(VALID)).pair("docs")
+    assert pair.rules == ()
+    assert pair.archive_limit == 200
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (('mode = "download"', 'mode = "upload"'), "archive rules need a download"),
+        (('action = "ignore"', 'action = "move"'), "action must be one of"),
+        (('older_than = "3y"', 'older_than = "drei Jahre"'), "age 'drei Jahre'"),
+        (('min_size = "500MB"', "min_size = 500"), "'min_size' must be a text"),
+        (('min_size = "500MB"', 'min_size = "500MB"\nsize = 1'), "unknown keys size"),
+        (('name = "Alt"', 'name = "Videos"'), "duplicate rule names"),
+        (("archive_limit = 50", "archive_limit = -1"), "archive_limit"),
+        (('extensions = ["mp4", ".MOV"]', 'extensions = ["mp4", ""]'), "extensions must be"),
+    ],
+)
+def test_pair_rules_invalid(change: tuple[str, str], message: str) -> None:
+    text = RULES.replace(*change)
+    with pytest.raises(ConfigError, match=message):
+        parse_config(tomllib.loads(text))

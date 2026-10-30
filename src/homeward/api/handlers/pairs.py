@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.common import (
+    check_name,
+    parse_archive_limit,
+    parse_rules,
+    without_none,
+)
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
@@ -39,6 +44,8 @@ def to_dict(pair: PairConfig) -> dict[str, Any]:
         "interval_minutes": pair.interval_minutes,
         "window": str(pair.window) if pair.window else None,
         "max_rate_kb": pair.max_rate_kb,
+        "rules": [rule.to_table() for rule in pair.rules],
+        "archive_limit": pair.archive_limit,
     }
 
 
@@ -89,7 +96,7 @@ def delete(ctx: Context, request: Request) -> dict[str, Any]:
         raw["pair"] = [p for p in raw.get("pair", []) if p.get("name") != name]
 
     ctx.store.update(change)
-    _reset_state(ctx, pair)
+    _reset_state(ctx, pair, archived=True)
     return {"name": name}
 
 
@@ -113,11 +120,11 @@ def _find(ctx: Context, name: str) -> PairConfig:
     raise ApiError("pair_not_found", name, status=404)
 
 
-def _reset_state(ctx: Context, pair: PairConfig) -> None:
+def _reset_state(ctx: Context, pair: PairConfig, *, archived: bool = False) -> None:
     path = ctx.store.load().state_path(pair.account)
     if path.exists():
         with StateDB(path) as state:
-            state.reset(pair.name)
+            state.reset(pair.name, archived=archived)
 
 
 def _entry(ctx: Context, request: Request) -> dict[str, Any]:
@@ -151,6 +158,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     if provider == "icloud_drive" and account not in accounts:
         raise ApiError("account_not_found", account)
     exclude = _exclude(data)
+    rules = parse_rules(data)
     ratio, count = _delete_brake(data)
     return {
         "name": check_name(text("name"), "pair"),
@@ -167,6 +175,9 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "max_delete_count": count,
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
         **parse_limits(data),
+        # Checked in full by the config parser when the store saves the pair.
+        "rule": rules,
+        "archive_limit": parse_archive_limit(data),
     }
 
 

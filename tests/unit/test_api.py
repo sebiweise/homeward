@@ -207,6 +207,37 @@ def test_pair_validation(client: Client, tmp_path: Path) -> None:
     assert not client.paths.config.exists()
 
 
+def test_pair_rules(client: Client, tmp_path: Path) -> None:
+    rules = [
+        {"name": " Videos ", "action": "ignore", "extensions": ["mp4"], "min_size": "",
+         "older_than": None},
+        {"name": "Alt", "action": "archive", "older_than": "36m", "preview": False},
+    ]  # fmt: skip
+    pair = _pair(tmp_path, mode="download", rules=rules, archive_limit=20)
+    created = client.call("pairs.create", post=True, pair=pair)
+    assert created["archive_limit"] == 20
+    assert created["rules"] == [
+        {"name": "Videos", "action": "ignore", "extensions": ["mp4"], "preview": True,
+         "enabled": True},
+        {"name": "Alt", "action": "archive", "older_than": "36m", "preview": False,
+         "enabled": True},
+    ]  # fmt: skip
+    saved = tomllib.loads(client.paths.config.read_text())["pair"][0]["rule"]
+    assert saved[1] == {"name": "Alt", "action": "archive", "older_than": "36m", "preview": False}
+
+    cleared = client.call("pairs.update", post=True, pair=_pair(tmp_path, mode="download"))
+    assert cleared["rules"] == []
+
+    upload = _pair(tmp_path, mode="upload", rules=rules)
+    with pytest.raises(ApiError) as excinfo:
+        client.call("pairs.update", post=True, pair=upload)
+    assert _error(excinfo) == "config_invalid"
+    for bad in ({"rules": "x"}, {"rules": ["x"]}, {"archive_limit": -1}):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.update", post=True, pair=_pair(tmp_path, **bad))
+        assert _error(excinfo) == "invalid_param", bad
+
+
 def test_pair_interval(client: Client, tmp_path: Path) -> None:
     created = client.call("pairs.create", post=True, pair=_pair(tmp_path, interval_minutes=15))
     assert created["interval_minutes"] == 15
@@ -946,3 +977,19 @@ def test_time_window_and_bandwidth(client: Client, tmp_path: Path) -> None:
         with pytest.raises(ApiError) as excinfo:
             client.call("pairs.update", post=True, pair=_pair(tmp_path, **bad))
         assert _error(excinfo) == code, bad
+
+
+def test_photos_rules(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    rules = [{"name": "Alt", "action": "archive", "older_than": "3y", "min_size": ""}]
+    created = client.call(
+        "photos.create", post=True, photos=_photos(tmp_path, rules=rules, archive_limit=10)
+    )
+    assert created["rules"] == [{"name": "Alt", "action": "archive", "older_than": "3y"}]
+    assert created["archive_limit"] == 10
+    assert client.call("photos.defaults")["rules"] == []
+
+    bad = _photos(tmp_path, rules=[{"name": "x", "action": "archive", "older_than": "bald"}])
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.update", post=True, photos=bad)
+    assert _error(excinfo) == "config_invalid"

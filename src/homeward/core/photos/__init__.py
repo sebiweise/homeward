@@ -38,7 +38,7 @@ from homeward.core.photos.model import (
     safe_name,
     safe_relative,
 )
-from homeward.core.photos.plan import build_photo_plan
+from homeward.core.photos.plan import PhotoRules, build_photo_plan
 
 __all__ = [
     "DEFAULT_WORKERS",
@@ -57,6 +57,7 @@ __all__ = [
     "PhotoLayout",
     "PhotoOutcome",
     "PhotoPlan",
+    "PhotoRules",
     "PhotoRunResult",
     "PhotoSource",
     "backup_photos",

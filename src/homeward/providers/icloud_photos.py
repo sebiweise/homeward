@@ -361,6 +361,19 @@ class ICloudPhotosSource(PhotoSource):
                 session = self._local.session = download_session(self.service.session)
         return session
 
+    def delete_photo(self, item: PhotoItem) -> None:
+        """Delete a photo of the personal library in iCloud, with all its files. It moves
+        to "Recently Deleted", where iCloud keeps it for 30 days."""
+        origin = self._origins.get(item.key)
+        if item.library is not Library.PERSONAL or origin is None:
+            raise RuntimeError(f"{item.filename}: only photos of the personal library are deleted")
+        with self._api_lock:
+            found = list(self._lookup(origin.library, [origin.asset_id], [origin.master_id]))
+            if not found:
+                raise RuntimeError(f"{item.filename} is no longer in iCloud")
+            found[0].delete()  # fresh record change tag, else CloudKit rejects the update
+        log.info("deleted %s in iCloud Photos (now in Recently Deleted)", item.filename)
+
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Renew URLs that may have expired since listing, a batch lookup per library."""
         now = self._clock()
