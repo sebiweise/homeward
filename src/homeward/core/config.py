@@ -1,4 +1,5 @@
-"""Configuration file (TOML) with the state directory and the sync pairs."""
+"""Configuration file (TOML): the state directory, Apple ID accounts, sync pairs and
+photos jobs."""
 
 import json
 import tomllib
@@ -31,6 +32,15 @@ MAX_INTERVAL_MINUTES = 7 * 24 * 60
 
 class ConfigError(ValueError):
     """The configuration file is missing, unreadable or invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class AccountConfig:
+    """An Apple ID the DSM UI signed in (``[[account]]``); pairs and photos jobs
+    name it in ``account``."""
+
+    name: str
+    apple_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +116,24 @@ class Config:
     pairs: tuple[PairConfig, ...]
     photos: tuple[PhotosConfig, ...] = ()
     interval_minutes: int = DEFAULT_INTERVAL_MINUTES
+    accounts: tuple[AccountConfig, ...] = ()
+
+    def account(self, name: str) -> AccountConfig | None:
+        for account in self.accounts:
+            if account.name == name:
+                return account
+        return None
+
+    def apple_id_for(self, account: str, apple_id: str | None = None) -> str | None:
+        """The Apple ID to sign in with for ``account``: ``apple_id`` set on the pair
+        or photos job, else the one of its ``[[account]]`` table, else the account
+        name when it is an Apple ID itself; None when nothing names one."""
+        if apple_id:
+            return apple_id
+        table = self.account(account)
+        if table is not None and table.apple_id:
+            return table.apple_id
+        return account if "@" in account else None
 
     def photos_job(self, name: str) -> PhotosConfig:
         for job in self.photos:
@@ -166,8 +194,27 @@ def parse_config(data: Mapping[str, Any], base: Path = Path(".")) -> Config:
             _check_folder(Path(pair.remote), f"pair {pair.name!r}", "remote", state_dir)
     for job in photos:
         _check_folder(job.target, f"photos {job.name!r}", "target", state_dir)
-    return Config(state_dir=state_dir, pairs=parsed, photos=photos,
-                  interval_minutes=interval)  # fmt: skip
+    return Config(state_dir=state_dir, pairs=parsed, photos=photos, interval_minutes=interval,
+                  accounts=_parse_accounts(data.get("account", [])))  # fmt: skip
+
+
+def _parse_accounts(entries: object) -> tuple[AccountConfig, ...]:
+    if not isinstance(entries, list):
+        raise ConfigError("'account' must be a list of [[account]] tables")
+    accounts = []
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"account #{index} must be a table")
+        name = _get(entry, "name", str, None, f"account #{index}")
+        if not name.strip():
+            raise ConfigError(f"account #{index}: 'name' must not be empty")
+        apple_id = _get(entry, "apple_id", str, "", f"account {name!r}")
+        accounts.append(AccountConfig(name=name, apple_id=apple_id.strip()))
+    names = [account.name for account in accounts]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ConfigError(f"duplicate account names: {', '.join(duplicates)}")
+    return tuple(accounts)
 
 
 # Folders no pair or photos backup may use: Synology's recycle bin and snapshots,
