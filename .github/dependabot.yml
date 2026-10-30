@@ -13,9 +13,13 @@ updates:
       - dependency-name: pyicloud
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
-  # The lock file the .spk is built from (requirements/icloud.txt, with hashes).
+  # The lock file the .spk is built from (requirements/icloud.txt, with hashes) and
+  # the SynoCommunity package's pins of the same versions, in one pull request so
+  # they stay equal (CI checks it: tools/spksrc_requirements.py --check).
   - package-ecosystem: pip
-    directory: /requirements
+    directories:
+      - /requirements
+      - /spksrc/spk/homeward/src
     schedule:
       interval: weekly
     groups:
@@ -24,6 +28,8 @@ updates:
     ignore:
       - dependency-name: pyicloud
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # Set from the release tag (tools/spksrc_requirements.py --version).
+      - dependency-name: homeward
 
   - package-ecosystem: github-actions
     directory: /

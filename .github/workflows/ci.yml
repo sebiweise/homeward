@@ -26,6 +26,8 @@ jobs:
       - run: ruff format --check .
       - run: mypy
       - run: pytest --cov=homeward --cov-report=term --cov-report=markdown-append:"$GITHUB_STEP_SUMMARY" --cov-fail-under=90
+      # The SynoCommunity package pins the same versions as the lock file.
+      - run: python tools/spksrc_requirements.py --check
       - run: shellcheck package/scripts/service-setup.sh tools/test_spk_lifecycle.sh spksrc/spk/homeward/src/service-setup.sh
 
   spk:

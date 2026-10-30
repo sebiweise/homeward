@@ -1,7 +1,8 @@
 # Wheels with compiled extensions, cross-compiled by spksrc.
-# Keep in sync with the dependencies of homeward[icloud] (see requirements-pure.txt).
+# Versions from requirements/icloud.txt (tools/spksrc_requirements.py); a bump here
+# needs the SynoCommunity package workflow to build it once.
 
 cffi==2.1.1
 charset_normalizer==3.5.2
-cryptography==48.0.1
+cryptography==50.0.2
 pydantic_core==2.50.1

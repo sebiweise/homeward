@@ -15,6 +15,14 @@ on:
 permissions:
   contents: read
 
+# spksrc and its build container are pinned, so a change upstream cannot change a
+# build unnoticed. Raise both together on purpose (spksrc/README.md, "Updating the
+# pinned spksrc"): the image digest of ghcr.io/synocommunity/spksrc:latest and the
+# matching commit of SynoCommunity/spksrc master.
+env:
+  SPKSRC_COMMIT: f35a5252f6aea9060cef28268d2ceedf1ce57c4e
+  SPKSRC_IMAGE: ghcr.io/synocommunity/spksrc@sha256:72eb2a04bcdf8dcf897d2a94d9d75664bcf7951ce26301ccf360d73957c7779b
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -31,7 +39,9 @@ jobs:
 
       - name: Check out spksrc and add the Homeward package
         run: |
-          git clone --depth 1 https://github.com/SynoCommunity/spksrc.git spksrc
+          git init -q spksrc
+          git -C spksrc fetch -q --depth 1 https://github.com/SynoCommunity/spksrc.git "${SPKSRC_COMMIT}"
+          git -C spksrc checkout -q FETCH_HEAD
           cp -R homeward/spksrc/. spksrc/
           version=$(sed -n 's/^PKG_VERS = //p' spksrc/cross/homeward/Makefile)
           mkdir -p spksrc/distrib
@@ -41,7 +51,7 @@ jobs:
       - name: Build
         run: |
           docker run --rm -v "${GITHUB_WORKSPACE}/spksrc:/spksrc" -w /spksrc \
-            ghcr.io/synocommunity/spksrc:latest /bin/bash -euo pipefail -c '
+            "${SPKSRC_IMAGE}" /bin/bash -euo pipefail -c '
               git config --global --add safe.directory /spksrc
               make setup-synocommunity
               sed -i -e "s|#PARALLEL_MAKE\s*=.*|PARALLEL_MAKE=max|" local.mk

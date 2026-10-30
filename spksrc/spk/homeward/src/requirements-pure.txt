@@ -1,14 +1,13 @@
 # Pure Python wheels, installed from PyPI at installation time.
-# Regenerate after a Homeward release with:
-#   python3.12 -m venv /tmp/hw && /tmp/hw/bin/pip install "homeward[icloud]==<version>"
-#   /tmp/hw/bin/pip freeze
-# and move cffi, charset_normalizer, cryptography and pydantic_core to
-# requirements-crossenv.txt.
+# The versions are those of requirements/icloud.txt, copied by
+#   python tools/spksrc_requirements.py [--version X.Y.Z]
+# (CI fails when they differ). A new dependency goes into this file or, when it
+# has compiled extensions, into requirements-crossenv.txt.
 
 homeward==0.3.0
 
 annotated-types==0.8.0
-certifi==2026.7.22
+certifi==2026.10.19
 fido2==2.2.1
 idna==3.20
 jaraco.classes==3.4.0
