@@ -147,8 +147,9 @@ def _print_outcome(outcome: SyncOutcome, dry_run: bool) -> None:
 
 @contextlib.contextmanager
 def _events(config_path: Path, source: str) -> Iterator[None]:
-    """Record this run's waits, retries and errors in the event log next to the config."""
-    handler = EventLogHandler(source, Paths(var_dir=config_path.parent, config=config_path))
+    """Record this run's waits, retries and errors in the event log of the var folder
+    (``$HOMEWARD_VAR``, else the config's folder)."""
+    handler = EventLogHandler(source, Paths.for_config(config_path))
     logger = logging.getLogger("homeward")
     logger.addHandler(handler)
     try:
@@ -159,9 +160,9 @@ def _events(config_path: Path, source: str) -> Iterator[None]:
 
 @contextlib.contextmanager
 def _progress(config_path: Path, source: str) -> Iterator[Progress]:
-    """Keep ``progress/<source>.json`` next to the config up to date while the run lasts,
+    """Keep ``progress/<source>.json`` in the var folder up to date while the run lasts,
     with the latest log line as the current activity."""
-    paths = Paths(var_dir=config_path.parent, config=config_path)
+    paths = Paths.for_config(config_path)
     progress = Progress(functools.partial(write_progress, paths, source))
     handler = ProgressLogHandler(progress)
     logger = logging.getLogger("homeward")

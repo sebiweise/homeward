@@ -128,7 +128,7 @@ service_start() {
     # inside the package and survive upgrades.
     # The redirect only catches output from before the log file is opened.
     # shellcheck disable=SC2094
-    HOME="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" \
+    HOME="${PKG_VAR}" HOMEWARD_VAR="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" \
         nohup "${VENV}/bin/homeward-daemon" --config "${CONFIG}" --log-file "${LOG_FILE}" \
         >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"

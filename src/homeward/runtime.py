@@ -38,6 +38,15 @@ class Paths:
         config = Path(env.get("HOMEWARD_CONFIG", var_dir / "config.toml"))
         return cls(var_dir=var_dir, config=config)
 
+    @classmethod
+    def for_config(cls, config: Path, environ: dict[str, str] | None = None) -> "Paths":
+        """The paths of a daemon or CLI started with ``--config``: the var folder is
+        ``$HOMEWARD_VAR`` as for the UI API (``from_env``), else the config's folder
+        (where the package keeps it)."""
+        env = os.environ if environ is None else environ
+        var_dir = env.get("HOMEWARD_VAR")
+        return cls(var_dir=Path(var_dir) if var_dir else config.parent, config=config)
+
     @property
     def requests_dir(self) -> Path:
         return self.var_dir / "requests"
