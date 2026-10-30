@@ -1,5 +1,6 @@
 """Configuration file (TOML) with the state directory and the sync pairs."""
 
+import json
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -49,6 +50,15 @@ class PairConfig:
     interval_minutes: int | None = None  # None: the global interval
     window: TimeWindow | None = None  # scheduled runs start only in these hours
     max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
+
+    @property
+    def identity(self) -> str:
+        """What the pair's sync state belongs to: changing one of these makes it
+        meaningless, and the next run starts over as a first run."""
+        return json.dumps(
+            [str(self.local), self.remote, self.account, self.remote_provider],
+            ensure_ascii=False,
+        )
 
 
 FOLDER_OPTIONS = (
