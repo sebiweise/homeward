@@ -50,3 +50,13 @@ jobs:
           name: homeward-spk-${{ matrix.arch }}
           path: dist/*.spk
           if-no-files-found: error
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: docker build -t homeward:ci .
+      # Headless start: writes the default config, runs the due jobs (none) and exits.
+      - run: docker run --rm homeward:ci --once

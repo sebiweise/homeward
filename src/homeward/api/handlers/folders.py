@@ -58,7 +58,12 @@ def create(_ctx: Context, request: Request) -> dict[str, Any]:
 
 
 def _volumes() -> list[Path]:
-    """Mounted volumes (``/volume1``, ``/volumeUSB1`` ...)."""
+    """Mounted volumes (``/volume1``, ``/volumeUSB1`` ...), or outside DSM the folders
+    listed in ``HOMEWARD_VOLUMES`` (separated by ``:``, e.g. ``/data`` in Docker)."""
+    configured = os.environ.get("HOMEWARD_VOLUMES", "")
+    if configured:
+        paths = [Path(item) for item in configured.split(":") if item]
+        return [path for path in paths if path.is_absolute() and path.is_dir()]
     try:
         candidates = sorted(ROOT.glob("volume*"))
     except OSError:

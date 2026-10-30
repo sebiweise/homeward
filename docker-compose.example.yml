@@ -1,0 +1,25 @@
+# Example for running Homeward in Docker; see docs/docker.md.
+# Copy to docker-compose.yml and adjust the paths. Put the web page's password into a
+# file .env next to it (HOMEWARD_WEB_PASSWORD=...), then:
+#   docker compose up -d
+services:
+  homeward:
+    image: homeward:latest
+    build: .
+    container_name: homeward
+    restart: unless-stopped
+    init: true  # reaps the sync processes the daemon starts
+    # Must own /config and be able to write the folders below /data.
+    user: "1000:1000"
+    environment:
+      TZ: Europe/Berlin
+      # From .env; remove this line to run headless from config/config.toml only.
+      HOMEWARD_WEB_PASSWORD: ${HOMEWARD_WEB_PASSWORD:?put HOMEWARD_WEB_PASSWORD into .env}
+      # HOMEWARD_WEB_USER: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config
+      # Every folder below /data shows up in the folder picker.
+      - /srv/photos:/data/photos
+      - /srv/documents:/data/documents
