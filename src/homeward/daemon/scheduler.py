@@ -52,7 +52,23 @@ from homeward.core.config import (
 )
 from homeward.core.limits import TimeWindow
 from homeward.dsm.notify import Event, notify
-from homeward.runtime import Level, Paths, record_event, take_cancels
+from homeward.exitcodes import (
+    EXIT_BLOCKED,
+    EXIT_CANCELLED,
+    EXIT_FAILED,
+    EXIT_LOGIN,
+    EXIT_OK,
+    EXIT_USAGE,
+    EXIT_WAITING,
+)
+from homeward.runtime import (
+    Level,
+    Paths,
+    RunRequest,
+    record_event,
+    take_cancels,
+    take_requests,
+)
 
 log = logging.getLogger("homeward.daemon")
 
@@ -77,10 +93,10 @@ SIGNAL_RETRIES = 1
 LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
 
-# Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
+# Exit codes of `homeward sync` (see homeward.exitcodes) -> run result.
 _RESULTS = {
-    0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed",
-    6: "login_required",
+    EXIT_OK: "ok", EXIT_FAILED: "failed", EXIT_USAGE: "config_error", EXIT_BLOCKED: "blocked",
+    EXIT_WAITING: "waiting", EXIT_CANCELLED: "killed", EXIT_LOGIN: "login_required",
 }  # fmt: skip
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
@@ -134,43 +150,6 @@ class Settings:
     @property
     def interval_seconds(self) -> float:
         return self.interval_minutes * 60.0
-
-
-@dataclass(frozen=True, slots=True)
-class RunRequest:
-    """A "sync now" request for one pair, written by the DSM UI."""
-
-    pair: str
-    dry_run: bool = False
-    allow_deletes: bool = False
-    remove_gone: bool = False  # photos: also clean up photos deleted in iCloud
-
-
-def take_requests(
-    requests_dir: Path, accept: Callable[[RunRequest], bool] = lambda _request: True
-) -> list[RunRequest]:
-    """Return and remove the pending requests ``accept`` takes now; the others stay
-    queued (and shown as queued) for a later cycle. Unreadable files are dropped."""
-    if not requests_dir.is_dir():
-        return []
-    requests = []
-    for file in sorted(requests_dir.glob("*.json")):
-        try:
-            data = json.loads(file.read_text(encoding="utf-8"))
-            request = RunRequest(
-                pair=str(data["pair"]),
-                dry_run=bool(data.get("dry_run", False)),
-                allow_deletes=bool(data.get("allow_deletes", False)),
-                remove_gone=bool(data.get("remove_gone", False)),
-            )
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            log.warning("ignoring run request %s: %s", file.name, exc)
-            file.unlink(missing_ok=True)
-            continue
-        if accept(request):
-            requests.append(request)
-            file.unlink(missing_ok=True)
-    return requests
 
 
 @dataclass(slots=True)

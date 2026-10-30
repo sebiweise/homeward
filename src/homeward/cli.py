@@ -33,6 +33,15 @@ from homeward.core.state import StateDB
 from homeward.core.sync import SyncOutcome, sync_pair
 from homeward.core.trash import Trash
 from homeward.dsm.notify import Event, notify
+from homeward.exitcodes import (
+    EXIT_BLOCKED,
+    EXIT_CANCELLED,
+    EXIT_FAILED,
+    EXIT_LOGIN,
+    EXIT_OK,
+    EXIT_USAGE,
+    EXIT_WAITING,
+)
 from homeward.providers.drive_api import DriveApi, PyiCloudDriveApi
 from homeward.providers.icloud_drive import FolderCache, ICloudDriveProvider
 from homeward.providers.icloud_photos import ICloudPhotosSource, PhotoOptions, PhotosNotReady
@@ -43,13 +52,6 @@ from homeward.runtime import EventLogHandler, Paths, clear_progress, write_progr
 # and only loggers below "homeward" reach the event log.
 log = logging.getLogger("homeward.cli")
 
-EXIT_OK = 0
-EXIT_FAILED = 1
-EXIT_USAGE = 2
-EXIT_BLOCKED = 3
-EXIT_WAITING = 4  # iCloud is not ready yet (e.g. still indexing); the next run tries again
-EXIT_CANCELLED = 5  # ended on SIGTERM (cancelled, or the service stops)
-EXIT_LOGIN = 6  # the Apple ID needs a new sign-in (the daemon notifies the admins)
 # how bad an exit code is, to report the worst one when a command runs several jobs
 _SEVERITY = {
     EXIT_OK: 0, EXIT_WAITING: 1, EXIT_FAILED: 2, EXIT_LOGIN: 3, EXIT_BLOCKED: 4, EXIT_USAGE: 5,
@@ -110,7 +112,8 @@ notifier: Callable[..., bool] = notify
 
 def _remote_provider(pair: PairConfig, config: Config) -> Provider:
     if pair.remote_provider == "folder":
-        return NasProvider(Path(pair.remote), name="remote")
+        remote = Path(pair.remote)
+        return NasProvider(remote, name="remote", recycle_bin=find_recycle_bin(remote))
     cache = FolderCache(config.state_dir / f"{pair.account}.drive-folders.json")
     return ICloudDriveProvider(
         drive_api_factory(pair, config), pair.remote, excludes=pair.exclude, cache=cache
@@ -235,6 +238,19 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _sync_one(
     args: argparse.Namespace, config: Config, pair: PairConfig, progress: Progress
 ) -> int:
+    # Also keeps a manual `homeward sync` apart from the daemon's run of the same pair.
+    with _run_lock(config.state_dir / f"pair-{pair.name}.lock") as locked:
+        if not locked:
+            message = f"another sync of pair {pair.name} is still running"
+            print(f"homeward: {message}", file=sys.stderr)
+            log.warning("%s", message, extra={"event": "already_running"})
+            return EXIT_FAILED
+        return _sync_locked(args, config, pair, progress)
+
+
+def _sync_locked(
+    args: argparse.Namespace, config: Config, pair: PairConfig, progress: Progress
+) -> int:
     status = EXIT_OK
     progress.phase("connecting")
     remote = _remote_provider(pair, config)
@@ -263,6 +279,8 @@ def _sync_one(
     _log_summary(f"pair {pair.name}", counts, failed, _pair_files(outcome))
     if not args.dry_run:
         purged = local.purge_trash(pair.trash_days)
+        if isinstance(remote, NasProvider):  # a "folder" pair has a NAS trash on both sides
+            purged += remote.purge_trash(pair.trash_days)
         if purged:
             print(f"  Emptied {purged} day folder(s) older than {pair.trash_days} days "
                   "from the NAS trash.")  # fmt: skip
@@ -336,7 +354,7 @@ def _print_photos(job: PhotosConfig, outcome: PhotoOutcome, dry_run: bool) -> No
     if outcome.integrity is not None:
         check = outcome.integrity
         print(f"  Weekly check: {check.checked} photos checked, {len(check.damaged)} damaged"
-              + " (moved to the trash, downloaded again)" * bool(check.damaged))  # fmt: skip
+              + " (downloaded again if iCloud still has them)" * bool(check.damaged))  # fmt: skip
     if dry_run:
         print("  Dry run: nothing was changed.")
     elif outcome.result:

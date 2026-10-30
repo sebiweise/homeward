@@ -10,15 +10,17 @@
 - ``progress/<job>.json``: how far the running sync or photos backup is, written by it
 """
 
+import fcntl
 import json
 import logging
 import os
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 DEFAULT_VAR_DIR = Path("/var/packages/homeward/var")
 MAX_EVENTS_BYTES = 2 * 1024 * 1024  # then events.jsonl moves to events.jsonl.1
@@ -96,11 +98,17 @@ class RunRequest:
 def write_json_atomic(path: Path, data: Any, mode: int = 0o640) -> None:
     """Write JSON so readers never see a half-written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False)
-    os.replace(tmp, path)
+    # A temp name of its own per write: several threads or processes may write the
+    # same file (progress, requests, notices) and must not share one temp file.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def request_run(paths: Paths, request: RunRequest) -> None:
@@ -116,25 +124,34 @@ def request_run(paths: Paths, request: RunRequest) -> None:
 
 
 def pending_requests(paths: Paths) -> list[RunRequest]:
-    return [request for _, request in _read_requests(paths)]
+    return [request for _, request in _read_requests(paths.requests_dir) if request]
 
 
-def take_requests(paths: Paths) -> list[RunRequest]:
-    """Return and remove all pending run requests (for the daemon)."""
+def take_requests(
+    requests_dir: Path, accept: Callable[[RunRequest], bool] = lambda _request: True
+) -> list[RunRequest]:
+    """Return and remove the pending requests ``accept`` takes now (for the daemon);
+    the others stay queued (and shown as queued) for a later cycle. Unreadable files
+    are dropped."""
     taken = []
-    for file, request in _read_requests(paths):
-        file.unlink(missing_ok=True)
-        taken.append(request)
+    for file, request in _read_requests(requests_dir):
+        if request is None:
+            log.warning("ignoring unreadable run request %s", file.name)
+            file.unlink(missing_ok=True)
+        elif accept(request):
+            taken.append(request)
+            file.unlink(missing_ok=True)
     return taken
 
 
-def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
-    if not paths.requests_dir.is_dir():
+def _read_requests(requests_dir: Path) -> Iterator[tuple[Path, RunRequest | None]]:
+    """Each request file with its request, or None when it cannot be read."""
+    if not requests_dir.is_dir():
         return
-    for file in sorted(paths.requests_dir.glob("*.json")):
+    for file in sorted(requests_dir.glob("*.json")):
         try:
             data = json.loads(file.read_text(encoding="utf-8"))
-            request = RunRequest(
+            request: RunRequest | None = RunRequest(
                 pair=str(data["pair"]),
                 dry_run=bool(data.get("dry_run", False)),
                 allow_deletes=bool(data.get("allow_deletes", False)),
@@ -142,7 +159,7 @@ def _read_requests(paths: Paths) -> Iterator[tuple[Path, RunRequest]]:
                 requested_at=float(data.get("requested_at", 0.0)),
             )
         except (OSError, ValueError, KeyError, TypeError):
-            continue
+            request = None
         yield file, request
 
 
@@ -286,16 +303,36 @@ def record_event(
     line = json.dumps(asdict(event), ensure_ascii=False, default=str) + "\n"
     try:
         paths.events_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if paths.events_file.stat().st_size > MAX_EVENTS_BYTES:
-                os.replace(paths.events_file, paths.events_file.with_suffix(".jsonl.1"))
-        except FileNotFoundError:
-            pass
-        fd = os.open(paths.events_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(line)
+        lock = paths.events_file.with_name(f".{paths.events_file.name}.lock")
+        # Appends share the lock, a rotation holds it alone: no append can still be
+        # writing into the file a rotation just moved to events.jsonl.1. Closing the
+        # lock file releases it.
+        with lock.open("a") as handle:
+            _rotate_events(paths, handle)
+            fcntl.flock(handle, fcntl.LOCK_SH)
+            fd = os.open(paths.events_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(line)
     except OSError as exc:
         log.warning("could not record event %s %s: %s", source, code, exc)
+
+
+def _rotate_events(paths: Paths, lock: IO[str]) -> None:
+    """Move a full event log to events.jsonl.1, holding ``lock`` alone, and checked
+    again once it is held: the daemon and the runs it starts write events at the
+    same time and must not rotate twice (which would replace events.jsonl.1 with a
+    few lines)."""
+    try:
+        if paths.events_file.stat().st_size <= MAX_EVENTS_BYTES:
+            return
+    except FileNotFoundError:
+        return
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        if paths.events_file.stat().st_size > MAX_EVENTS_BYTES:
+            os.replace(paths.events_file, paths.events_file.with_suffix(".jsonl.1"))
+    except FileNotFoundError:
+        pass
 
 
 def read_events(paths: Paths, limit: int = 200) -> list[Event]:
