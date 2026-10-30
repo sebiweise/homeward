@@ -140,7 +140,8 @@ def test_container_web_page_needs_a_password(tmp_path: Path) -> None:
         paths,
         {"HOMEWARD_WEB_PASSWORD": "pw", "HOMEWARD_WEB_HOST": "127.0.0.1", "HOMEWARD_WEB_PORT": "0"},
     )
-    assert thread is not None and thread.is_alive()
+    assert thread is not None
+    assert thread.is_alive()
 
 
 def test_container_runs_the_daemon_on_the_config(
