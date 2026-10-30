@@ -37,7 +37,8 @@ def check_nas_folder(ctx: Context, value: str, key: str) -> Path:
     """A NAS folder a pair or photos backup may use: absolute, without ``..``, none of
     the hidden folders above, and neither inside nor around the package's own data
     (config, Apple ID sessions, state), which the daemon could otherwise read or
-    overwrite: a sync of a folder that contains it would copy the sessions too."""
+    overwrite: a sync of a folder that contains it would copy the sessions too. On
+    DSM it must also lie inside a shared folder (``folders.check_shared_folder``)."""
     path = Path(value)
     if not path.is_absolute() or ".." in path.parts:
         raise ApiError("invalid_param", key)
@@ -47,6 +48,9 @@ def check_nas_folder(ctx: Context, value: str, key: str) -> Path:
     private = [f.resolve() for f in (PACKAGE_DIR, ctx.paths.var_dir, ctx.store.load().state_dir)]
     if any(real.is_relative_to(folder) or folder.is_relative_to(real) for folder in private):
         raise ApiError("invalid_param", key)
+    from homeward.api.handlers.folders import check_shared_folder  # it imports this module
+
+    check_shared_folder(path, key)
     return path
 
 
