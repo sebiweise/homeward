@@ -78,6 +78,11 @@ jobs:
           pattern: homeward-*
           merge-multiple: true
           path: dist
+      # The SynoCommunity package of this version (spksrc/README.md): the spksrc
+      # folder with the tag's version in homeward==, SPK_VERS and PKG_VERS.
+      - run: |
+          python3 tools/spksrc_requirements.py --version "${GITHUB_REF_NAME}"
+          tar -czf "dist/homeward-spksrc-${GITHUB_REF_NAME#v}.tar.gz" spksrc
       # Release notes: this version's section of CHANGELOG.md.
       - env:
           GH_TOKEN: ${{ github.token }}
@@ -87,6 +92,6 @@ jobs:
             /^## / { found = (index($0, "## [" v "]") == 1); next }
             found' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
-          gh release create "${GITHUB_REF_NAME}" dist/*.spk dist/*.whl \
+          gh release create "${GITHUB_REF_NAME}" dist/*.spk dist/*.whl dist/*.tar.gz \
             --repo "${GITHUB_REPOSITORY}" --title "Homeward ${GITHUB_REF_NAME}" \
             --notes-file notes.md

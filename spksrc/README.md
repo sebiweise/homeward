@@ -19,17 +19,34 @@ switch between the two packages and keep configuration and state.
 The workflow `.github/workflows/spksrc.yml` builds this package for x64 and aarch64
 with spksrc's own build container on every pull request that touches it.
 
+The Python pins in `requirements-*.txt` are the versions of `requirements/icloud.txt`,
+the lock file the `.spk` from `tools/build_spk.py` is built and tested with:
+`python tools/spksrc_requirements.py` copies them (CI runs it with `--check`), and
+Dependabot updates both in one pull request. Packages spksrc cannot cross-compile
+in the lock file's version yet are listed in `HELD_BACK` in the tool, with the
+reason; their pin follows the lock file only up to the given major version
+(currently cryptography 48.x). The release workflow sets the version
+from the tag and attaches the folder as `homeward-spksrc-X.Y.Z.tar.gz`.
+
+### Updating the pinned spksrc
+
+The workflow builds with a fixed spksrc commit and build image (`SPKSRC_COMMIT`,
+`SPKSRC_IMAGE` in `.github/workflows/spksrc.yml`), so an upstream change cannot break
+or alter a build unnoticed. To raise them, take the current commit of
+SynoCommunity/spksrc `master` and the digest of `ghcr.io/synocommunity/spksrc:latest`
+(`docker buildx imagetools inspect ghcr.io/synocommunity/spksrc:latest`), set both in
+one pull request and let the workflow build it.
+
 ## Submitting a release to SynoCommunity
 
 Prerequisites: the release `vX.Y.Z` exists on GitHub and Homeward `X.Y.Z` is on PyPI
 (both done by `.github/workflows/release.yml` when the tag is pushed).
 
-1. Update this folder for the new version:
-   - `SPK_VERS` and `CHANGELOG` in `spk/homeward/Makefile`; reset `SPK_REV` to 1 for a
-     new version, raise it for a package-only change.
-   - `PKG_VERS` in `cross/homeward/Makefile`.
-   - `homeward==X.Y.Z` and the other pins in `requirements-pure.txt` and
-     `requirements-crossenv.txt` (instructions at the top of `requirements-pure.txt`).
+1. Take the folder of the release (`homeward-spksrc-X.Y.Z.tar.gz`, or run
+   `python tools/spksrc_requirements.py --version X.Y.Z`): `SPK_VERS`, `PKG_VERS` and
+   `homeward==X.Y.Z` are set, the other pins match the lock file. By hand: `CHANGELOG`
+   in `spk/homeward/Makefile`; reset `SPK_REV` to 1 for a new version, raise it for a
+   package-only change.
 2. Fork [SynoCommunity/spksrc](https://github.com/SynoCommunity/spksrc), create a branch
    and copy the package into it:
 
