@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 DEFAULT_VAR_DIR = Path("/var/packages/homeward/var")
 MAX_EVENTS_BYTES = 2 * 1024 * 1024  # then events.jsonl moves to events.jsonl.1
@@ -294,33 +294,36 @@ def record_event(
     line = json.dumps(asdict(event), ensure_ascii=False, default=str) + "\n"
     try:
         paths.events_file.parent.mkdir(parents=True, exist_ok=True)
-        _rotate_events(paths)
-        fd = os.open(paths.events_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(line)
+        lock = paths.events_file.with_name(f".{paths.events_file.name}.lock")
+        # Appends share the lock, a rotation holds it alone: no append can still be
+        # writing into the file a rotation just moved to events.jsonl.1. Closing the
+        # lock file releases it.
+        with lock.open("a") as handle:
+            _rotate_events(paths, handle)
+            fcntl.flock(handle, fcntl.LOCK_SH)
+            fd = os.open(paths.events_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(line)
     except OSError as exc:
         log.warning("could not record event %s %s: %s", source, code, exc)
 
 
-def _rotate_events(paths: Paths) -> None:
-    """Move a full event log to events.jsonl.1. Under a lock, and checked again once
-    it is held: the daemon and the runs it starts write events at the same time and
-    must not rotate twice (which would replace events.jsonl.1 with a few lines)."""
+def _rotate_events(paths: Paths, lock: IO[str]) -> None:
+    """Move a full event log to events.jsonl.1, holding ``lock`` alone, and checked
+    again once it is held: the daemon and the runs it starts write events at the
+    same time and must not rotate twice (which would replace events.jsonl.1 with a
+    few lines)."""
     try:
         if paths.events_file.stat().st_size <= MAX_EVENTS_BYTES:
             return
     except FileNotFoundError:
         return
-    lock = paths.events_file.with_name(f".{paths.events_file.name}.lock")
-    with lock.open("a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            if paths.events_file.stat().st_size > MAX_EVENTS_BYTES:
-                os.replace(paths.events_file, paths.events_file.with_suffix(".jsonl.1"))
-        except FileNotFoundError:
-            pass
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        if paths.events_file.stat().st_size > MAX_EVENTS_BYTES:
+            os.replace(paths.events_file, paths.events_file.with_suffix(".jsonl.1"))
+    except FileNotFoundError:
+        pass
 
 
 def read_events(paths: Paths, limit: int = 200) -> list[Event]:
