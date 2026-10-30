@@ -50,11 +50,19 @@ def test_held_back_pins_follow_the_lock_file_only_up_to_their_major(tool: Module
     pins = {"cryptography": "50.0.2"}
     updated, _ = tool.update_pins("cryptography==48.0.1\n", pins, "0.4.0")
     assert updated == "cryptography==48.0.1\n"  # what spksrc can build
-    assert tool.held_back_problems(updated) == []
+    assert tool.held_back_problems(updated, pins) == []
     updated, _ = tool.update_pins("cryptography==48.0.0\n", {"cryptography": "48.0.1"}, "0.4.0")
     assert updated == "cryptography==48.0.1\n"
-    (problem,) = tool.held_back_problems("cryptography==50.0.2\n")
+    (problem,) = tool.held_back_problems("cryptography==50.0.2\n", pins)
     assert "above 48.x" in problem
+    (problem,) = tool.held_back_problems("cryptography==43.0.0\n", pins)
+    assert "below 48.x" in problem
+
+
+def test_update_pins_keeps_a_marker(tool: ModuleType) -> None:
+    text = "jeepney==0.8.0 ; sys_platform == 'linux'\n"
+    updated, _ = tool.update_pins(text, {"jeepney": "0.9.0"}, "0.4.0")
+    assert updated == "jeepney==0.9.0 ; sys_platform == 'linux'\n"
 
 
 def test_the_repository_is_in_step(tool: ModuleType) -> None:
