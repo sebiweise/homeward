@@ -1,0 +1,24 @@
+name: Security
+
+# Security scan (Semgrep, Trivy, Gitleaks) from sebiweise/security-workflows;
+# only severe findings fail the run, see the README there.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  # New CVEs are published against code that has not changed.
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    uses: sebiweise/security-workflows/.github/workflows/scan.yml@effd2673e5413942f2c1f588f61d11be98f58888 # v1.0.0
