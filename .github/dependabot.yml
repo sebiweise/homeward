@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Version updates wait a week: most hijacked releases are pulled within
+    # days. Security updates are not delayed by this.
+    cooldown:
+      default-days: 7
     groups:
       dev-tools:
         patterns: ["pytest*", "ruff", "mypy"]
@@ -24,6 +28,8 @@ updates:
       - /spksrc/spk/homeward/src
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       bundled:
         patterns: ["*"]
@@ -47,6 +53,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
