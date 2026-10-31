@@ -21,4 +21,4 @@ concurrency:
 
 jobs:
   scan:
-    uses: sebiweise/security-workflows/.github/workflows/scan.yml@effd2673e5413942f2c1f588f61d11be98f58888 # v1.0.0
+    uses: sebiweise/security-workflows/.github/workflows/scan.yml@d45d5429efa8ad3b5c5e0f5c9c647e9ac55b80dd # v1.0.0
