@@ -67,6 +67,8 @@ class StateDB:
         if version > SCHEMA_VERSION:
             raise RuntimeError(f"state database {path} is newer than this Homeward version")
         self._conn.executescript(_SCHEMA)
+        # PRAGMA takes no bound parameters; SCHEMA_VERSION is a constant.
+        # nosemgrep
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -149,6 +151,8 @@ class StateDB:
         if pair is not None:
             query += " WHERE pair = ?"
             args = (pair,)
+        # Constant SQL; the values are bound.
+        # nosemgrep
         rows = self._conn.execute(query + " ORDER BY id DESC LIMIT ?", (*args, limit))
         return [
             RunRecord(pair, started, finished, bool(dry), actions, errors, blocked)
