@@ -111,6 +111,12 @@ Bug reports, ideas and pull requests are welcome. Please read
 - [SynoCommunity](https://synocommunity.com/) for Python on DSM.
 - [iCloudPhotoSync](https://github.com/Euphonique/iCloudPhotoSync) for inspiration.
 
+## Support
+
+Homeward is free and open source. If it saves you time and you'd like to say thanks,
+you can [sponsor me on GitHub](https://github.com/sponsors/sebiweise). Bug reports
+and pull requests help just as much.
+
 ## License
 
 [MIT](LICENSE). Homeward is not affiliated with, endorsed by or sponsored by Apple Inc.
