@@ -2,9 +2,9 @@
 # installed by .claude/hooks/session-start.sh. Regenerate after a version bump:
 #   echo 'graphifyy==<version>' | uv pip compile - --generate-hashes \
 #     --python-version 3.12 --universal --no-header -o requirements/graphify.txt
-graphifyy==0.9.97 \
-    --hash=sha256:562a9007caa96419f33dbca007647374b6986bde486021b7475e2566d9c5904f \
-    --hash=sha256:eb24dd7f93293753c001ca36e7304e0b52e86fe4124c2f531dcdb3d64865e01a
+graphifyy==0.9.99 \
+    --hash=sha256:25688fe0803399e6e13460233aae4602db4f45e840002101a8b6b29936e93ebe \
+    --hash=sha256:be8e68ca7e8d2115599167cff82d4a3afc8c5f312c45f707fa5d1a35cc9fb7a7
     # via -r -
 networkx==3.7 \
     --hash=sha256:e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0 \
