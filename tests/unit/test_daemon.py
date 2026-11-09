@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import subprocess
 import sys
 import threading
@@ -20,7 +22,15 @@ from homeward.daemon.scheduler import (
     main,
     parse_settings,
 )
-from homeward.runtime import take_requests
+from homeward.runtime import (
+    CancelRequest,
+    Paths,
+    RunRequest,
+    request_cancel,
+    request_run,
+    take_cancels,
+    take_requests,
+)
 
 
 class Clock:
@@ -321,6 +331,65 @@ def test_take_requests(tmp_path: Path) -> None:
     requests = take_requests(tmp_path / "requests")
     assert [(r.pair, r.dry_run, r.allow_deletes) for r in requests] == [("a", True, False)]
     assert list((tmp_path / "requests").iterdir()) == []
+
+
+def test_request_folders_are_private_whatever_the_umask(tmp_path: Path) -> None:
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    old = os.umask(0)
+    try:
+        request_run(paths, RunRequest("a", allow_deletes=True))
+        request_cancel(paths, CancelRequest("a"))
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(paths.requests_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(paths.cancel_dir.stat().st_mode) == 0o700
+    assert [r.allow_deletes for r in take_requests(paths.requests_dir)] == [True]
+    assert [c.pair for c in take_cancels(paths)] == ["a"]
+
+
+def test_requests_others_can_write_are_ignored(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    request_run(paths, RunRequest("a", allow_deletes=True))
+    request_cancel(paths, CancelRequest("a"))
+    paths.requests_dir.chmod(0o777)
+    paths.cancel_dir.chmod(0o777)
+    assert take_requests(paths.requests_dir) == []
+    assert take_cancels(paths) == []
+    assert "only Homeward can write to" in caplog.text
+    request_run(paths, RunRequest("a"))  # the next request makes the folder private again
+    assert [r.pair for r in take_requests(paths.requests_dir)] == ["a"]
+
+
+def test_requests_of_another_user_or_symlinks_are_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    request_run(paths, RunRequest("a", allow_deletes=True))
+    (tmp_path / "forged.json").write_text('{"pair": "b", "allow_deletes": true}')
+    (paths.requests_dir / "b.json").symlink_to(tmp_path / "forged.json")
+    assert [r.pair for r in take_requests(paths.requests_dir)] == ["a"]
+    assert (tmp_path / "forged.json").exists()
+    request_run(paths, RunRequest("a", allow_deletes=True))
+    request_cancel(paths, CancelRequest("a"))
+    real_uid = os.geteuid()
+    monkeypatch.setattr(os, "geteuid", lambda: real_uid + 1)
+    monkeypatch.setattr(os, "lstat", _owned_by(real_uid + 1, os.lstat))
+    assert take_requests(paths.requests_dir) == []
+    assert take_cancels(paths) == []
+
+
+def _owned_by(uid: int, lstat: Callable[[Path], os.stat_result]) -> Callable[..., os.stat_result]:
+    """``os.lstat`` that reports ``uid`` as the owner (of the request folders)."""
+
+    def fake(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        st = lstat(path)
+        values = list(st)
+        values[stat.ST_UID] = uid
+        return os.stat_result(values)
+
+    return fake
 
 
 def _cycle(daemon: Daemon) -> None:

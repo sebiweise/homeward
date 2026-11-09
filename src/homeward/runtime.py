@@ -14,6 +14,7 @@ import fcntl
 import json
 import logging
 import os
+import stat
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -111,6 +112,39 @@ def write_json_atomic(path: Path, data: Any, mode: int = 0o640) -> None:
         raise
 
 
+IPC_DIR_MODE = 0o700
+
+
+def _ipc_dir(path: Path) -> None:
+    """Create a request folder only the package user may write to, whatever the
+    umask: the daemon ignores requests from a folder others can write to
+    (``_trusted_dir``), since a run request can lift the delete brake."""
+    path.mkdir(parents=True, exist_ok=True, mode=IPC_DIR_MODE)
+    if stat.S_IMODE(path.stat().st_mode) != IPC_DIR_MODE:
+        os.chmod(path, IPC_DIR_MODE)
+
+
+def _trusted_dir(path: Path) -> bool:
+    """Whether the daemon may act on requests in ``path``: a real folder of its own
+    user that neither the group nor others can write to."""
+    st = os.lstat(path)
+    if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o022:
+        return True
+    log.warning("ignoring requests in %s: not a folder only Homeward can write to", path)
+    return False
+
+
+def _read_trusted(file: Path) -> Any:
+    """The JSON of a request file written by the daemon's own user; a symlink or a
+    file of another user raises ``ValueError``."""
+    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+            raise ValueError(f"{file.name}: not a file of Homeward's own user")
+        return json.loads(fh.read().decode("utf-8"))
+
+
 def request_run(paths: Paths, request: RunRequest) -> None:
     """Ask the daemon to sync one pair as soon as possible."""
     data = {
@@ -120,6 +154,7 @@ def request_run(paths: Paths, request: RunRequest) -> None:
         "remove_gone": request.remove_gone,
         "requested_at": request.requested_at or time.time(),
     }
+    _ipc_dir(paths.requests_dir)
     write_json_atomic(paths.requests_dir / f"{request.pair}.json", data)
 
 
@@ -146,11 +181,11 @@ def take_requests(
 
 def _read_requests(requests_dir: Path) -> Iterator[tuple[Path, RunRequest | None]]:
     """Each request file with its request, or None when it cannot be read."""
-    if not requests_dir.is_dir():
+    if not requests_dir.is_dir() or not _trusted_dir(requests_dir):
         return
     for file in sorted(requests_dir.glob("*.json")):
         try:
-            data = json.loads(file.read_text(encoding="utf-8"))
+            data = _read_trusted(file)
             request: RunRequest | None = RunRequest(
                 pair=str(data["pair"]),
                 dry_run=bool(data.get("dry_run", False)),
@@ -183,17 +218,18 @@ class CancelRequest:
 def request_cancel(paths: Paths, request: CancelRequest) -> None:
     """Ask the daemon to stop the running sync of one pair or photos job."""
     data = {"pair": request.pair, "requested_at": request.requested_at or time.time()}
+    _ipc_dir(paths.cancel_dir)
     write_json_atomic(paths.cancel_dir / f"{request.pair}.json", data)
 
 
 def take_cancels(paths: Paths) -> list[CancelRequest]:
     """Return and remove all cancel requests (for the daemon)."""
-    if not paths.cancel_dir.is_dir():
+    if not paths.cancel_dir.is_dir() or not _trusted_dir(paths.cancel_dir):
         return []
     taken = []
     for file in sorted(paths.cancel_dir.glob("*.json")):
         try:
-            data = json.loads(file.read_text(encoding="utf-8"))
+            data = _read_trusted(file)
             taken.append(CancelRequest(str(data["pair"]), float(data.get("requested_at", 0.0))))
         except (OSError, ValueError, KeyError, TypeError):
             pass
