@@ -124,20 +124,35 @@ def _ipc_dir(path: Path) -> None:
         os.chmod(path, IPC_DIR_MODE)
 
 
-def _trusted_dir(path: Path) -> bool:
+def secure_ipc_dirs(paths: Paths) -> None:
+    """Make existing request folders of the daemon's own user private again (for the
+    daemon at start-up): installs from before 0700 left them group-writable, and
+    their requests would otherwise wait for the next request from the UI."""
+    for folder in (paths.requests_dir, paths.cancel_dir):
+        try:
+            st = os.lstat(folder)
+            if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and st.st_mode & 0o077:
+                os.chmod(folder, IPC_DIR_MODE)
+        except OSError:
+            continue
+
+
+def _trusted_dir(path: Path, *, warn: bool = True) -> bool:
     """Whether the daemon may act on requests in ``path``: a real folder of its own
     user that neither the group nor others can write to."""
     st = os.lstat(path)
     if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o022:
         return True
-    log.warning("ignoring requests in %s: not a folder only Homeward can write to", path)
+    if warn:
+        log.warning("ignoring requests in %s: not a folder only Homeward can write to", path)
     return False
 
 
 def _read_trusted(file: Path) -> Any:
     """The JSON of a request file written by the daemon's own user; a symlink or a
     file of another user raises ``ValueError``."""
-    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+    # O_NONBLOCK: a FIFO named *.json must not stall the daemon before fstat.
+    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
     with os.fdopen(fd, "rb") as fh:
         st = os.fstat(fh.fileno())
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
@@ -159,7 +174,8 @@ def request_run(paths: Paths, request: RunRequest) -> None:
 
 
 def pending_requests(paths: Paths) -> list[RunRequest]:
-    return [request for _, request in _read_requests(paths.requests_dir) if request]
+    # The UI polls this: the daemon warns about an untrusted folder, not every poll.
+    return [request for _, request in _read_requests(paths.requests_dir, warn=False) if request]
 
 
 def take_requests(
@@ -179,9 +195,11 @@ def take_requests(
     return taken
 
 
-def _read_requests(requests_dir: Path) -> Iterator[tuple[Path, RunRequest | None]]:
+def _read_requests(
+    requests_dir: Path, *, warn: bool = True
+) -> Iterator[tuple[Path, RunRequest | None]]:
     """Each request file with its request, or None when it cannot be read."""
-    if not requests_dir.is_dir() or not _trusted_dir(requests_dir):
+    if not requests_dir.is_dir() or not _trusted_dir(requests_dir, warn=warn):
         return
     for file in sorted(requests_dir.glob("*.json")):
         try:

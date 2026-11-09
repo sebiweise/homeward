@@ -158,3 +158,41 @@ def test_symlinked_recycle_bin_is_ignored(tmp_path: Path) -> None:
     share.mkdir(parents=True)
     (share / "#recycle").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     assert find_recycle_bin(share) is None
+
+
+@pytest.mark.parametrize("swap", ["root", "parent"])
+def test_a_root_swapped_for_a_symlink_during_the_run_is_refused(tmp_path: Path, swap: str) -> None:
+    # The config check passed, then a share user swaps the root (or a folder above
+    # it) for a symlink, e.g. into Homeward's request folder: nothing goes there.
+    share, outside = tmp_path / "share", tmp_path / "outside"
+    root = share / "docs"
+    root.mkdir(parents=True)
+    (outside / "docs").mkdir(parents=True)
+    (outside / "docs" / "y").write_text("keep")
+    nas = NasProvider(root, today=lambda: date(2026, 10, 11))
+    nas.write("a.txt", io.BytesIO(b"1"), mtime=1.0)
+    moved = share if swap == "parent" else root
+    moved.rename(tmp_path / "moved")
+    moved.symlink_to(outside if swap == "parent" else outside / "docs", target_is_directory=True)
+    with pytest.raises(OSError):
+        nas.write("x.json", io.BytesIO(b"{}"), mtime=1.0)
+    with pytest.raises(OSError):
+        nas.open_read("y")
+    with pytest.raises(OSError):
+        nas.list_files()
+    with pytest.raises(OSError):
+        nas.delete("y")
+    assert sorted(p.name for p in (outside / "docs").iterdir()) == ["y"]
+
+
+def test_a_recycle_bin_swapped_for_a_symlink_is_not_used(tmp_path: Path) -> None:
+    share, elsewhere = tmp_path / "volume1" / "docs", tmp_path / "elsewhere"
+    (share / "#recycle").mkdir(parents=True)
+    elsewhere.mkdir()
+    nas = NasProvider(share, recycle_bin=find_recycle_bin(share), today=lambda: date(2026, 1, 1))
+    nas.write("a.txt", io.BytesIO(b"1"), mtime=1.0)
+    (share / "#recycle").rename(tmp_path / "old-recycle")
+    (share / "#recycle").symlink_to(elsewhere, target_is_directory=True)
+    nas.delete("a.txt")  # into Homeward's own trash instead
+    assert not list(elsewhere.iterdir())
+    assert (share / ".homeward-papierkorb" / "2026-01-01" / "a.txt").read_text() == "1"
