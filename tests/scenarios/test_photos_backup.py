@@ -635,6 +635,34 @@ def test_album_links_never_go_through_a_symlinked_album_folder(
     assert not list(outside.iterdir())
 
 
+def test_album_links_refuse_a_folder_swapped_right_after_mkdir(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The album folder passes the first check; a share user swaps it for a symlink
+    # between its creation and the link. The check after mkdir must catch that.
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    photo = root / "2024" / "05" / "a.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.write_text("photo")
+    outside.mkdir()
+    album = root / "Alben" / "Urlaub"
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    mkdir, swapped = Path.mkdir, list[Path]()
+
+    def mkdir_then_swap(self: Path, *args: object, **kwargs: object) -> None:
+        mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self == album and not swapped:
+            swapped.append(self)
+            self.rmdir()
+            self.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_then_swap)
+    with pytest.raises(OSError):
+        executor._link(photo, album / "a.jpg")
+    assert album.is_symlink()  # the swap really happened
+    assert not list(outside.iterdir())
+
+
 def test_link_noreplace_links_a_symlink_itself(tmp_path: Path) -> None:
     secret, link = tmp_path / "secret.txt", tmp_path / "link"
     secret.write_text("secret")
