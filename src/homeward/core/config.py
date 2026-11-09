@@ -2,6 +2,7 @@
 photos jobs."""
 
 import json
+import os
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from homeward.core.photos import (
     check_scheme,
 )
 from homeward.core.planner import DeleteBrake
-from homeward.core.rules import DEFAULT_EXCLUDES, TRASH_DIR
+from homeward.core.rules import BACKUP_DIR, DEFAULT_EXCLUDES, TRASH_DIR
 
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
 REMOTE_PROVIDERS = ("icloud_drive", "folder")
@@ -189,11 +190,11 @@ def parse_config(data: Mapping[str, Any], base: Path = Path(".")) -> Config:
     interval = check_interval(daemon.get("interval_minutes", DEFAULT_INTERVAL_MINUTES), "daemon")
     state_dir = state_dir if state_dir.is_absolute() else base / state_dir
     for pair in parsed:
-        _check_folder(pair.local, f"pair {pair.name!r}", "local", state_dir)
+        _check_folder(pair.local, f"pair {pair.name!r}", "local", state_dir, base)
         if pair.remote_provider == "folder":
-            _check_folder(Path(pair.remote), f"pair {pair.name!r}", "remote", state_dir)
+            _check_folder(Path(pair.remote), f"pair {pair.name!r}", "remote", state_dir, base)
     for job in photos:
-        _check_folder(job.target, f"photos {job.name!r}", "target", state_dir)
+        _check_folder(job.target, f"photos {job.name!r}", "target", state_dir, base)
     return Config(state_dir=state_dir, pairs=parsed, photos=photos, interval_minutes=interval,
                   accounts=_parse_accounts(data.get("account", [])))  # fmt: skip
 
@@ -218,25 +219,59 @@ def _parse_accounts(entries: object) -> tuple[AccountConfig, ...]:
 
 
 # Folders no pair or photos backup may use: Synology's recycle bin and snapshots,
-# Homeward's own trash and DSM's "@" folders (@eaDir, @appstore ...).
-_HIDDEN_FOLDERS = frozenset({TRASH_DIR, *(n for n in DEFAULT_EXCLUDES if n.startswith("#"))})
+# Homeward's own trash and uninstall backup, and DSM's "@" folders (@eaDir, @appstore ...).
+HIDDEN_FOLDERS = frozenset(
+    {TRASH_DIR, BACKUP_DIR, *(n for n in DEFAULT_EXCLUDES if n.startswith("#"))}
+)
+PACKAGE_DIR = DEFAULT_CONFIG_PATH.parent.parent  # /var/packages/homeward
+# What the UI and the daemon exchange below the var folder (``runtime.Paths``): a
+# synced folder there could forge "run now" requests or read logins.
+VAR_SUBDIRS = ("requests", "cancel", "progress", "login", "config-backups")
 
 
-def _check_folder(path: Path, where: str, key: str, state_dir: Path) -> None:
-    """The checks the DSM UI makes, for folders written into the file by hand: no
-    ``..``, no hidden folder, and neither inside nor around the state folder (it
-    holds the Apple ID sessions, which a sync would otherwise copy)."""
+def in_system_folder(path: Path) -> bool:
+    """Whether a component of ``path`` is a hidden or DSM system folder. Callers check
+    the path as given and its resolved target: a symlink into ``@appstore`` or
+    ``@appdata`` (where ``/var/packages/homeward/var`` really lives) is refused too."""
+    return any(part.startswith("@") or part in HIDDEN_FOLDERS for part in path.parts)
+
+
+def overlaps(real: Path, folder: Path) -> bool:
+    """Whether the resolved ``real`` lies in or around ``folder``."""
+    folder = folder.resolve()
+    return real.is_relative_to(folder) or folder.is_relative_to(real)
+
+
+def _check_folder(path: Path, where: str, key: str, state_dir: Path, base: Path) -> None:
+    """The checks the DSM UI makes, for folders written into the file by hand and
+    again whenever the daemon or the CLI loads the file (a folder may have become a
+    symlink since): no ``..``, no hidden folder, and neither inside nor around the
+    state folder (it holds the Apple ID sessions, which a sync would otherwise copy)
+    or the package's own files."""
     if ".." in path.parts:
         raise ConfigError(f"{where}: {key} must not contain '..'")
-    if any(part.startswith("@") or part in _HIDDEN_FOLDERS for part in path.parts):
+    real = path.resolve()
+    if in_system_folder(path) or in_system_folder(real):
         raise ConfigError(
             f"{where}: {key} must not be in a recycle bin, snapshot, trash or DSM system folder"
         )
-    real, state = path.resolve(), state_dir.resolve()
-    if real.is_relative_to(state) or state.is_relative_to(real):
+    if overlaps(real, state_dir):
         raise ConfigError(
             f"{where}: {key} must neither be in nor contain the state folder {state_dir} "
             "(it holds the Apple ID sessions)"
+        )
+    private = [PACKAGE_DIR, *(base / name for name in VAR_SUBDIRS)]
+    if var := os.environ.get("HOMEWARD_VAR"):
+        private.append(Path(var))
+    config_dir = base.resolve()
+    if (
+        real == config_dir
+        or config_dir.is_relative_to(real)
+        or any(overlaps(real, folder) for folder in private)
+    ):
+        raise ConfigError(
+            f"{where}: {key} must neither be in nor contain Homeward's own files "
+            f"(config folder {base}, {PACKAGE_DIR})"
         )
 
 
