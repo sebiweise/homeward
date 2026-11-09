@@ -15,6 +15,7 @@ import errno
 import os
 import platform
 import secrets
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -67,10 +68,34 @@ def temp_name(target: Path) -> Path:
 
 
 def link_noreplace(existing: Path, target: Path) -> None:
-    """Hard-link ``existing`` to ``target`` (fails if it exists), visible to indexers."""
+    """Hard-link ``existing`` to ``target`` (fails if it exists), visible to indexers.
+    A symlink at ``existing`` is linked itself, never the file it points to."""
     tmp = temp_name(target)
-    os.link(existing, tmp)
+    if os.link in os.supports_follow_symlinks:
+        os.link(existing, tmp, follow_symlinks=False)
+    else:
+        os.link(existing, tmp)
     try:
         rename_noreplace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+class SymlinkInPath(OSError):
+    """A path below a sync or backup root crosses a symlink."""
+
+
+def check_no_symlinks(root: Path, path: Path) -> None:
+    """Raise ``SymlinkInPath`` if ``path`` or a folder between ``root`` and it is a
+    symlink. Users of the share can create symlinks; following one would read,
+    write, move or delete files outside the root. ``root`` itself may be a symlink
+    (the folder picker allows that); missing components are fine."""
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(mode):
+            raise SymlinkInPath(errno.ELOOP, "symlink below the root", str(current))

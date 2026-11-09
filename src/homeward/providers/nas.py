@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from homeward.core.files import rename_noreplace, temp_name
+from homeward.core.files import check_no_symlinks, rename_noreplace, temp_name
 from homeward.core.models import FileMeta
 from homeward.core.rules import is_excluded
 from homeward.core.trash import Trash
@@ -29,7 +29,7 @@ def find_recycle_bin(root: Path) -> Path | None:
         if len(folder.parts) <= 2:  # "/" and "/volume1" are never shares
             break
         candidate = folder / RECYCLE_DIR
-        if candidate.is_dir():
+        if candidate.is_dir() and not candidate.is_symlink():
             return candidate
     return None
 
@@ -83,6 +83,7 @@ class NasProvider(Provider):
         if target.exists():
             raise FileExistsError(path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        check_no_symlinks(self.root, target)  # no folder was swapped for a symlink meanwhile
         tmp = temp_name(target)
         try:
             with tmp.open("xb") as out:
@@ -105,6 +106,7 @@ class NasProvider(Provider):
     def move(self, path: str, new_path: str) -> FileMeta:
         source, target = self._full(path), self._full(new_path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        check_no_symlinks(self.root, target)
         rename_noreplace(source, target)
         return self._meta(new_path, target)
 
@@ -119,7 +121,11 @@ class NasProvider(Provider):
         rel = PurePosixPath(path)
         if rel.is_absolute() or ".." in rel.parts or not rel.parts:
             raise ValueError(f"invalid relative path: {path!r}")
-        return self.root.joinpath(*rel.parts)
+        full = self.root.joinpath(*rel.parts)
+        # Like list_files, never follow a symlink below the root: a share user could
+        # point one outside it and have files read, written or moved there.
+        check_no_symlinks(self.root, full)
+        return full
 
     @staticmethod
     def _meta(path: str, full: Path) -> FileMeta:
