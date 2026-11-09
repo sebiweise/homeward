@@ -253,6 +253,18 @@ does not keep names apart that differ only in upper/lower case (`notes.txt`,
   the folder is back.
 - File names iCloud allows but DSM treats specially (starting with `.`, `@` or `#`) are
   stored on the NAS with a leading `_`.
+- Symlinks are never followed below a pair's or photos backup's folder. A file or
+  folder there that is a symlink is skipped when listing, and a read, write, move or
+  delete through one fails with an error for that file. The folder itself may be a
+  symlink, but where it leads is checked when the config is loaded and again when a
+  run starts. A folder whose real location is a DSM system folder (`@…`), a recycle
+  bin, snapshot or trash, or Homeward's own folders (the var and state folders,
+  `/var/packages/homeward`) is refused, and the config counts as invalid until it is
+  fixed. If the folder (or a folder above it) becomes a symlink while a run is going,
+  the run stops with an error.
+- A `#recycle` or `.homeward-papierkorb` that is a symlink is not used: deletes go to a
+  real trash folder instead, and a symlinked Homeward trash is never emptied. The
+  uninstall backup `.homeward-backup` is never synced.
 
 ## Command reference
 
