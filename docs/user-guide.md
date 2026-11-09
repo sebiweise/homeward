@@ -262,9 +262,10 @@ does not keep names apart that differ only in upper/lower case (`notes.txt`,
   `/var/packages/homeward`) is refused, and the config counts as invalid until it is
   fixed. If the folder (or a folder above it) becomes a symlink while a run is going,
   the run stops with an error.
-- A `#recycle` or `.homeward-papierkorb` that is a symlink is not used: deletes go to a
-  real trash folder instead, and a symlinked Homeward trash is never emptied. The
-  uninstall backup `.homeward-backup` is never synced.
+- A `#recycle` that is a symlink is skipped: deletes go to `.homeward-papierkorb`
+  instead. A `.homeward-papierkorb` that is a symlink is never emptied, and deletes
+  into it fail with an error until it is a real folder again. The uninstall backup
+  `.homeward-backup` is never synced.
 
 ## Command reference
 
