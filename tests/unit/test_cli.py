@@ -476,6 +476,35 @@ def test_photos_refuses_a_second_run_for_the_same_account(
     assert main(["photos", "--config", str(config)]) == EXIT_OK
 
 
+def test_photos_trash_purge_stays_in_the_pinned_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After the backup a share user turns the photos target into a symlink to another
+    # share: emptying the trash must not remove that share's old trash day folders.
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+    config = _photos_config(tmp_path)
+    victim = tmp_path / "other-share"
+    old_day = victim / ".homeward-papierkorb" / "2020-01-01"
+    old_day.mkdir(parents=True)
+    (old_day / "kept.jpg").write_bytes(b"theirs")
+    backup = cli.backup_photos
+
+    def backup_then_swap(*args: object, **kwargs: object) -> object:
+        outcome = backup(*args, **kwargs)  # type: ignore[arg-type]
+        (tmp_path / "photos").rename(tmp_path / "photos-old")
+        (tmp_path / "photos").symlink_to(victim, target_is_directory=True)
+        return outcome
+
+    monkeypatch.setattr(cli, "backup_photos", backup_then_swap)
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    assert (old_day / "kept.jpg").read_bytes() == b"theirs"
+
+
 def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     import logging
 
