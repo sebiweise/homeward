@@ -24,6 +24,7 @@ from homeward.core.config import (
     PhotosConfig,
     load_config,
 )
+from homeward.core.files import Confined
 from homeward.core.models import ActionKind, FolderMissing, SyncMode
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import PhotoActionKind, PhotoOutcome, PhotoSource, backup_photos
@@ -109,10 +110,23 @@ drive_api_factory: Callable[[PairConfig, Config], DriveApi] = _icloud_drive_api
 notifier: Callable[..., bool] = notify
 
 
+def _checked_root(config: Config, confined: Confined, where: str, key: str) -> None:
+    """Check a folder where it leads now, right before the run pins it: a share user
+    may have turned it (or a folder above it) into a symlink since the config was
+    loaded, e.g. into the var folder, where synced files could forge "run now"
+    requests. The run only uses paths that still lead inside ``confined.real``."""
+    try:
+        config.check_folder(confined.real, where, key)
+    except ConfigError as exc:
+        raise ValueError(f"{exc} (it now leads to {confined.real}); nothing was changed") from None
+
+
 def _remote_provider(pair: PairConfig, config: Config) -> Provider:
     if pair.remote_provider == "folder":
         remote = Path(pair.remote)
-        return NasProvider(remote, name="remote", recycle_bin=find_recycle_bin(remote))
+        provider = NasProvider(remote, name="remote", recycle_bin=find_recycle_bin(remote))
+        _checked_root(config, provider.confined, f"pair {pair.name!r}", "remote")
+        return provider
     cache = FolderCache(config.state_dir / f"{pair.account}.drive-folders.json")
     return ICloudDriveProvider(
         drive_api_factory(pair, config), pair.remote, excludes=pair.exclude, cache=cache
@@ -254,6 +268,7 @@ def _sync_locked(
     progress.phase("connecting")
     remote = _remote_provider(pair, config)
     local = NasProvider(pair.local, name="nas", recycle_bin=find_recycle_bin(pair.local))
+    _checked_root(config, local.confined, f"pair {pair.name!r}", "local")
     try:
         with StateDB(config.state_path(pair.account)) as state:
             outcome = sync_pair(
@@ -387,6 +402,8 @@ def _photos_one(
         progress.phase("connecting")
         log.info("photos %s: reading iCloud (this can take a few minutes)", job.name)
         source = _photo_source(config, job, progress)  # LoginRequired: see _reported
+        confined = Confined(job.target)
+        _checked_root(config, confined, f"photos {job.name!r}", "target")
         with PhotoStateDB(state_path) as state:
             outcome = backup_photos(
                 job.name, source, job.target, state, job.layout,
@@ -394,7 +411,7 @@ def _photos_one(
                 progress=progress, mirror_deletes=job.mirror_deletes, selection=_selection(job),
                 brake=job.delete_brake, allow_deletes=args.allow_deletes,
                 remove_gone=args.remove_gone, recycle_bin=find_recycle_bin(job.target),
-                max_rate_kb=job.max_rate_kb,
+                max_rate_kb=job.max_rate_kb, confined=confined,
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0

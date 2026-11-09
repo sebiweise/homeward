@@ -71,7 +71,7 @@ def link_noreplace(existing: Path, target: Path) -> None:
     """Hard-link ``existing`` to ``target`` (fails if it exists), visible to indexers.
     A symlink at ``existing`` is linked itself, never the file it points to."""
     tmp = temp_name(target)
-    if os.link in os.supports_follow_symlinks:
+    if os.link in os.supports_follow_symlinks:  # Linux: linkat without AT_SYMLINK_FOLLOW
         os.link(existing, tmp, follow_symlinks=False)
     else:
         os.link(existing, tmp)
@@ -99,3 +99,25 @@ def check_no_symlinks(root: Path, path: Path) -> None:
             return
         if stat.S_ISLNK(mode):
             raise SymlinkInPath(errno.ELOOP, "symlink below the root", str(current))
+
+
+class Confined:
+    """A sync or backup root, pinned to where it led when the run started.
+
+    ``check(path)`` refuses a path below the root that crosses a symlink
+    (``check_no_symlinks``) and one that no longer resolves to a place inside the
+    pinned folder: a share user may swap the root itself, or a folder above it, for a
+    symlink while a run lists or downloads. What remains is the short gap between a
+    check and the call that uses the path."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.real = root.resolve()
+
+    def check(self, path: Path) -> Path:
+        check_no_symlinks(self.root, path)
+        if not path.resolve().is_relative_to(self.real):
+            raise SymlinkInPath(
+                errno.ELOOP, f"the folder no longer leads to {self.real}", str(path)
+            )
+        return path

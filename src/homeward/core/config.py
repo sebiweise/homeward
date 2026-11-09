@@ -118,6 +118,12 @@ class Config:
     photos: tuple[PhotosConfig, ...] = ()
     interval_minutes: int = DEFAULT_INTERVAL_MINUTES
     accounts: tuple[AccountConfig, ...] = ()
+    config_dir: Path = Path(".")  # the folder of config.toml
+
+    def check_folder(self, real: Path, where: str, key: str) -> None:
+        """Check a folder again where it leads now (``real``, resolved by the caller),
+        right before a run uses it: it may have become a symlink since the load."""
+        _check_folder(real, where, key, self.state_dir, self.config_dir, real=real)
 
     def account(self, name: str) -> AccountConfig | None:
         for account in self.accounts:
@@ -196,7 +202,7 @@ def parse_config(data: Mapping[str, Any], base: Path = Path(".")) -> Config:
     for job in photos:
         _check_folder(job.target, f"photos {job.name!r}", "target", state_dir, base)
     return Config(state_dir=state_dir, pairs=parsed, photos=photos, interval_minutes=interval,
-                  accounts=_parse_accounts(data.get("account", [])))  # fmt: skip
+                  accounts=_parse_accounts(data.get("account", [])), config_dir=base)  # fmt: skip
 
 
 def _parse_accounts(entries: object) -> tuple[AccountConfig, ...]:
@@ -224,9 +230,6 @@ HIDDEN_FOLDERS = frozenset(
     {TRASH_DIR, BACKUP_DIR, *(n for n in DEFAULT_EXCLUDES if n.startswith("#"))}
 )
 PACKAGE_DIR = DEFAULT_CONFIG_PATH.parent.parent  # /var/packages/homeward
-# What the UI and the daemon exchange below the var folder (``runtime.Paths``): a
-# synced folder there could forge "run now" requests or read logins.
-VAR_SUBDIRS = ("requests", "cancel", "progress", "login", "config-backups")
 
 
 def in_system_folder(path: Path) -> bool:
@@ -242,15 +245,20 @@ def overlaps(real: Path, folder: Path) -> bool:
     return real.is_relative_to(folder) or folder.is_relative_to(real)
 
 
-def _check_folder(path: Path, where: str, key: str, state_dir: Path, base: Path) -> None:
-    """The checks the DSM UI makes, for folders written into the file by hand and
-    again whenever the daemon or the CLI loads the file (a folder may have become a
-    symlink since): no ``..``, no hidden folder, and neither inside nor around the
-    state folder (it holds the Apple ID sessions, which a sync would otherwise copy)
-    or the package's own files."""
+def _check_folder(
+    path: Path, where: str, key: str, state_dir: Path, base: Path, real: Path | None = None
+) -> None:
+    """The checks the DSM UI makes (``api.handlers.common.check_nas_folder``), for
+    folders written into the file by hand, again whenever the daemon or the CLI loads
+    the file and right before a run uses them (a folder may have become a symlink
+    since): no ``..``, no hidden folder, and neither inside nor around the state
+    folder (it holds the Apple ID sessions, which a sync would otherwise copy), the
+    var folder (the config's folder or ``$HOMEWARD_VAR``, see ``runtime.Paths``: "run
+    now" requests, logins, config backups) or the package's own files. ``real`` is
+    where the folder leads, when the caller resolved it already."""
     if ".." in path.parts:
         raise ConfigError(f"{where}: {key} must not contain '..'")
-    real = path.resolve()
+    real = real or path.resolve()
     if in_system_folder(path) or in_system_folder(real):
         raise ConfigError(
             f"{where}: {key} must not be in a recycle bin, snapshot, trash or DSM system folder"
@@ -260,15 +268,10 @@ def _check_folder(path: Path, where: str, key: str, state_dir: Path, base: Path)
             f"{where}: {key} must neither be in nor contain the state folder {state_dir} "
             "(it holds the Apple ID sessions)"
         )
-    private = [PACKAGE_DIR, *(base / name for name in VAR_SUBDIRS)]
+    private = [PACKAGE_DIR, base]
     if var := os.environ.get("HOMEWARD_VAR"):
         private.append(Path(var))
-    config_dir = base.resolve()
-    if (
-        real == config_dir
-        or config_dir.is_relative_to(real)
-        or any(overlaps(real, folder) for folder in private)
-    ):
+    if any(overlaps(real, folder) for folder in private):
         raise ConfigError(
             f"{where}: {key} must neither be in nor contain Homeward's own files "
             f"(config folder {base}, {PACKAGE_DIR})"
