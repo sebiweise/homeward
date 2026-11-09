@@ -1,5 +1,6 @@
 """Photos backup scenarios against the fake iCloud Photos source and a real temp folder."""
 
+import errno
 import os
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -10,11 +11,13 @@ from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import (
     FAVORITES_ALBUM,
     Library,
+    PhotoAction,
     PhotoActionKind,
     PhotoLayout,
     backup_photos,
     check_scheme,
 )
+from homeward.core.photos.executor import PhotoExecutor
 from homeward.core.progress import Progress
 from homeward.providers.fake_photos import FakePhotoSource
 
@@ -576,3 +579,41 @@ def test_progress_follows_the_phases(
     downloading = [s for s in snapshots if s["phase"] == "downloading"][-1]
     assert (downloading["done"], downloading["total"], downloading["bytes"]) == (3, 3, 30)
     assert snapshots[-1]["done"] == snapshots[-1]["total"] == 3  # the album links
+
+
+def test_album_links_never_follow_a_symlinked_photo(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A share user replaced the Year/Month file with a symlink to a file outside the
+    # backup; neither a hard link nor the copy fallback may pull it into an album.
+    root, secret = tmp_path / "root", tmp_path / "secret.txt"
+    secret.write_text("secret")
+    photo = root / "2024" / "05" / "a.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.symlink_to(secret)
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    album = root / "Alben" / "Urlaub" / "a.jpg"
+    with pytest.raises(OSError):
+        executor._link(photo, album)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    with pytest.raises(OSError):
+        executor._link(photo, album)
+    assert not album.exists()
+
+
+def _no_hard_links(*_args: object, **_kwargs: object) -> None:
+    raise OSError(errno.EXDEV, "no hard links here")
+
+
+def test_downloads_never_follow_a_symlinked_folder(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (root / "2024").mkdir(parents=True)
+    outside.mkdir()
+    (root / "2024" / "05").symlink_to(outside, target_is_directory=True)
+    item = source.add("a1", "a.jpg", b"one", created=at(2024, 5))
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    with pytest.raises(OSError):
+        executor._fetch(PhotoAction(PhotoActionKind.DOWNLOAD, "2024/05/a.jpg", item=item))
+    assert not list(outside.iterdir())

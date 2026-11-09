@@ -3,6 +3,7 @@
 import logging
 import os
 import shutil
+import stat
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -11,7 +12,13 @@ from datetime import date
 from functools import partial
 from pathlib import Path
 
-from homeward.core.files import link_noreplace, rename_noreplace, temp_name
+from homeward.core.files import (
+    SymlinkInPath,
+    check_no_symlinks,
+    link_noreplace,
+    rename_noreplace,
+    temp_name,
+)
 from homeward.core.limits import Throttle, throttle_for, throttled
 from homeward.core.models import FolderMissing
 from homeward.core.photo_state import PhotoStateDB
@@ -216,7 +223,9 @@ class PhotoExecutor:
         """Download into place; safe to run on a worker thread (no state access)."""
         item = _need(action.item)
         target = self.root / action.path
+        check_no_symlinks(self.root, target)  # a share user's symlink never leads elsewhere
         target.parent.mkdir(parents=True, exist_ok=True)
+        check_no_symlinks(self.root, target.parent)
         tmp = temp_name(target)
         try:
             with self.source.open_read(item) as raw, tmp.open("xb") as out:
@@ -247,7 +256,15 @@ class PhotoExecutor:
         self.trash.move(self.root / path, path)
 
     def _link(self, target: Path, link: Path) -> None:
+        # Only a regular file below the root goes into an album: a share user may have
+        # replaced the Year/Month file (or a folder above it) with a symlink to a file
+        # outside the backup, which a link or copy would otherwise pull in.
+        check_no_symlinks(self.root, target)
+        check_no_symlinks(self.root, link)
+        if not stat.S_ISREG(os.lstat(target).st_mode):
+            raise SymlinkInPath(0, "not a regular file", str(target))
         link.parent.mkdir(parents=True, exist_ok=True)
+        check_no_symlinks(self.root, link.parent)
         try:
             link_noreplace(target, link)
         except OSError as exc:
