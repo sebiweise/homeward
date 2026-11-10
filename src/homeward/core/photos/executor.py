@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -12,7 +13,13 @@ from datetime import date
 from functools import partial
 from pathlib import Path
 
-from homeward.core.files import link_noreplace, rename_noreplace, temp_name
+from homeward.core.files import (
+    Confined,
+    SymlinkInPath,
+    link_noreplace,
+    rename_noreplace,
+    temp_name,
+)
 from homeward.core.limits import Throttle, throttle_for, throttled
 from homeward.core.models import FolderMissing
 from homeward.core.photo_state import PhotoStateDB
@@ -57,10 +64,14 @@ class PhotoExecutor:
         progress: Progress | None = None,
         recycle_bin: Path | None = None,
         throttle: Throttle | None = None,
+        confined: Confined | None = None,
     ) -> None:
         self.source = source
         self.throttle = throttle
-        self.trash = Trash(root, recycle_bin=recycle_bin, today=today)
+        # Every path below the root is checked against where the root led when it was
+        # pinned (``_inside``): a share user may swap a folder for a symlink meanwhile.
+        self.confined = confined or Confined(root)
+        self.trash = Trash(root, recycle_bin=recycle_bin, today=today, confined=self.confined)
         self.progress = progress or Progress()
         self.root = root
         self.state = state
@@ -194,15 +205,15 @@ class PhotoExecutor:
             case PhotoActionKind.DOWNLOAD | PhotoActionKind.RESTORE:
                 self._download(action)
             case PhotoActionKind.REPLACE:
-                old = (self.root / action.path).stat()
+                old = self._inside(action.path).stat()
                 self._trash(action.path)
                 self._download(action)
                 self._relink(action.key, action.path, old)
             case PhotoActionKind.MOVE:
                 self._move(action)
             case PhotoActionKind.LINK:
-                target = self.root / _need(action.target)
-                self._link(target, self.root / action.path)
+                target = self._inside(_need(action.target))
+                self._link(target, self._inside(action.path))
                 self.state.add_link(self.job, action.path, action.key, action.album)
             case PhotoActionKind.UNLINK:
                 self._unlink(action)
@@ -215,7 +226,7 @@ class PhotoExecutor:
                 self._archive(action)
             case PhotoActionKind.RETURNED:
                 item = _need(action.item)
-                size = (self.root / action.path).stat().st_size
+                size = self._inside(action.path).stat().st_size
                 self.state.record(self.job, item.key, action.path, size, item.checksum)
 
     def _archive(self, action: PhotoAction) -> None:
@@ -233,10 +244,10 @@ class PhotoExecutor:
             if record is None:
                 raise ArchiveMismatch(f"{item.filename} is not backed up; iCloud keeps the photo")
             if item.sidecar_for is not None:
-                if not (self.root / record.path).is_file():  # made by Homeward, not iCloud
+                if not self._inside(record.path).is_file():  # made by Homeward, not iCloud
                     raise ArchiveMismatch(f"{record.path} is missing; iCloud keeps the photo")
                 continue
-            if _sha256_file(self.root / record.path) != self._sha256_icloud(item):
+            if _sha256_file(self._inside(record.path)) != self._sha256_icloud(item):
                 raise ArchiveMismatch(f"{record.path} differs from iCloud; iCloud keeps the photo")
         delete(_need(action.item))
         self.state.mark_archived(self.job, [item.key for item in items])
@@ -253,14 +264,20 @@ class PhotoExecutor:
                 digest.update(chunk)
         return digest.hexdigest()
 
+    def _inside(self, relative: str) -> Path:
+        """``root/relative``, refused (``SymlinkInPath``) if it crosses a symlink or no
+        longer leads inside the root."""
+        return self.confined.check(self.root / relative)
+
     def _download(self, action: PhotoAction) -> None:
         self._record(action, self._fetch(action))
 
     def _fetch(self, action: PhotoAction) -> int:
         """Download into place; safe to run on a worker thread (no state access)."""
         item = _need(action.item)
-        target = self.root / action.path
+        target = self._inside(action.path)  # a share user's symlink never leads elsewhere
         target.parent.mkdir(parents=True, exist_ok=True)
+        self.confined.check(target.parent)
         tmp = temp_name(target)
         try:
             with self.source.open_read(item) as raw, tmp.open("xb") as out:
@@ -288,10 +305,18 @@ class PhotoExecutor:
     def _trash(self, path: str) -> None:
         """Move a file to the share's Synology recycle bin (same layout DSM uses, so
         DSM's emptying schedule applies), else to ``.homeward-papierkorb/<date>/``."""
-        self.trash.move(self.root / path, path)
+        self.trash.move(self._inside(path), path)
 
     def _link(self, target: Path, link: Path) -> None:
+        # Only a regular file below the root goes into an album: a share user may have
+        # replaced the Year/Month file (or a folder above it) with a symlink to a file
+        # outside the backup, which a link or copy would otherwise pull in.
+        self.confined.check(target)
+        self.confined.check(link)
+        if not stat.S_ISREG(os.lstat(target).st_mode):
+            raise SymlinkInPath(0, "not a regular file", str(target))
         link.parent.mkdir(parents=True, exist_ok=True)
+        self.confined.check(link.parent)
         try:
             link_noreplace(target, link)
         except OSError as exc:
@@ -301,16 +326,16 @@ class PhotoExecutor:
             log.info("hard link %s failed (%s), copying instead", link, exc)
             tmp = temp_name(link)
             try:
-                shutil.copy2(target, tmp)
+                shutil.copy2(target, tmp, follow_symlinks=False)
                 rename_noreplace(tmp, link)
             finally:
                 tmp.unlink(missing_ok=True)
 
     def _unlink(self, action: PhotoAction) -> None:
-        link = self.root / action.path
+        link = self._inside(action.path)
         if not link.exists():
             return
-        target = self.root / action.target if action.target else None
+        target = self._inside(action.target) if action.target else None
         if target is not None and target.exists() and os.path.samefile(link, target):
             link.unlink()  # the Year/Month file still holds the data
         else:
@@ -318,11 +343,11 @@ class PhotoExecutor:
 
     def _delete(self, action: PhotoAction) -> None:
         """Move a photo deleted in iCloud and its album links to the trash."""
-        target = self.root / action.path
+        target = self._inside(action.path)
         for path, (key, _album) in self.state.links(self.job).items():
             if key != action.key:
                 continue
-            link = self.root / path
+            link = self._inside(path)
             if link.exists() and target.exists() and os.path.samefile(link, target):
                 link.unlink()  # the same file, kept once in the trash below
             elif link.exists():
@@ -337,10 +362,11 @@ class PhotoExecutor:
         album links are hard links to the same file and only change their key."""
         item, old_path = _need(action.item), _need(action.target)
         if action.path != old_path:
-            target = self.root / action.path
+            source, target = self._inside(old_path), self._inside(action.path)
             target.parent.mkdir(parents=True, exist_ok=True)
-            rename_noreplace(self.root / old_path, target)
-        size = (self.root / action.path).stat().st_size
+            self.confined.check(target)  # no folder was swapped for a symlink meanwhile
+            rename_noreplace(source, target)
+        size = self._inside(action.path).stat().st_size
         self.state.record(self.job, item.key, action.path, size, item.checksum)
         for path, (key, album) in self.state.links(self.job).items():
             if key == action.moved_from:
@@ -349,11 +375,11 @@ class PhotoExecutor:
 
     def _relink(self, key: str, target_path: str, old: os.stat_result) -> None:
         """After a replace, point the album links of ``key`` at the new file."""
-        target = self.root / target_path
+        target = self._inside(target_path)
         for path, (link_key, _album) in self.state.links(self.job).items():
             if link_key != key:
                 continue
-            link = self.root / path
+            link = self._inside(path)
             if link.exists():
                 st = link.stat()
                 if (st.st_dev, st.st_ino) == (old.st_dev, old.st_ino):
@@ -409,6 +435,7 @@ def backup_photos(
     recycle_bin: Path | None = None,
     max_rate_kb: int | None = None,
     rules: PhotoRules | None = None,
+    confined: Confined | None = None,
 ) -> PhotoOutcome:
     if not root.is_dir() and state.records(job):
         raise FolderMissing(
@@ -433,7 +460,7 @@ def backup_photos(
         return PhotoOutcome(plan, None)
     executor = PhotoExecutor(
         source, root, state, job, today=today, workers=workers, progress=progress,
-        recycle_bin=recycle_bin, throttle=throttle_for(max_rate_kb),
+        recycle_bin=recycle_bin, throttle=throttle_for(max_rate_kb), confined=confined,
     )  # fmt: skip
     result = executor.run(plan, allow_deletes=allow_deletes)
     # A damaged photo whose new download failed is checked again by the next run.
