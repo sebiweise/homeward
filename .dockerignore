@@ -1,0 +1,15 @@
+# Only what git ignores too: .git and every tracked file stay, so hatch-vcs reads
+# a clean version from the tag.
+**/__pycache__
+*.py[cod]
+*.egg-info
+.venv
+venv
+build
+dist
+*.spk
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
