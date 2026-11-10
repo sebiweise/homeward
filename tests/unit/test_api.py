@@ -895,7 +895,7 @@ def test_pair_folders_are_refused_when_no_configured_volume_exists(
     (tmp_path / "nas").mkdir(exist_ok=True)
     with pytest.raises(ApiError) as excinfo:
         client.call("pairs.create", post=True, pair=_pair(tmp_path, local=str(tmp_path / "nas")))
-    assert _error(excinfo) == "invalid_param"
+    assert _error(excinfo) == "volumes_missing"
 
 
 def test_on_dsm_pair_and_photos_folders_must_be_in_a_shared_folder(

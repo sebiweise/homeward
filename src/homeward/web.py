@@ -19,6 +19,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -60,6 +61,12 @@ class Credentials:
         return bool(sep) and user_ok and password_ok
 
 
+class Attempt(Enum):
+    OK = "ok"
+    DENIED = "denied"  # no or wrong credentials: ask again
+    LOCKED = "locked"
+
+
 class LoginGuard:
     """Locks an address out for ``LOCK_SECONDS`` after ``MAX_FAILURES`` wrong sign-ins
     in a row, so a weak password cannot be guessed quickly. Shared by all handler
@@ -71,24 +78,26 @@ class LoginGuard:
         self._lock = threading.Lock()
         self._failures: dict[str, tuple[int, float]] = {}  # address -> (count, last)
 
-    def locked(self, client: str) -> bool:
-        with self._lock:
-            count, last = self._failures.get(client, (0, 0.0))
-            if count < MAX_FAILURES:
-                return False
-            if self._clock() - last < LOCK_SECONDS:
-                return True
-            del self._failures[client]  # the lock ran out: start counting again
-            return False
-
-    def failed(self, client: str) -> None:
+    def attempt(self, client: str, ok: bool | None) -> Attempt:
+        """Decide one request in one step: ``ok`` is the password check (None: no
+        credentials sent, which a browser does first and is not a failure). A locked
+        address is refused even with the right password, and a success cannot clear a
+        lock that a parallel request just set."""
         with self._lock:
             now = self._clock()
             # Forget addresses that stopped trying, so the table cannot grow for good.
             for address, (_, last) in list(self._failures.items()):
                 if now - last >= LOCK_SECONDS:
                     del self._failures[address]
-            count = self._failures.get(client, (0, now))[0] + 1
+            count = self._failures.get(client, (0, now))[0]
+            if count >= MAX_FAILURES:
+                return Attempt.LOCKED
+            if ok is None:
+                return Attempt.DENIED
+            if ok:
+                self._failures.pop(client, None)
+                return Attempt.OK
+            count += 1
             self._failures[client] = (count, now)
         if count == MAX_FAILURES:
             log.warning(
@@ -99,10 +108,7 @@ class LoginGuard:
                 Level.WARNING, "service", "login_locked", until=time.time() + LOCK_SECONDS,
                 paths=self._paths, client=client,
             )  # fmt: skip
-
-    def succeeded(self, client: str) -> None:
-        with self._lock:
-            self._failures.pop(client, None)
+        return Attempt.DENIED
 
 
 class PasswordAuthenticator(Authenticator):
@@ -171,16 +177,14 @@ def make_server(
             super().end_headers()
 
         def _signed_in(self) -> bool:
-            client = self.client_address[0]
-            if guard.locked(client):
+            header = self.headers.get("Authorization", "")
+            ok = credentials.check(header) if header else None  # None: not a failure
+            result = guard.attempt(self.client_address[0], ok)
+            if result is Attempt.OK:
+                return True
+            if result is Attempt.LOCKED:
                 self._json(429, {"success": False, "error": {"code": "login_locked"}})
                 return False
-            header = self.headers.get("Authorization", "")
-            if credentials.check(header):
-                guard.succeeded(client)
-                return True
-            if header:  # a browser asks without credentials first: not a failure
-                guard.failed(client)
             self.send_response(401)
             self.send_header("WWW-Authenticate", f'Basic realm="{REALM}", charset="UTF-8"')
             self.send_header("Content-Length", "0")

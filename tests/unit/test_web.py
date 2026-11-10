@@ -162,17 +162,39 @@ def test_login_guard_locks_an_address_after_wrong_sign_ins(tmp_path: Path) -> No
     paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
     guard = web.LoginGuard(paths, clock=lambda: now[0])
     for _ in range(web.MAX_FAILURES - 1):
-        guard.failed("10.0.0.2")
-    assert not guard.locked("10.0.0.2")
-    guard.failed("10.0.0.2")
-    assert guard.locked("10.0.0.2")
-    assert not guard.locked("10.0.0.3")
+        assert guard.attempt("10.0.0.2", False) is web.Attempt.DENIED
+    assert guard.attempt("10.0.0.2", None) is web.Attempt.DENIED  # not counted
+    assert guard.attempt("10.0.0.2", False) is web.Attempt.DENIED
+    assert guard.attempt("10.0.0.2", True) is web.Attempt.LOCKED
+    assert guard.attempt("10.0.0.3", True) is web.Attempt.OK
     assert "login_locked" in paths.events_file.read_text()
     now[0] += web.LOCK_SECONDS
-    assert not guard.locked("10.0.0.2")
-    guard.failed("10.0.0.3")
-    guard.succeeded("10.0.0.3")
-    assert not guard.locked("10.0.0.3")
+    assert guard.attempt("10.0.0.2", True) is web.Attempt.OK
+    guard.attempt("10.0.0.3", False)
+    guard.attempt("10.0.0.3", True)
+    for _ in range(web.MAX_FAILURES - 1):
+        guard.attempt("10.0.0.3", False)
+    assert guard.attempt("10.0.0.3", True) is web.Attempt.OK  # a success starts over
+
+
+def test_login_guard_lets_no_parallel_guess_past_the_limit(tmp_path: Path) -> None:
+    guard = web.LoginGuard(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    start = threading.Barrier(50)
+    results: list[web.Attempt] = []
+
+    def guess() -> None:
+        start.wait()
+        results.append(guard.attempt("10.0.0.2", False))
+
+    threads = [threading.Thread(target=guess) for _ in range(50)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results.count(web.Attempt.DENIED) == web.MAX_FAILURES  # each one counted
+    assert results.count(web.Attempt.LOCKED) == 50 - web.MAX_FAILURES
+    assert guard.attempt("10.0.0.2", True) is web.Attempt.LOCKED
 
 
 def test_server_locks_out_after_too_many_wrong_passwords(server: str) -> None:

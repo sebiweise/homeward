@@ -6,6 +6,7 @@ live at ``/volumeN/<share>`` on DSM. DSM's own folders (``@eaDir``, ``@appstore`
 ...), the recycle bin, Homeward's trash and dot folders are never shown or browsed.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.server import Context, Request
 from homeward.core.config import HIDDEN_FOLDERS, in_system_folder
+
+log = logging.getLogger(__name__)
 
 # Where the volumes are mounted; tests and the UI dev server point it elsewhere.
 ROOT = Path("/")
@@ -133,9 +136,11 @@ def check_shared_folder(path: Path, key: str) -> None:
     to check against."""
     volumes = _volumes()
     if not volumes:
-        if os.environ.get("HOMEWARD_VOLUMES", ""):
+        configured = os.environ.get("HOMEWARD_VOLUMES", "")
+        if configured:
             # Set, but none of its folders exists: refuse instead of checking nothing.
-            raise ApiError("invalid_param", key)
+            log.warning("none of the HOMEWARD_VOLUMES folders exists: %s", configured)
+            raise ApiError("volumes_missing", configured)
         return
     if not any(path.is_relative_to(v) and path != v for v in volumes):
         raise ApiError("invalid_param", key)
