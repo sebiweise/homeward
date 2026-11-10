@@ -823,3 +823,21 @@ def test_a_time_window_limits_scheduled_runs(tmp_path: Path) -> None:
     assert scheduler.window_closed() == []
     release.set()
     scheduler.wait()
+
+
+def test_a_request_folder_removed_while_checked_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = Paths(var_dir=tmp_path / "var", config=tmp_path / "var" / "config.toml")
+    from homeward.runtime import pending_requests
+
+    request_run(paths, RunRequest("a"))
+    request_cancel(paths, CancelRequest("a"))
+
+    def gone(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        raise FileNotFoundError(path)  # removed between is_dir() and lstat()
+
+    monkeypatch.setattr(os, "lstat", gone)
+    assert take_requests(paths.requests_dir) == []
+    assert take_cancels(paths) == []
+    assert pending_requests(paths) == []

@@ -12,7 +12,7 @@ from typing import Any
 
 from homeward.api.errors import ApiError
 from homeward.api.server import Context, Request
-from homeward.core.config import HIDDEN_FOLDERS
+from homeward.core.config import HIDDEN_FOLDERS, in_system_folder
 
 # Where the volumes are mounted; tests and the UI dev server point it elsewhere.
 ROOT = Path("/")
@@ -141,12 +141,8 @@ def _on_volume(real: Path) -> bool:
     for volume in _volumes():
         root = volume.resolve()
         if real.is_relative_to(root) and real != root:
-            return not any(_system(part) for part in real.relative_to(root).parts)
+            return not in_system_folder(real.relative_to(root))
     return False
-
-
-def _system(name: str) -> bool:
-    return name.startswith("@") or name in HIDDEN_FOLDERS
 
 
 def _entry(path: Path) -> dict[str, Any]:
