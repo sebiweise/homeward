@@ -160,8 +160,8 @@ class StateDB:
         Also forgets the pair's identity: a run still going with the old folders
         may record files after this, and the next run must not build on those.
         Archived files stay remembered unless ``archived`` is set (the pair is
-        removed or its folders or account changed): otherwise a bidirectional pair
-        would upload them again.
+        removed or its NAS folder changed): otherwise a bidirectional pair would
+        upload them again.
         """
         cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
         if archived:
