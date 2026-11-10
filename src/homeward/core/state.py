@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from homeward.core.models import FileMeta, FileRecord
 
@@ -143,6 +143,28 @@ class StateDB:
         """Paths of the pair's archived files."""
         rows = self._conn.execute("SELECT path FROM archived WHERE pair = ?", (pair,))
         return {row[0] for row in rows}
+
+    def archived_rows(self, pair: str) -> list[tuple[Any, ...]]:
+        """The pair's archive records as stored, to carry them to another state file."""
+        rows = self._conn.execute(
+            "SELECT path, local_version, size, sha256, rule, archived_at FROM archived "
+            "WHERE pair = ?",
+            (pair,),
+        )
+        return list(rows)
+
+    def restore_archived(self, pair: str, rows: list[tuple[Any, ...]]) -> None:
+        """Write archive records read with ``archived_rows`` (another account's state)."""
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO archived VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(pair, *row) for row in rows],
+            )
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
 
     def archived_totals(self, pair: str) -> tuple[int, int]:
         """Number and total size of the pair's archived files."""
