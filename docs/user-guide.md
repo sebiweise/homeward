@@ -260,7 +260,8 @@ preview = false   # true (the default) only reports what would be archived
 
 | Key | Meaning |
 | --- | --- |
-| `action` | `ignore`: never synced in either direction, never deleted. `archive`: kept on the NAS, then deleted in iCloud. |
+| `name` | required, any label; shown in run details and the event log |
+| `action` | required. `ignore`: never synced in either direction, never deleted. `archive`: kept on the NAS, then deleted in iCloud. |
 | `patterns` | globs against the file name, or the path when they hold a `/` (`Scans/Alt` covers that folder); case does not matter. For photos the path in the backup, e.g. `2019/*`. |
 | `extensions` | without the dot, case does not matter |
 | `min_size`, `max_size` | e.g. `"500MB"`, `"2GB"` (binary units) |
