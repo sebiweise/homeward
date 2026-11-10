@@ -121,6 +121,9 @@ class PhotoRules:
     rules: Sequence[FileRule] = ()
     archive_limit: int = DEFAULT_ARCHIVE_LIMIT
     can_delete: bool = False
+    # Whether the job keeps every file iCloud deletes with a photo (videos, Live Photo
+    # videos, RAW alternatives, edits). Off: archiving would lose the files left out.
+    backs_up_all_files: bool = False
 
     def decide(self, item: PhotoItem, layout: PhotoLayout, now: float) -> FileRule | None:
         """The rule for one file: matched against its backup path, size and the date
@@ -352,6 +355,8 @@ def _archive_pending(
         return "shared library"
     if not rules.can_delete:
         return "not supported"
+    if not rules.backs_up_all_files:
+        return "not all file types backed up"
     if not records:
         return "first run"
     for item in files:

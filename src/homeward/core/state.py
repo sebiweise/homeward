@@ -128,8 +128,12 @@ class StateDB:
         return rec
 
     def archive(self, pair: str, local: FileMeta, sha256: str, rule: str) -> None:
-        """Remember that ``local`` was removed from iCloud and lives on only on the NAS."""
-        self._conn.execute("DELETE FROM files WHERE pair = ? AND path = ?", (pair, local.path))
+        """Remember that ``local`` is removed from iCloud and lives on only on the NAS.
+
+        Written before the iCloud delete, and the file's sync record stays until
+        ``forget`` after it: if the run stops in between, the next run sees the path
+        gone in iCloud but archived and leaves the NAS copy alone (the decision table
+        then forgets the record), or, if iCloud still has it, syncs it as before."""
         self._conn.execute(
             "INSERT OR REPLACE INTO archived VALUES (?, ?, ?, ?, ?, ?, ?)",
             (pair, local.path, local.version, local.size, sha256, rule, time.time()),
@@ -156,7 +160,8 @@ class StateDB:
         Also forgets the pair's identity: a run still going with the old folders
         may record files after this, and the next run must not build on those.
         Archived files stay remembered unless ``archived`` is set (the pair is
-        removed): otherwise a bidirectional pair would upload them again.
+        removed or its folders or account changed): otherwise a bidirectional pair
+        would upload them again.
         """
         cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
         if archived:

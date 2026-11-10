@@ -282,3 +282,35 @@ def test_upload_pairs_never_archive(
 
     assert outcome.plan.actions == []
     assert icloud.trash == []
+
+
+def test_archive_stopped_after_the_icloud_delete_keeps_the_nas_copy(
+    state: StateDB, nas: FakeProvider, icloud: FakeProvider
+) -> None:
+    _synced(state, nas, icloud, "old.txt", OLD)
+    # The run stopped between the iCloud delete and forgetting the sync record.
+    state.archive("p", nas.list_files()["old.txt"], nas.sha256("old.txt"), "alt")
+    icloud.delete("old.txt")
+
+    outcome = _run(_pair(ARCHIVE_OLD), nas, icloud, state)
+
+    assert outcome.result is not None and outcome.result.ok
+    assert nas.content("old.txt") == b"old.txt"
+    assert nas.trash == []
+    assert state.records("p") == {}
+    assert state.archived("p") == {"old.txt"}
+
+
+def test_archived_paths_do_not_carry_over_to_other_folders(
+    state: StateDB, nas: FakeProvider, icloud: FakeProvider
+) -> None:
+    _synced(state, nas, icloud, "old.txt", OLD)
+    _run(_pair(ARCHIVE_OLD), nas, icloud, state)
+    assert state.archived("p") == {"old.txt"}
+
+    moved = PairConfig(name="p", local=Path("/y"), remote="r", mode=SyncMode.BIDIRECTIONAL,
+                       rules=(ARCHIVE_OLD,))  # fmt: skip
+    outcome = _run(moved, nas, icloud, state)
+
+    assert state.archived("p") == set()
+    assert outcome.plan.first_run

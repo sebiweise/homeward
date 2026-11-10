@@ -271,17 +271,25 @@ preview = false   # true (the default) only reports what would be archived
 `archive_limit` on the job (default 200) stops a run that would archive more files or
 photos until it is approved like the delete brake.
 
+Once the iCloud trash or "Recently Deleted" is emptied, an archived file exists only on
+the NAS. Keep an independent backup of the NAS folder (Hyper Backup, a USB disk) before
+you turn an archive rule on.
+
 Archiving is careful by design:
 
 - Drive pairs archive only in `download` and `bidirectional` mode. iCloud deletes a file
-  only after the NAS copy's SHA-256 matches iCloud's content (hashed while downloading,
-  known from the last sync, or read from iCloud again); it goes to the iCloud trash.
+  only after the NAS copy's SHA-256 checksum (a fingerprint of the content that changes
+  if a single byte differs) matches iCloud's content (hashed while downloading, known
+  from the last sync, or read from iCloud again); it goes to the iCloud trash.
   Archived files are remembered: a bidirectional pair never uploads them again, and
-  deleting them on the NAS is not passed on.
+  deleting them on the NAS is not passed on. Changing a pair's folders or account
+  forgets them.
 - Photos backups archive only photos of the personal library, never the Shared Library
   or shared albums, as a whole (original, Live Photo video, RAW, edits), and only after
   every file was downloaded once more from iCloud and matched the NAS file byte for
-  byte. The photo goes to "Recently Deleted" (30 days). Archived photos stay on the NAS
+  byte. A job that leaves out file types (videos, Live Photo videos, RAW or edits) does
+  not archive, since iCloud would delete files the NAS does not have. The photo goes
+  to "Recently Deleted" (30 days). Archived photos stay on the NAS
   and in their album folders for good, also with `mirror_deletes`. Archive rules make the
   backup read the whole library at least every 24 hours.
 - The first run of a job never archives; a file that changed on one side waits until

@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO, cast
 
-from homeward.core.photos import FAVORITES_ALBUM, Library, PhotoItem, PhotoSource
+from homeward.core.photos import FAVORITES_ALBUM, DeleteRefused, Library, PhotoItem, PhotoSource
 from homeward.core.progress import Progress
 from homeward.providers import pyicloud_compat as compat
 
@@ -366,13 +366,34 @@ class ICloudPhotosSource(PhotoSource):
         to "Recently Deleted", where iCloud keeps it for 30 days."""
         origin = self._origins.get(item.key)
         if item.library is not Library.PERSONAL or origin is None:
-            raise RuntimeError(f"{item.filename}: only photos of the personal library are deleted")
+            raise DeleteRefused(f"{item.filename}: only photos of the personal library are deleted")
         with self._api_lock:
             found = list(self._lookup(origin.library, [origin.asset_id], [origin.master_id]))
             if not found:
-                raise RuntimeError(f"{item.filename} is no longer in iCloud")
+                raise DeleteRefused(f"{item.filename} is no longer in iCloud")
+            unlisted = self._unlisted(item, found[0])
+            if unlisted:
+                raise DeleteRefused(
+                    f"{item.filename}: iCloud has files of it the backup does not have "
+                    f"({', '.join(unlisted)}); iCloud keeps the photo"
+                )
             found[0].delete()  # fresh record change tag, else CloudKit rejects the update
         log.info("deleted %s in iCloud Photos (now in Recently Deleted)", item.filename)
+
+    def _unlisted(self, item: PhotoItem, asset: Any) -> list[str]:
+        """Files iCloud deletes with the photo that this run did not list (so did not
+        back up): a Live Photo video without a download URL, a RAW alternative or edit
+        a job option left out."""
+        resources = _resources(asset)
+        record = getattr(asset, "asset_record", None)
+        if record is not None:
+            resources.update(_edited(asset, record))
+        kept = {"original", "original_video", "alternative", *(k for k, _ in EDITED_PREFIXES)}
+        expected = {key for key in resources if key in kept}
+        if getattr(asset, "is_live_photo", False):
+            expected.add("original_video")
+        prefix = item.key.rsplit("/", 1)[0]
+        return sorted(key for key in expected if f"{prefix}/{key}" not in self._urls)
 
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Renew URLs that may have expired since listing, a batch lookup per library."""

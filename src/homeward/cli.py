@@ -410,6 +410,12 @@ def _cmd_photos(args: argparse.Namespace) -> int:
     return status
 
 
+def _photo_rules(job: PhotosConfig, source: PhotoSource) -> PhotoRules:
+    """The job's file rules; archiving needs every file iCloud deletes with a photo."""
+    complete = job.videos and job.live_videos and job.raw_alternative and job.edited
+    return PhotoRules(job.rules, job.archive_limit, hasattr(source, "delete_photo"), complete)
+
+
 def _photos_one(
     args: argparse.Namespace, config: Config, job: PhotosConfig, progress: Progress
 ) -> int:
@@ -433,7 +439,7 @@ def _photos_one(
                 brake=job.delete_brake, allow_deletes=args.allow_deletes,
                 remove_gone=args.remove_gone, recycle_bin=find_recycle_bin(job.target),
                 max_rate_kb=job.max_rate_kb, confined=confined,
-                rules=PhotoRules(job.rules, job.archive_limit, hasattr(source, "delete_photo")),
+                rules=_photo_rules(job, source),
             )  # fmt: skip
     _print_photos(job, outcome, args.dry_run)
     failed = len(outcome.result.failed) if outcome.result else 0

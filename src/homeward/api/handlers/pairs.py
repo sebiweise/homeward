@@ -81,8 +81,9 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
     if old.identity != new.identity:
         # A run still going with the old folders may record files after this reset;
         # the next run sees the identity no longer matches and starts over anyway.
-        _reset_state(ctx, old)
-        _reset_state(ctx, new)
+        # Archived paths belong to the old folders too (see sync._records).
+        _reset_state(ctx, old, archived=True)
+        _reset_state(ctx, new, archived=True)
     return to_dict(new)
 
 

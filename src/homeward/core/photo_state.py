@@ -120,12 +120,27 @@ class PhotoStateDB:
         )
 
     def mark_archived(self, job: str, keys: Iterable[str]) -> None:
-        """The photo was deleted in iCloud by a file rule; its NAS files stay for good."""
-        now = time.time()
-        self._conn.executemany(
-            "UPDATE photos SET archived_at = ? WHERE job = ? AND key = ?",
-            [(now, job, key) for key in keys],
-        )
+        """The photo is deleted in iCloud by a file rule; its NAS files stay for good.
+        Marked before the delete and all keys at once: a run that stops halfway never
+        leaves a photo that is gone in iCloud without the mark (it would count as
+        deleted in iCloud). If iCloud still lists it later, it is ``RETURNED``."""
+        self._set_archived(job, keys, time.time())
+
+    def unmark_archived(self, job: str, keys: Iterable[str]) -> None:
+        """The delete was refused before it touched iCloud: the photo is not archived."""
+        self._set_archived(job, keys, None)
+
+    def _set_archived(self, job: str, keys: Iterable[str], when: float | None) -> None:
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.executemany(
+                "UPDATE photos SET archived_at = ? WHERE job = ? AND key = ?",
+                [(when, job, key) for key in keys],
+            )
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
 
     def links(self, job: str) -> dict[str, tuple[str, str]]:
         """Album links of a job: link path -> (photo key, album name)."""
