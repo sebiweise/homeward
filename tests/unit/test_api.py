@@ -20,6 +20,8 @@ from homeward.core.config import parse_config
 from homeward.core.models import FileMeta
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
+from homeward.core.sync import sync_pair
+from homeward.providers.fake import FakeProvider
 from homeward.runtime import (
     Level,
     Paths,
@@ -341,6 +343,28 @@ def test_archived_files_are_forgotten_only_with_another_nas_folder(
     client.call("pairs.update", post=True, pair=_pair(tmp_path, local=str(other)))
     with StateDB(state_path) as state:
         assert state.archived("docs") == set()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_archived_files_move_with_the_pair_to_another_account(
+    dry_run: bool, client: Client, tmp_path: Path
+) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    state_dir = client.paths.var_dir / "state"
+    nas, cloud = FakeProvider("nas"), FakeProvider("icloud")
+    with StateDB(state_dir / "me.sqlite3") as state:
+        state.archive("docs", nas.put("old.txt", "kept on the NAS only"), "0" * 64, "alt")
+
+    client.call("pairs.update", post=True, pair=_pair(tmp_path, account="other"))
+
+    with StateDB(state_dir / "me.sqlite3") as state:
+        assert state.archived("docs") == set()
+    pair = ConfigStore(client.paths).load().pair("docs")
+    with StateDB(state_dir / "other.sqlite3") as state:
+        assert state.archived("docs") == {"old.txt"}
+        outcome = sync_pair(pair, nas, cloud, state, dry_run=dry_run)
+    assert "old.txt" not in {a.path for a in outcome.plan.actions}
+    assert "old.txt" not in cloud.files
 
 
 def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:
