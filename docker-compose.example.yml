@@ -17,7 +17,8 @@ services:
       HOMEWARD_WEB_PASSWORD: ${HOMEWARD_WEB_PASSWORD:?put HOMEWARD_WEB_PASSWORD into .env}
       # HOMEWARD_WEB_USER: admin
     ports:
-      - "8080:8080"
+      # Only this host; reach it from other devices through an HTTPS reverse proxy.
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./config:/config
       # Every folder below /data shows up in the folder picker.
