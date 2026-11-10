@@ -319,6 +319,10 @@ EVENT_CODES = (
     "integrity_damaged",  # the weekly check found a damaged photo iCloud no longer has
     "not_backed_up",  # no successful run for ``STALE_DAYS``; ``days`` says how long
     "notices_cleared",  # the user cleared the notices on the status page
+    "login_locked",  # too many wrong sign-ins to the container's web page from one address
+    "web_start_failed",  # the container's web page cannot start (bad port, port in use)
+    "web_error",  # the container's web page answered a request with a server error
+    "volumes_missing",  # none of the folders in HOMEWARD_VOLUMES exists
     "sync_summary",  # what a run did; ``counts`` maps an action kind to a number
 )
 

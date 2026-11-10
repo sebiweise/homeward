@@ -38,6 +38,7 @@ Changelog = "https://github.com/sebiweise/homeward/releases"
 [project.scripts]
 homeward = "homeward.cli:main"
 homeward-daemon = "homeward.daemon.scheduler:main"
+homeward-container = "homeward.container:main"
 
 [tool.hatch.version]
 source = "vcs"
