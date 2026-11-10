@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from homeward import cli
+from homeward.core.config import PhotosConfig
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import (
     FULL_LISTING_HOURS,
@@ -300,3 +302,27 @@ def test_refused_delete_leaves_the_photo_unarchived(
     assert outcome.result is not None
     assert "did not show" in outcome.result.failed[0].error
     assert pstate.records("photos")["personal/a1/original"].archived_at is None
+
+
+def test_job_without_live_videos_never_archives_a_live_photo(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_1.HEIC", b"still", created=OLD)
+    source.add("a1", "IMG_1.MOV", b"live", created=OLD, resource="original_video")
+    job = PhotosConfig(name="photos", target=tmp_path, live_videos=False, rules=(ARCHIVE_OLD,))
+    rules = cli._photo_rules(job, source)
+    clock = Clock()
+
+    def run() -> PhotoOutcome:
+        return backup_photos(
+            "photos", source, tmp_path, pstate, today=lambda: TODAY, now=clock,
+            selection="s", rules=rules,
+        )  # fmt: skip
+
+    run()
+    clock.next_day()
+    outcome = run()
+
+    assert not rules.backs_up_all_files
+    assert outcome.plan.rule_hits[0].pending == "not all file types backed up"
+    assert source.deleted == []
