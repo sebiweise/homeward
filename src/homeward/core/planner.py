@@ -371,10 +371,13 @@ def _apply_archives(
 
 
 def _blocked(plan: Plan, brake: DeleteBrake, archive_limit: int) -> str | None:
-    reason = brake.check(plan.deletes, plan.tracked)
-    if reason is None and plan.archives > archive_limit:
-        reason = f"{plan.archives} files would be archived, more than the limit of {archive_limit}"
-    return reason
+    """Every reason the run waits for approval, so one approval is never given unseen."""
+    reasons = [brake.check(plan.deletes, plan.tracked)]
+    if plan.archives > archive_limit:
+        reasons.append(
+            f"{plan.archives} files would be archived, more than the limit of {archive_limit}"
+        )
+    return "; ".join(r for r in reasons if r) or None
 
 
 def build_plan(

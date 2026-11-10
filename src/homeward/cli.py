@@ -412,7 +412,8 @@ def _cmd_photos(args: argparse.Namespace) -> int:
 
 def _photo_rules(job: PhotosConfig, source: PhotoSource) -> PhotoRules:
     """The job's file rules; archiving needs every file iCloud deletes with a photo."""
-    complete = job.videos and job.live_videos and job.raw_alternative and job.edited
+    # iCloud deletes the whole photo: every file of it, and its metadata (XMP), must be on the NAS.
+    complete = job.videos and job.live_videos and job.raw_alternative and job.edited and job.xmp
     return PhotoRules(job.rules, job.archive_limit, hasattr(source, "delete_photo"), complete)
 
 

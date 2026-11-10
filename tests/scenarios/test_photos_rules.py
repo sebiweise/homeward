@@ -304,12 +304,16 @@ def test_refused_delete_leaves_the_photo_unarchived(
     assert pstate.records("photos")["personal/a1/original"].archived_at is None
 
 
-def test_job_without_live_videos_never_archives_a_live_photo(
-    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+@pytest.mark.parametrize("left_out", ["live_videos", "xmp"])
+def test_job_leaving_out_files_never_archives(
+    left_out: str,
+    source: FakePhotoSource,
+    pstate: PhotoStateDB,
+    tmp_path: Path,
 ) -> None:
     source.add("a1", "IMG_1.HEIC", b"still", created=OLD)
     source.add("a1", "IMG_1.MOV", b"live", created=OLD, resource="original_video")
-    job = PhotosConfig(name="photos", target=tmp_path, live_videos=False, rules=(ARCHIVE_OLD,))
+    job = PhotosConfig(name="photos", target=tmp_path, rules=(ARCHIVE_OLD,), **{left_out: False})
     rules = cli._photo_rules(job, source)
     clock = Clock()
 
