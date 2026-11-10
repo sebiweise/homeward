@@ -324,7 +324,7 @@ def _plan_archives(
         if rule is None or rule.action is not RuleAction.ARCHIVE:
             continue
         pending = _archive_pending(original, files, root, records, busy, rule, rules)
-        if pending is None and any(
+        if pending in (None, "needs another sync") and any(
             (hit := rules.decide(f, layout, plan.started_at)) is not None
             and hit.action is RuleAction.IGNORE
             for f in files
