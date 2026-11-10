@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -299,6 +300,32 @@ def test_archive_keeps_the_photo_when_its_sidecar_on_the_nas_differs(
     assert source.deleted == []
     assert outcome.result is not None
     assert "IMG_1.HEIC.xmp differs from iCloud" in outcome.result.failed[0].error
+
+
+def test_archive_keeps_the_photo_when_a_nas_file_changes_during_the_check(
+    source: FakePhotoSource,
+    pstate: PhotoStateDB,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source.add("a1", "IMG_1.HEIC", created=OLD)
+    clock = Clock()
+    backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+    clock.next_day()
+    original = source.open_read
+
+    def open_and_remove(item: Any) -> Any:  # a share user deletes the file meanwhile
+        stream = original(item)
+        (tmp_path / pstate.records("photos")["personal/a1/original"].path).unlink()
+        return stream
+
+    monkeypatch.setattr(source, "open_read", open_and_remove)
+    outcome = backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+
+    assert source.deleted == []
+    assert outcome.result is not None
+    assert "changed during the check" in outcome.result.failed[0].error
+    assert pstate.records("photos")["personal/a1/original"].archived_at is None
 
 
 def test_refused_delete_leaves_the_photo_unarchived(
