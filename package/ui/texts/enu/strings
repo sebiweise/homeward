@@ -253,6 +253,7 @@ config_error="The configuration is invalid; nothing runs until it is fixed."
 already_running="Another run for this Apple ID is still going on; this run was skipped."
 folder_missing="A folder of this run is missing (e.g. renamed, deleted, or its shared folder is not mounted). The run changed nothing; it runs again once the folder is back."
 notices_cleared="Notices cleared."
+login_locked="Too many wrong sign-ins to the web page from one address; it is locked for a few minutes."
 sync_summary="Run summary."
 
 [error]
