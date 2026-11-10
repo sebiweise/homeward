@@ -50,3 +50,8 @@ def test_conflict_name(path: str, expected: str) -> None:
 def test_conflict_name_counts_up() -> None:
     taken = {"f (Konflikt NAS 2026-10-11).txt", "f (Konflikt NAS 2026-10-11 2).txt"}
     assert conflict_name("f.txt", date(2026, 10, 11), taken) == "f (Konflikt NAS 2026-10-11 3).txt"
+
+
+def test_uninstall_backup_is_never_synced() -> None:
+    assert is_excluded(".homeward-backup/2026-01-01_120000/config.toml")
+    assert not is_excluded("homeward-backup/a.txt")

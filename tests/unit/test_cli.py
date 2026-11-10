@@ -12,7 +12,7 @@ from homeward.runtime import Event, Paths, read_events
 
 
 def _events(tmp_path: Path) -> list[Event]:
-    return read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))
+    return read_events(Paths(var_dir=tmp_path / "var", config=tmp_path / "var" / "config.toml"))
 
 
 def test_main_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -20,10 +20,17 @@ def test_main_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert "homeward" in capsys.readouterr().out
 
 
+@pytest.fixture(autouse=True)
+def _var(tmp_path: Path) -> None:
+    # The config (and the var folder) apart from the synced folders: a pair in or
+    # around the config's folder is refused.
+    (tmp_path / "var").mkdir()
+
+
 def _config(tmp_path: Path, provider: str = "folder") -> Path:
     (tmp_path / "nas").mkdir()
     (tmp_path / "cloud").mkdir()
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     config.write_text(
         f"""
 state_dir = "state"
@@ -152,7 +159,7 @@ def test_icloud_sign_in_uses_the_stored_session(
     config.write_text(config.read_text() + 'apple_id = "alice@example.com"\n')
     assert main(["sync", "--config", str(config), "--dry-run"]) == EXIT_LOGIN
     assert "homeward login --account default" in capsys.readouterr().err
-    assert calls == [("default", "alice@example.com", tmp_path / "state")]
+    assert calls == [("default", "alice@example.com", tmp_path / "var" / "state")]
 
 
 def test_sync_with_icloud_drive(
@@ -167,7 +174,7 @@ def test_sync_with_icloud_drive(
     assert main(["sync", "--config", str(config)]) == EXIT_OK
     assert api.content(f"{tmp_path / 'cloud'}/a.txt") == b"a"
     assert (tmp_path / "nas" / "b.txt").read_text() == "b"
-    assert (tmp_path / "state" / "default.drive-folders.json").is_file()
+    assert (tmp_path / "var" / "state" / "default.drive-folders.json").is_file()
 
 
 def test_sync_reports_unreachable_icloud(
@@ -214,7 +221,7 @@ def test_sync_refuses_a_second_run_of_the_same_pair(
 
     config = _config(tmp_path)
     (tmp_path / "nas" / "a.txt").write_text("a")
-    lock = tmp_path / "state" / "pair-docs.lock"
+    lock = tmp_path / "var" / "state" / "pair-docs.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
 
     with lock.open("a") as other_run:
@@ -233,7 +240,7 @@ def test_sync_bad_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
 
 
 def _photos_config(tmp_path: Path) -> Path:
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     config.write_text(
         f"""
 state_dir = "state"
@@ -271,7 +278,7 @@ def test_photos_dry_run_then_real(
     assert main(["photos", "--config", str(config), "--job", "alice"]) == EXIT_OK
     assert (tmp_path / "photos" / "2024" / "05" / "a.jpg").read_bytes() == b"img"
     assert (tmp_path / "photos" / "Alben" / "Urlaub" / "a.jpg").exists()
-    assert (tmp_path / "state" / "alice@example.com.photos.sqlite3").exists()
+    assert (tmp_path / "var" / "state" / "alice@example.com.photos.sqlite3").exists()
 
     capsys.readouterr()
     assert main(["photos", "--config", str(config)]) == EXIT_OK
@@ -306,7 +313,7 @@ def test_photos_without_session_asks_for_login(
 
 
 def test_photos_none_configured(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     config.write_text('state_dir = "state"\n')
     assert main(["photos", "--config", str(config)]) == EXIT_USAGE
     assert "no photos jobs" in capsys.readouterr().err
@@ -325,7 +332,7 @@ def test_login_flow(
 
     assert main(["login", "--config", str(config), "--account", "alice@example.com"]) == EXIT_OK
     assert "is logged in" in capsys.readouterr().out
-    assert (tmp_path / "state" / "sessions" / "alice@example.com" / "trusted").exists()
+    assert (tmp_path / "var" / "state" / "sessions" / "alice@example.com" / "trusted").exists()
 
     monkeypatch.setattr("builtins.input", lambda prompt: "000000")
     assert (
@@ -345,7 +352,7 @@ def test_login_takes_the_apple_id_of_the_account_table(
     monkeypatch.setattr(homeward.auth.twofa, "pyicloud_service", lambda: FakeService)
     monkeypatch.setenv("HOMEWARD_PASSWORD", "secret")
     monkeypatch.setattr("builtins.input", lambda prompt: "123456")
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     config.write_text(
         'state_dir = "state"\n[[account]]\nname = "family"\napple_id = "family@example.com"\n'
     )
@@ -377,7 +384,7 @@ def test_photos_progress_file_while_running(
 
     source = FakePhotoSource()
     source.add("a1", "a.jpg")
-    progress_file = tmp_path / "progress" / "photos-alice.json"
+    progress_file = tmp_path / "var" / "progress" / "photos-alice.json"
     seen: list[dict[str, object]] = []
     open_read = source.open_read
 
@@ -457,7 +464,7 @@ def test_photos_refuses_a_second_run_for_the_same_account(
     source.add("a1", "a.jpg")
     monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
     config = _photos_config(tmp_path)
-    lock = tmp_path / "state" / "alice@example.com.photos.lock"
+    lock = tmp_path / "var" / "state" / "alice@example.com.photos.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
 
     with lock.open("a") as other_run:
@@ -467,6 +474,35 @@ def test_photos_refuses_a_second_run_for_the_same_account(
     assert source.listed == 0
 
     assert main(["photos", "--config", str(config)]) == EXIT_OK
+
+
+def test_photos_trash_purge_stays_in_the_pinned_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After the backup a share user turns the photos target into a symlink to another
+    # share: emptying the trash must not remove that share's old trash day folders.
+    import homeward.cli
+    from homeward.providers.fake_photos import FakePhotoSource
+
+    source = FakePhotoSource()
+    source.add("a1", "a.jpg")
+    monkeypatch.setattr(homeward.cli, "_photo_source", lambda config, job, progress: source)
+    config = _photos_config(tmp_path)
+    victim = tmp_path / "other-share"
+    old_day = victim / ".homeward-papierkorb" / "2020-01-01"
+    old_day.mkdir(parents=True)
+    (old_day / "kept.jpg").write_bytes(b"theirs")
+    backup = cli.backup_photos
+
+    def backup_then_swap(*args: object, **kwargs: object) -> object:
+        outcome = backup(*args, **kwargs)  # type: ignore[arg-type]
+        (tmp_path / "photos").rename(tmp_path / "photos-old")
+        (tmp_path / "photos").symlink_to(victim, target_is_directory=True)
+        return outcome
+
+    monkeypatch.setattr(cli, "backup_photos", backup_then_swap)
+    assert main(["photos", "--config", str(config)]) == EXIT_OK
+    assert (old_day / "kept.jpg").read_bytes() == b"theirs"
 
 
 def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
@@ -488,12 +524,12 @@ def test_a_crashing_run_becomes_a_readable_event(tmp_path: Path) -> None:
     def not_ready() -> int:
         raise PhotosNotReady("iCloud is still indexing the photo library")
 
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     logging.getLogger("homeward").setLevel(logging.INFO)
     with _events(config, "photos:me"):
         assert _reported(crash, "me") == EXIT_FAILED
         assert _reported(not_ready, "me") == EXIT_WAITING
-    events = read_events(Paths(var_dir=tmp_path, config=config))
+    events = read_events(Paths(var_dir=tmp_path / "var", config=config))
     assert [(e.code, e.level) for e in events] == [("icloud_indexing", "warning"), ("log", "error")]
     assert events[1].message == "the run stopped: Photos service not available ('indexing')"
 
@@ -518,11 +554,11 @@ def test_a_session_apple_rejects_mid_run_asks_for_a_new_sign_in(tmp_path: Path) 
         except PyiCloudAPIResponseException as exc:
             raise PyiCloudServiceUnavailable("Photos service not available") from exc
 
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     logging.getLogger("homeward").setLevel(logging.INFO)
     with _events(config, "photos:me"):
         assert _reported(rejected, "me") == EXIT_LOGIN
-    [event] = read_events(Paths(var_dir=tmp_path, config=config))
+    [event] = read_events(Paths(var_dir=tmp_path / "var", config=config))
     assert (event.code, event.details.get("account")) == ("login_required", "me")
     assert "homeward login --account me" in event.message
 
@@ -532,7 +568,7 @@ def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
     import subprocess
     import sys
 
-    config = tmp_path / "config.toml"
+    config = tmp_path / "var" / "config.toml"
     config.write_text(
         f'state_dir = "state"\n[[photos]]\nname = "me"\naccount = "me"\n'
         f'apple_id = "me@example.com"\ntarget = "{tmp_path / "photos"}"\n'
@@ -543,7 +579,9 @@ def test_cli_events_reach_the_log_when_run_as_a_module(tmp_path: Path) -> None:
         env=env, capture_output=True, text=True, check=False,
     )  # fmt: skip
     assert run.returncode == EXIT_LOGIN, run.stderr
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    events = [
+        json.loads(line) for line in (tmp_path / "var" / "events.jsonl").read_text().splitlines()
+    ]
     assert [e["code"] for e in events] == ["login_required"]
 
 
@@ -590,3 +628,27 @@ def test_the_worst_exit_code_wins() -> None:
     assert _worst(EXIT_OK, EXIT_WAITING) == EXIT_WAITING
     assert _worst(EXIT_WAITING, EXIT_FAILED) == EXIT_FAILED
     assert _worst(EXIT_BLOCKED, EXIT_WAITING) == EXIT_BLOCKED
+
+
+@pytest.mark.parametrize("side", ["nas", "cloud"])
+def test_a_folder_that_becomes_a_symlink_after_the_config_check_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, side: str
+) -> None:
+    # The config was fine when it was loaded; then a share user turns a synced folder
+    # into a symlink to the request folder, where synced files would forge requests.
+    config = _config(tmp_path)
+    (tmp_path / "nas" / "a.json").write_text('{"pair": "docs", "allow_deletes": true}')
+    (tmp_path / "cloud" / "b.json").write_text('{"pair": "docs", "allow_deletes": true}')
+    requests = tmp_path / "var" / "requests"
+    requests.mkdir(mode=0o700)
+    load = cli.load_config
+
+    def load_then_swap(path: Path) -> object:
+        loaded = load(path)
+        (tmp_path / side).rename(tmp_path / f"{side}-old")
+        (tmp_path / side).symlink_to(requests, target_is_directory=True)
+        return loaded
+
+    monkeypatch.setattr(cli, "load_config", load_then_swap)
+    assert main(["sync", "--config", str(config)]) == EXIT_FAILED
+    assert not list(requests.iterdir())

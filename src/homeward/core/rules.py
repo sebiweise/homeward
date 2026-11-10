@@ -9,6 +9,8 @@ from homeward.core.models import Change, SyncMode
 
 TRASH_DIR = ".homeward-papierkorb"
 TEMP_SUFFIX = ".homeward-tmp"
+# Config and state copied into the package share before an uninstall (``api.migrate``).
+BACKUP_DIR = ".homeward-backup"
 
 DEFAULT_EXCLUDES: tuple[str, ...] = (
     # Synology
@@ -29,8 +31,9 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     # Lock files of open Office / LibreOffice documents
     "~$*",
     ".~lock.*#",
-    # Homeward's own trash and partial downloads
+    # Homeward's own trash, uninstall backup and partial downloads
     TRASH_DIR,
+    BACKUP_DIR,
     f"*{TEMP_SUFFIX}",
 )
 

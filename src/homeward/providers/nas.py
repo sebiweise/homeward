@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from homeward.core.files import rename_noreplace, temp_name
+from homeward.core.files import Confined, rename_noreplace, temp_name
 from homeward.core.models import FileMeta
 from homeward.core.rules import is_excluded
 from homeward.core.trash import Trash
@@ -29,7 +29,7 @@ def find_recycle_bin(root: Path) -> Path | None:
         if len(folder.parts) <= 2:  # "/" and "/volume1" are never shares
             break
         candidate = folder / RECYCLE_DIR
-        if candidate.is_dir():
+        if candidate.is_dir() and not candidate.is_symlink():
             return candidate
     return None
 
@@ -57,7 +57,12 @@ class NasProvider(Provider):
     ) -> None:
         self.name = name
         self.root = root
-        self.trash = Trash(root, recycle_bin=recycle_bin, trash_root=trash_root, today=today)
+        # Where the root leads now; every path must still lead inside it (see _full).
+        self.confined = Confined(root)
+        self.trash = Trash(
+            root, recycle_bin=recycle_bin, trash_root=trash_root, today=today,
+            confined=self.confined,
+        )  # fmt: skip
 
     def root_exists(self) -> bool:
         return self.root.is_dir()
@@ -65,6 +70,7 @@ class NasProvider(Provider):
     def list_files(self) -> dict[str, FileMeta]:
         files: dict[str, FileMeta] = {}
         for dirpath, dirnames, filenames in os.walk(self.root):
+            self.confined.check(Path(dirpath))  # never list a folder outside the root
             rel_dir = Path(dirpath).relative_to(self.root)
             dirnames[:] = [d for d in dirnames if not is_excluded(str(rel_dir / d))]
             for filename in filenames:
@@ -83,6 +89,7 @@ class NasProvider(Provider):
         if target.exists():
             raise FileExistsError(path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        self.confined.check(target)  # no folder was swapped for a symlink meanwhile
         tmp = temp_name(target)
         try:
             with tmp.open("xb") as out:
@@ -105,6 +112,7 @@ class NasProvider(Provider):
     def move(self, path: str, new_path: str) -> FileMeta:
         source, target = self._full(path), self._full(new_path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        self.confined.check(target)
         rename_noreplace(source, target)
         return self._meta(new_path, target)
 
@@ -119,7 +127,11 @@ class NasProvider(Provider):
         rel = PurePosixPath(path)
         if rel.is_absolute() or ".." in rel.parts or not rel.parts:
             raise ValueError(f"invalid relative path: {path!r}")
-        return self.root.joinpath(*rel.parts)
+        full = self.root.joinpath(*rel.parts)
+        # Like list_files, never follow a symlink below the root: a share user could
+        # point one outside it and have files read, written or moved there. Nor a
+        # root (or a folder above it) that was swapped for a symlink since the start.
+        return self.confined.check(full)
 
     @staticmethod
     def _meta(path: str, full: Path) -> FileMeta:
