@@ -179,6 +179,23 @@ def test_archive_keeps_a_photo_with_an_ignored_file(
     ]
 
 
+def test_archive_names_the_ignored_file_also_when_it_was_never_backed_up(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_1.HEIC", b"still", created=OLD)
+    source.add("a1", "IMG_1.MOV", b"live", created=OLD, resource="original_video")
+    clock = Clock()
+    backup(source, tmp_path, pstate, IGNORE_MOV, ARCHIVE_OLD, clock=clock)
+    clock.next_day()
+
+    outcome = backup(source, tmp_path, pstate, IGNORE_MOV, ARCHIVE_OLD, clock=clock)
+
+    assert source.deleted == []
+    assert [h.pending for h in outcome.plan.rule_hits if h.rule == "alt"] == [
+        "a file of it is ignored"
+    ]
+
+
 def test_archive_keeps_the_photo_in_icloud_when_the_nas_copy_differs(
     source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
 ) -> None:
