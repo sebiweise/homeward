@@ -93,6 +93,17 @@ def test_server_asks_for_the_password_first(server: str) -> None:
     assert excinfo.value.headers["WWW-Authenticate"].startswith('Basic realm="Homeward"')
 
 
+def test_server_errors_go_to_the_event_log(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(web, "handle", lambda *args: (500, {"success": False}))
+    auth = {"Authorization": GOOD}
+    token = json.loads(_get(server + "/webman/login.cgi", auth)[1])["SynoToken"]
+    assert _status(server + "/api.cgi?method=pairs.list", auth | {"X-SYNO-TOKEN": token}) == 500
+    events = (tmp_path / "var" / "events.jsonl").read_text()
+    assert "web_error" in events and "/api.cgi answered 500" in events
+
+
 def test_server_serves_page_and_api_with_the_page_token(server: str) -> None:
     auth = {"Authorization": GOOD}
     status, page = _get(server + "/", auth)

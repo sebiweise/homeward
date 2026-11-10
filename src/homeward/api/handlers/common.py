@@ -44,7 +44,7 @@ def check_nas_folder(ctx: Context, value: str, key: str) -> Path:
     private = [f.resolve() for f in (PACKAGE_DIR, ctx.paths.var_dir, ctx.store.load().state_dir)]
     if any(real.is_relative_to(folder) or folder.is_relative_to(real) for folder in private):
         raise ApiError("invalid_param", key)
-    check_shared_folder(path, key)
+    check_shared_folder(path, key, ctx.paths)
     return path
 
 

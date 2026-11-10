@@ -255,6 +255,8 @@ folder_missing="A folder of this run is missing (e.g. renamed, deleted, or its s
 notices_cleared="Notices cleared."
 login_locked="Too many wrong sign-ins to the web page from one address; it is locked for a few minutes."
 web_start_failed="The web page cannot start; check HOMEWARD_WEB_PORT and the container log."
+web_error="The web page could not answer a request; see the container log."
+volumes_missing="None of the folders in HOMEWARD_VOLUMES exists; check the volumes of the container."
 sync_summary="Run summary."
 
 [error]
