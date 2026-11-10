@@ -896,6 +896,31 @@ def test_on_dsm_pair_and_photos_folders_must_be_in_a_shared_folder(
     assert client.call("photos.create", post=True, photos=target)["target"].endswith("usbshare")
 
 
+def test_share_links_into_dsm_system_folders_are_refused(
+    client: Client, tmp_path: Path, volumes: Path
+) -> None:
+    # The unresolved path looks like a share folder; where it leads is the package's code.
+    photo = volumes / "volume1" / "photo"
+    (volumes / "volume1" / "@appstore" / "homeward" / "env").mkdir(parents=True)
+    (photo / "app").symlink_to(volumes / "volume1" / "@appstore" / "homeward")
+    (photo / ".homeward-backup" / "x").mkdir(parents=True)
+    assert "app" not in _names(client.call("folders.list", path=str(photo)))
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.list", path=str(photo / "app"))
+    assert _error(excinfo) == "folder_not_found"
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    remote = str(photo / "2024")  # a folder remote on the volume, accepted
+    for local in (photo / "app", photo / "app" / "env", photo / ".homeward-backup" / "x"):
+        pair = _pair(tmp_path, local=str(local), remote=remote)
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.create", post=True, pair=pair)
+        assert _error(excinfo) == "invalid_param", local
+    (photo / "real").mkdir()
+    (photo / "alias2").symlink_to(photo / "real")
+    pair = _pair(tmp_path, local=str(photo / "alias2"), remote=remote)
+    assert client.call("pairs.create", post=True, pair=pair)["local"] == str(photo / "alias2")
+
+
 def test_folders_stay_inside_the_shares(client: Client, volumes: Path) -> None:
     photo = volumes / "volume1" / "photo"
     cases = {

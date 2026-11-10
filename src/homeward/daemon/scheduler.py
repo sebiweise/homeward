@@ -66,6 +66,7 @@ from homeward.runtime import (
     Paths,
     RunRequest,
     record_event,
+    secure_ipc_dirs,
     take_cancels,
     take_requests,
 )
@@ -821,6 +822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _setup_logging(args.log_file)
     # The same var folder as the UI API: $HOMEWARD_VAR, else the config's folder.
     paths = Paths.for_config(args.config)
+    secure_ipc_dirs(paths)
     status_path = args.status or paths.status_file
     runner = SubprocessRunner()
     daemon = Daemon(args.config, Scheduler(status_path, runner, paths=paths), runner)

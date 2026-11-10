@@ -63,6 +63,15 @@ Safety nets:
   `.homeward-papierkorb/<date>/` below the pair's folder. Day folders there older than
   `trash_days` (default 30, 0 keeps them forever) are removed after each run.
 - iCloud deletions go to iCloud's "Recently Deleted" (kept 30 days by Apple).
+- **No symlinks below a root** (`core.files.Confined`): the CLI resolves each pair
+  folder, folder remote and photos target when a run starts, checks the result like the
+  config load does (`core.config._check_folder`: no `@`/hidden folder, not in or around
+  the var, state or package folders) and pins it. `NasProvider`, `PhotoExecutor` and
+  `Trash` refuse (`SymlinkInPath`) every path that crosses a symlink below the root or
+  no longer resolves inside the pinned folder, so swapping the root, a folder above it
+  or `#recycle` for a symlink mid-run stops the run instead of sending files elsewhere.
+  The check runs right before each file call (no `openat`), so a short race remains.
+  `.homeward-backup` (the uninstall backup) is always excluded.
 - **Deletes run last**: every run transfers first and deletes afterwards.
 
 ### Bidirectional (beta)
