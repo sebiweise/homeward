@@ -21,7 +21,7 @@ mdurl==0.1.2
 more-itertools==11.2.1
 protobuf==7.36.2
 pycparser==3.12
-pydantic==2.14.1
+pydantic==2.14.2
 Pygments==2.21.0
 pyicloud==2.7.0
 requests==2.34.2
