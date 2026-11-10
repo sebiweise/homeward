@@ -1,7 +1,7 @@
 # Homeward – iCloud Sync for Synology DSM
 
 [![CI](https://github.com/sebiweise/homeward/actions/workflows/ci.yml/badge.svg)](https://github.com/sebiweise/homeward/actions/workflows/ci.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=sebiweise_homeward&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=sebiweise_homeward)
+[![Security](https://github.com/sebiweise/homeward/actions/workflows/security.yml/badge.svg)](https://github.com/sebiweise/homeward/actions/workflows/security.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![DSM 7.2+](https://img.shields.io/badge/DSM-7.2%2B-0a5eb5)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776ab)
@@ -32,7 +32,8 @@ no extra server.
 - **Never loses data**: nothing is overwritten or deleted without a recoverable copy.
   NAS deletions go to the Synology recycle bin (or Homeward's own trash), iCloud
   deletions to "Recently Deleted". The first run of a pair never deletes, and a
-  *delete brake* stops any run that would delete more than 10 % or more than 50 files.
+  *delete brake* stops any run that would delete more than 50 files, or more than 10 %
+  of them once it deletes more than 5.
 - Dry runs that show the plan without changing anything.
 - Interval scheduler as a DSM service; every wait, retry and error shows up in the log.
 - A DSM app (German and English) for accounts with 2FA sign-in, photos backups, sync

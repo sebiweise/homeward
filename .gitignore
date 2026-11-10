@@ -11,3 +11,6 @@ dist/
 *.spk
 .coverage
 coverage.xml
+
+# graphify knowledge graph (rebuilt by .claude/hooks/session-start.sh)
+graphify-out/

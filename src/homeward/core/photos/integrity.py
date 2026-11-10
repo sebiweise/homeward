@@ -1,10 +1,13 @@
 """The weekly check that the backed-up photos on the NAS are still whole.
 
 A file whose size no longer matches what was downloaded (cut off, overwritten,
-damaged) is moved to the trash, never deleted, and the run that follows downloads
-it again, as it does for a file missing on the NAS. Its album links (hard links to
-the same damaged data) are removed so that run links the new download. A photo
-iCloud no longer has stays where it is: the NAS copy is all there is.
+damaged) is only reported here; nothing is moved yet. The run that follows reads
+the whole library and replaces the file only when iCloud still has the photo: the
+damaged copy then goes to the trash, never deleted, and its album links (hard links
+to the same damaged data) are linked to the new download. A photo iCloud no longer
+has stays where it is, damaged or not: the NAS copy is all there is. That includes
+photos deleted in iCloud since the last complete reading, which earlier runs could
+not yet mark as gone.
 """
 
 import logging
@@ -12,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from homeward.core.photo_state import PhotoStateDB
-from homeward.core.trash import Trash
 
 log = logging.getLogger("homeward.core.photos")
 
@@ -22,7 +24,8 @@ INTEGRITY_DAYS = 7
 @dataclass(slots=True)
 class IntegrityResult:
     checked: int = 0
-    damaged: list[str] = field(default_factory=list)  # moved to the trash, to download again
+    damaged: list[str] = field(default_factory=list)  # paths whose size does not match
+    keys: set[str] = field(default_factory=set)  # their keys, for the plan to replace
 
 
 def integrity_due(state: PhotoStateDB, job: str, now: float) -> bool:
@@ -30,27 +33,24 @@ def integrity_due(state: PhotoStateDB, job: str, now: float) -> bool:
     return last is None or now - last >= INTEGRITY_DAYS * 86400
 
 
-def check_integrity(
-    job: str, root: Path, state: PhotoStateDB, trash: Trash, now: float
-) -> IntegrityResult:
-    """Compare every backed-up photo with the size it was downloaded with."""
+def check_integrity(job: str, root: Path, state: PhotoStateDB) -> IntegrityResult:
+    """Compare every backed-up photo with the size it was downloaded with.
+
+    Changes nothing on the NAS: the damaged photos iCloud still has are replaced by
+    the plan of the same run (see ``build_photo_plan(damaged=...)``)."""
     result = IntegrityResult()
-    links: dict[str, list[str]] = {}
-    for link_path, (key, _album) in state.links(job).items():
-        links.setdefault(key, []).append(link_path)
     for record in state.records(job).values():
         if record.size is None:
             continue
         path = root / record.path
         try:
-            stat = path.stat()
+            size = path.stat().st_size
         except FileNotFoundError:
             continue  # missing files are downloaded again by the plan anyway
         except OSError as exc:
             log.warning("integrity check: %s cannot be read: %s", record.path, exc)
             continue
         result.checked += 1
-        size = stat.st_size
         if size == record.size:
             continue
         if record.gone_at is not None:
@@ -60,26 +60,11 @@ def check_integrity(
                 extra={"event": "integrity_damaged"},
             )  # fmt: skip
             continue
-        log.warning(
-            "integrity check: %s has %d bytes instead of %d; moving it to the trash "
-            "and downloading it again",
-            record.path, size, record.size, extra={"event": "integrity_repaired"},
+        log.info(
+            "integrity check: %s has %d bytes instead of %d; it is downloaded again "
+            "if iCloud still has it", record.path, size, record.size,
         )  # fmt: skip
-        try:
-            trash.move(path, record.path)
-        except OSError as exc:
-            log.warning("integrity check: could not move %s aside: %s", record.path, exc)
-            continue
         result.damaged.append(record.path)
-        for link_path in links.get(record.key, []):
-            link = root / link_path
-            try:
-                if link.stat().st_ino != stat.st_ino:
-                    continue  # not (any more) a link to the damaged file: leave it
-                link.unlink()  # the data stays in the trash copy
-            except FileNotFoundError:
-                pass
-            state.remove_link(job, link_path)
-    state.set_integrity_checked(job, now)
+        result.keys.add(record.key)
     log.info("integrity check: %d photos checked, %d damaged", result.checked, len(result.damaged))
     return result

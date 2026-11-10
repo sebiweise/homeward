@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
+from homeward.api.handlers.common import HIDDEN_FOLDERS
 from homeward.api.server import Context, Request
 
 # Where the volumes are mounted; tests and the UI dev server point it elsewhere.
 ROOT = Path("/")
 MAX_ENTRIES = 2000
-_HIDDEN = {"#recycle", "#snapshot", ".homeward-papierkorb"}
 
 
 def list_folders(_ctx: Context, request: Request) -> dict[str, Any]:
@@ -67,7 +67,7 @@ def _volumes() -> list[Path]:
 
 
 def _hidden(name: str) -> bool:
-    return name.startswith(("@", ".")) or name in _HIDDEN
+    return name.startswith(("@", ".")) or name in HIDDEN_FOLDERS
 
 
 def _readable(path: Path) -> bool:
@@ -117,6 +117,21 @@ def _checked(raw: str) -> Path:
     if not _readable(path):
         raise ApiError("folder_denied", raw, status=403)
     return path
+
+
+def check_shared_folder(path: Path, key: str) -> None:
+    """On DSM, a folder of a pair or photos backup must lie inside a shared folder
+    (``/volumeN/<share>/...``), and where it or a folder above it is a symlink, its
+    target too. The same rule as the folder picker's, for paths typed in or saved
+    by an older UI. A system without ``/volumeN`` (a container, plain Linux, tests)
+    has no shared folders to check against."""
+    volumes = _volumes()
+    if not volumes:
+        return
+    if not any(path.is_relative_to(v) and path != v for v in volumes):
+        raise ApiError("invalid_param", key)
+    if not _on_volume(path.resolve()):
+        raise ApiError("invalid_param", key)
 
 
 def _on_volume(real: Path) -> bool:

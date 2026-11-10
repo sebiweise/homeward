@@ -78,6 +78,8 @@ class PhotoStateDB:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(photos)")}
         if "archived_at" not in columns:  # databases of schema 1
             self._conn.execute("ALTER TABLE photos ADD COLUMN archived_at REAL")
+        # PRAGMA takes no bound parameters; SCHEMA_VERSION is a constant.
+        # nosemgrep
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:

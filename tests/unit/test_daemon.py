@@ -19,8 +19,8 @@ from homeward.daemon.scheduler import (
     load_plan,
     main,
     parse_settings,
-    take_requests,
 )
+from homeward.runtime import take_requests
 
 
 class Clock:
@@ -207,6 +207,66 @@ def test_interrupted_runs_are_due_again(tmp_path: Path) -> None:
     scheduler.status["pair:docs"].result = None
     scheduler.status["pair:docs"].finished_at = None
     assert [job.name for job in scheduler.due()] == ["pair:docs"]
+
+
+def test_a_run_killed_by_a_signal_again_and_again_waits_for_its_interval(
+    tmp_path: Path,
+) -> None:
+    from homeward.dsm.notify import Event
+    from homeward.runtime import Paths, read_events
+
+    clock, runner, sent = Clock(), Recorder(code=-9), []  # e.g. the out-of-memory killer
+    scheduler = Scheduler(
+        tmp_path / "status.json", runner, clock, notifier=lambda e, *a: sent.append(e)
+    )
+    scheduler.update(load_plan(_config(tmp_path)))
+    scheduler.run_due()
+    assert scheduler.status["pair:docs"].result == "killed"
+    assert [job.name for job in scheduler.due()] == ["pair:docs"]  # repeated at once
+
+    scheduler.run_due()
+    status = scheduler.status["pair:docs"]
+    assert (status.result, status.exit_code, status.signal_kills) == ("failed", -9, 2)
+    assert scheduler.due() == []
+    assert scheduler.next_due(Job("pair:docs", ())) == clock.now + 3600
+    assert sent == [Event.SYNC_FAILED]
+    event = read_events(Paths(var_dir=tmp_path, config=tmp_path / "config.toml"))[0]
+    assert (event.code, event.message) == ("sync_failed", "ended by SIGKILL 2 times in a row")
+
+    # The count survives a restart of the daemon and ends with a run that exits.
+    again = Scheduler(tmp_path / "status.json", runner, clock)
+    assert again.status["pair:docs"].signal_kills == 2
+    runner.code = 0
+    clock.now += 3600
+    again.update(load_plan(_config(tmp_path)))
+    again.run_due()
+    assert (again.status["pair:docs"].result, again.status["pair:docs"].signal_kills) == ("ok", 0)
+
+
+def test_a_stop_the_run_handled_itself_is_always_repeated_at_once(tmp_path: Path) -> None:
+    scheduler = _scheduler(tmp_path, Recorder(code=5), Clock())
+    scheduler.update(load_plan(_config(tmp_path)))
+    for _ in range(3):
+        scheduler.run_due()
+        assert scheduler.status["pair:docs"].result == "killed"
+    assert [job.name for job in scheduler.due()] == ["pair:docs"]
+
+
+def test_the_daemon_uses_homeward_var_like_the_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    var = tmp_path / "var"
+    var.mkdir()
+    monkeypatch.setenv("HOMEWARD_VAR", str(var))
+    config = _config(tmp_path)  # outside the var folder
+    (tmp_path / "nas" / "a.txt").write_text("a")
+    _request(var, "docs", '{"pair": "docs"}')
+    assert main(["--config", str(config), "--once"]) == 0
+    assert not (tmp_path / "status.json").exists()
+    status = json.loads((var / "status.json").read_text())
+    assert status["jobs"]["pair:docs"]["result"] == "ok"
+    assert not list((var / "requests").glob("*.json"))  # the UI's request was taken
+    assert (var / "events.jsonl").exists()
 
 
 def test_removed_pairs_leave_the_status_file(tmp_path: Path) -> None:

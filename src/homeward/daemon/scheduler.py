@@ -8,15 +8,20 @@ long-running daemon itself stays small.
 
 Signals: SIGTERM/SIGINT stop the daemon (a running sync is terminated; the
 executor records every finished step, so the next run picks up the rest),
-SIGUSR1 runs every job now. The config file is re-read before every cycle.
+SIGUSR1 runs every job now. The config file is re-read before every cycle. A run
+ended by a signal it could not handle (SIGKILL, a crash) is repeated at once only
+``SIGNAL_RETRIES`` times in a row, then counts as failed.
+
+The files shared with the DSM UI live in the var folder: ``$HOMEWARD_VAR`` (as for
+the UI API), else the config's folder (see ``runtime.Paths.for_config``).
 
 "Cancel" requests from the DSM UI are files ``cancel/<name>.json``: a watcher
 thread stops the running sync of that pair the same way (SIGTERM, the sync ends
 cleanly after removing its temporary files), or drops it from the queue. A
 cancelled job keeps its normal schedule and sends no notification.
 
-"Sync now" requests from the DSM UI are files ``requests/<name>.json`` next to the
-config (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``, where ``pair`` is a
+"Sync now" requests from the DSM UI are files ``requests/<name>.json`` in the var
+folder (``{"pair": ..., "dry_run": ..., "allow_deletes": ...}``, where ``pair`` is a
 pair name or ``photos:<job>``); the daemon removes each one and runs it.
 ``status.json`` holds ``running`` (the pair, or ``photos:<job>``, being synced) and
 the last result and next run of every job.
@@ -47,7 +52,23 @@ from homeward.core.config import (
 )
 from homeward.core.limits import TimeWindow
 from homeward.dsm.notify import Event, notify
-from homeward.runtime import Level, Paths, record_event, take_cancels
+from homeward.exitcodes import (
+    EXIT_BLOCKED,
+    EXIT_CANCELLED,
+    EXIT_FAILED,
+    EXIT_LOGIN,
+    EXIT_OK,
+    EXIT_USAGE,
+    EXIT_WAITING,
+)
+from homeward.runtime import (
+    Level,
+    Paths,
+    RunRequest,
+    record_event,
+    take_cancels,
+    take_requests,
+)
 
 log = logging.getLogger("homeward.daemon")
 
@@ -63,15 +84,19 @@ MAX_PARALLEL_RUNS = 2
 WAITING_RETRY_MINUTES = 15
 # A job without a successful run for this long warns in the UI and notifies DSM once.
 STALE_DAYS = 3
+# A run ended by a signal it could not handle (e.g. SIGKILL from the out-of-memory
+# killer, a crash) is repeated at once this many times in a row; the next one counts
+# as failed: it notifies DSM and waits for the job's normal interval.
+SIGNAL_RETRIES = 1
 
 # homeward.log is rotated at this size, keeping this many old files (homeward.log.1 ...).
 LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
 
-# Exit codes of `homeward sync` (see homeward.cli); 5 means it ended on SIGTERM.
+# Exit codes of `homeward sync` (see homeward.exitcodes) -> run result.
 _RESULTS = {
-    0: "ok", 1: "failed", 2: "config_error", 3: "blocked", 4: "waiting", 5: "killed",
-    6: "login_required",
+    EXIT_OK: "ok", EXIT_FAILED: "failed", EXIT_USAGE: "config_error", EXIT_BLOCKED: "blocked",
+    EXIT_WAITING: "waiting", EXIT_CANCELLED: "killed", EXIT_LOGIN: "login_required",
 }  # fmt: skip
 # result -> event level and code for the event log shown in the DSM UI
 _EVENTS = {
@@ -115,6 +140,7 @@ class JobStatus:
     last_success: float | None = None  # end of the last successful (real) run
     tracked_since: float | None = None  # start of the first run, until one succeeds
     stale_notified: bool = False  # the "not backed up" notification went out
+    signal_kills: int = 0  # runs in a row ended by a signal (see ``SIGNAL_RETRIES``)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,43 +150,6 @@ class Settings:
     @property
     def interval_seconds(self) -> float:
         return self.interval_minutes * 60.0
-
-
-@dataclass(frozen=True, slots=True)
-class RunRequest:
-    """A "sync now" request for one pair, written by the DSM UI."""
-
-    pair: str
-    dry_run: bool = False
-    allow_deletes: bool = False
-    remove_gone: bool = False  # photos: also clean up photos deleted in iCloud
-
-
-def take_requests(
-    requests_dir: Path, accept: Callable[[RunRequest], bool] = lambda _request: True
-) -> list[RunRequest]:
-    """Return and remove the pending requests ``accept`` takes now; the others stay
-    queued (and shown as queued) for a later cycle. Unreadable files are dropped."""
-    if not requests_dir.is_dir():
-        return []
-    requests = []
-    for file in sorted(requests_dir.glob("*.json")):
-        try:
-            data = json.loads(file.read_text(encoding="utf-8"))
-            request = RunRequest(
-                pair=str(data["pair"]),
-                dry_run=bool(data.get("dry_run", False)),
-                allow_deletes=bool(data.get("allow_deletes", False)),
-                remove_gone=bool(data.get("remove_gone", False)),
-            )
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            log.warning("ignoring run request %s: %s", file.name, exc)
-            file.unlink(missing_ok=True)
-            continue
-        if accept(request):
-            requests.append(request)
-            file.unlink(missing_ok=True)
-    return requests
 
 
 @dataclass(slots=True)
@@ -212,13 +201,15 @@ class Scheduler:
         runner: Callable[[Job], int],
         clock: Callable[[], float] = time.time,
         notifier: Callable[..., bool] = notify,
+        paths: Paths | None = None,
     ) -> None:
         self.status_path = status_path
         self._runner = runner
         self._clock = clock
         self._notify = notifier
         var_dir = status_path.parent
-        self.events = Paths(var_dir=var_dir, config=var_dir / "config.toml")
+        # The var folder shared with the UI (events, requests, cancels).
+        self.events = paths or Paths(var_dir=var_dir, config=var_dir / "config.toml")
         self.settings = Settings()
         self.jobs: list[Job] = []
         self.status: dict[str, JobStatus] = self._load_status()
@@ -398,6 +389,7 @@ class Scheduler:
                 last_success=old.last_success,
                 tracked_since=old.tracked_since or now,
                 stale_notified=old.stale_notified,
+                signal_kills=old.signal_kills,
             )
             if record:
                 self._forced.discard(job.name)
@@ -428,6 +420,14 @@ class Scheduler:
                 status.result = "cancelled"
             elif status.result == "killed" and name in self.closing:
                 status.result = "window_closed"
+            elif code < 0:
+                # Not a stop the run handled itself (that ends with exit 5): repeating
+                # it at once forever would loop, e.g. on the out-of-memory killer.
+                status.signal_kills += 1
+                if status.signal_kills > SIGNAL_RETRIES:
+                    status.result = "failed"
+            if code >= 0:
+                status.signal_kills = 0
             if status.result == "ok" and not dry_run:
                 status.last_success = status.finished_at
                 status.stale_notified = False
@@ -437,6 +437,8 @@ class Scheduler:
         log.info("finished %s: %s (exit %d)", job.name, status.result, code)
         level, event = _EVENTS.get(status.result, (Level.ERROR, "sync_failed"))
         message = _MESSAGES.get(status.result or "", f"exit code {code}")
+        if code < 0 and status.result == "failed":
+            message = f"ended by {_signal_name(-code)} {status.signal_kills} times in a row"
         record_event(level, job.name, event, message, paths=self.events,
                      dry_run=dry_run, exit_code=code)  # fmt: skip
         if status.result in _NOTIFY and status.result != previous and not dry_run:
@@ -557,6 +559,7 @@ class Scheduler:
                     last_success=entry.get("last_success"),
                     tracked_since=entry.get("tracked_since"),
                     stale_notified=bool(entry.get("stale_notified", False)),
+                    signal_kills=int(entry.get("signal_kills") or 0),
                 )
                 for name, entry in jobs.items()
             }
@@ -574,6 +577,13 @@ def _running_name(job: Job) -> str:
 
 def _job_name(running: str) -> str:
     return running if ":" in running else f"pair:{running}"
+
+
+def _signal_name(number: int) -> str:
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return f"signal {number}"
 
 
 class SubprocessRunner:
@@ -613,7 +623,7 @@ class SubprocessRunner:
 class Daemon:
     def __init__(self, config_path: Path, scheduler: Scheduler, runner: SubprocessRunner) -> None:
         self.config_path = config_path
-        self.requests_dir = config_path.parent / "requests"
+        self.requests_dir = scheduler.events.requests_dir
         self.scheduler = scheduler
         scheduler.on_finish = self._wake_up
         self.runner = runner
@@ -796,7 +806,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="config file (default: $HOMEWARD_CONFIG or %(default)s)",
     )
     parser.add_argument(
-        "--status", type=Path, help="status file (default: status.json next to the config)"
+        "--status",
+        type=Path,
+        help="status file (default: status.json in $HOMEWARD_VAR, else next to the config)",
     )
     parser.add_argument("--once", action="store_true", help="run the due jobs once and exit")
     parser.add_argument(
@@ -807,9 +819,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _setup_logging(args.log_file)
-    status_path = args.status or args.config.parent / "status.json"
+    # The same var folder as the UI API: $HOMEWARD_VAR, else the config's folder.
+    paths = Paths.for_config(args.config)
+    status_path = args.status or paths.status_file
     runner = SubprocessRunner()
-    daemon = Daemon(args.config, Scheduler(status_path, runner), runner)
+    daemon = Daemon(args.config, Scheduler(status_path, runner, paths=paths), runner)
     if args.once:
         daemon.cycle()
         daemon.scheduler.wait()
