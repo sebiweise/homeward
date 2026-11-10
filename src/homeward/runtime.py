@@ -320,6 +320,7 @@ EVENT_CODES = (
     "not_backed_up",  # no successful run for ``STALE_DAYS``; ``days`` says how long
     "notices_cleared",  # the user cleared the notices on the status page
     "login_locked",  # too many wrong sign-ins to the container's web page from one address
+    "web_start_failed",  # the container's web page cannot start (bad port, port in use)
     "sync_summary",  # what a run did; ``counts`` maps an action kind to a number
 )
 

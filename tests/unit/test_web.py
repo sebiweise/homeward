@@ -213,10 +213,9 @@ def test_container_reports_a_bad_port_or_config(
     monkeypatch.setenv("HOMEWARD_WEB_PORT", "web")
     monkeypatch.setattr(container.scheduler, "main", lambda argv: 0)
     assert container.main([]) == 1
+    events = Paths(var_dir=tmp_path, config=tmp_path / "config.toml").events_file
+    assert "web_start_failed" in events.read_text()
     monkeypatch.delenv("HOMEWARD_WEB_PASSWORD")
     (tmp_path / "config.toml").write_text("not = [toml")
     assert container.main([]) == 1
-    assert (
-        "config_error"
-        in Paths(var_dir=tmp_path, config=tmp_path / "config.toml").events_file.read_text()
-    )
+    assert "config_error" in events.read_text()

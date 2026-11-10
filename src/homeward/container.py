@@ -110,6 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         start_web(paths, os.environ)
     except (OSError, ValueError) as exc:
         log.error("the web page cannot start: %s", exc)
+        record_event(Level.ERROR, "service", "web_start_failed", str(exc), paths=paths)
         return 1
     return scheduler.main(["--config", str(paths.config), *extra])
 
