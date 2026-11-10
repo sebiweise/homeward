@@ -241,16 +241,24 @@ class PhotoExecutor:
         records = self.state.records(self.job)
         items = list(action.archive_items)
         self._prepare(items)
+        checked: dict[str, tuple[int, int]] = {}  # NAS path -> (size, mtime) when compared
         for item in items:
             record = records.get(item.key)
             if record is None:
                 raise ArchiveMismatch(f"{item.filename} is not backed up; iCloud keeps the photo")
             if not self._inside(record.path).is_file():
                 raise ArchiveMismatch(f"{record.path} is missing; iCloud keeps the photo")
+            checked[record.path] = _size_mtime(self._inside(record.path))
             # A sidecar (made by Homeward) is compared with the one built from iCloud's
             # metadata in this run, the same way.
             if _sha256_file(self._inside(record.path)) != self._sha256_icloud(item):
                 raise ArchiveMismatch(f"{record.path} differs from iCloud; iCloud keeps the photo")
+        # The comparison downloads every file and can take long (videos): a file that a
+        # share user removed or changed meanwhile stops the delete as well.
+        for path, seen in checked.items():
+            target = self._inside(path)
+            if not target.is_file() or _size_mtime(target) != seen:
+                raise ArchiveMismatch(f"{path} changed during the check; iCloud keeps the photo")
         keys = [item.key for item in items]
         self.state.mark_archived(self.job, keys)  # first: see mark_archived
         try:
@@ -404,6 +412,11 @@ def _need[T](value: T | None) -> T:
 
 class ArchiveMismatch(RuntimeError):
     """A photo to archive is not exactly on the NAS; it stays in iCloud."""
+
+
+def _size_mtime(path: Path) -> tuple[int, int]:
+    info = path.stat()
+    return info.st_size, info.st_mtime_ns
 
 
 def _sha256_file(path: Path) -> str:
