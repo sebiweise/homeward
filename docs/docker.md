@@ -23,9 +23,12 @@ docker compose up -d --build
 `chmod 600 .env`. The single quotes keep characters such as `$` as they are, so the
 password must not contain a `'` itself.
 
-Then open `http://<host>:8080/`, sign in with `admin` and the password from
-`HOMEWARD_WEB_PASSWORD`, add an Apple ID under **Apple IDs** and create photos backups
-and sync pairs as in the [user guide](user-guide.md).
+Then open `http://127.0.0.1:8080/` on the host, sign in with `admin` and the password
+from `HOMEWARD_WEB_PASSWORD`, add an Apple ID under **Apple IDs** and create photos
+backups and sync pairs as in the [user guide](user-guide.md). The example compose file
+publishes the page only on the host itself. From another device, use an SSH tunnel
+(`ssh -L 8080:127.0.0.1:8080 <host>`, then `http://127.0.0.1:8080/`) or a reverse
+proxy with HTTPS on the host (see below).
 
 ## Volumes
 
