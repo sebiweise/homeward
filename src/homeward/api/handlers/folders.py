@@ -23,11 +23,14 @@ ROOT = Path("/")
 MAX_ENTRIES = 2000
 
 
-def list_folders(_ctx: Context, request: Request) -> dict[str, Any]:
+def list_folders(ctx: Context, request: Request) -> dict[str, Any]:
     """Without ``path`` the shared folders, else the subfolders of ``path``."""
     path = request.params.get("path", "").strip()
     if not path:
-        shares = [_entry(share) for volume in _volumes() for share in _children(volume)]
+        volumes = _volumes()
+        if not volumes:
+            _check_configured_volumes(ctx.paths)
+        shares = [_entry(share) for volume in volumes for share in _children(volume)]
         return {"path": None, "parent": None, "folders": shares, "truncated": False}
     folder = _checked(path)
     children = _children(folder)
@@ -59,6 +62,16 @@ def create(_ctx: Context, request: Request) -> dict[str, Any]:
     except OSError as exc:
         raise ApiError("folder_denied", f"{folder}: {exc.strerror}", status=403) from None
     return _entry(folder)
+
+
+def _check_configured_volumes(paths: Paths | None) -> None:
+    """Raise ``volumes_missing`` (with a log line and an event) when HOMEWARD_VOLUMES is
+    set but none of its folders exists."""
+    configured = os.environ.get("HOMEWARD_VOLUMES", "")
+    if configured:
+        log.warning("none of the HOMEWARD_VOLUMES folders exists: %s", configured)
+        record_event(Level.WARNING, "service", "volumes_missing", configured, paths=paths)
+        raise ApiError("volumes_missing", configured)
 
 
 def _volumes() -> list[Path]:
@@ -137,12 +150,7 @@ def check_shared_folder(path: Path, key: str, paths: Paths | None = None) -> Non
     to check against."""
     volumes = _volumes()
     if not volumes:
-        configured = os.environ.get("HOMEWARD_VOLUMES", "")
-        if configured:
-            # Set, but none of its folders exists: refuse instead of checking nothing.
-            log.warning("none of the HOMEWARD_VOLUMES folders exists: %s", configured)
-            record_event(Level.WARNING, "service", "volumes_missing", configured, paths=paths)
-            raise ApiError("volumes_missing", configured)
+        _check_configured_volumes(paths)  # refuse instead of checking nothing
         return
     if not any(path.is_relative_to(v) and path != v for v in volumes):
         raise ApiError("invalid_param", key)

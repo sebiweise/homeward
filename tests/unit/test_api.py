@@ -897,6 +897,9 @@ def test_pair_folders_are_refused_when_no_configured_volume_exists(
         client.call("pairs.create", post=True, pair=_pair(tmp_path, local=str(tmp_path / "nas")))
     assert _error(excinfo) == "volumes_missing"
     assert "volumes_missing" in client.paths.events_file.read_text()
+    with pytest.raises(ApiError) as excinfo:
+        client.call("folders.list")  # the picker says so too, instead of showing nothing
+    assert _error(excinfo) == "volumes_missing"
 
 
 def test_on_dsm_pair_and_photos_folders_must_be_in_a_shared_folder(
