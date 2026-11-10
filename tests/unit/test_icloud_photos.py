@@ -950,8 +950,12 @@ def test_list_changes_gives_up_on_an_error_in_the_feed() -> None:
 
 def test_delete_photo_looks_the_asset_up_again_and_deletes_it() -> None:
     service = make_service()
-    source = ICloudPhotosSource(service, [Library.PERSONAL, Library.SHARED], lookup=by_name)
+    service.photos.libraries["root"].all.photos[0].asset_record = {}
+    source = ICloudPhotosSource(
+        service, [Library.PERSONAL, Library.SHARED], lookup=by_name, xmp_builder=lambda a: b"<x/>"
+    )
     items = {i.key: i for i in source.list_items()}
+    assert "personal/a/xmp" in items  # the sidecar was listed, so it is backed up
     deleted: list[str] = []
     for asset in service.photos.libraries["root"].all.photos:
         asset.delete = lambda asset=asset: deleted.append(asset.id)  # type: ignore[attr-defined]
@@ -964,6 +968,26 @@ def test_delete_photo_looks_the_asset_up_again_and_deletes_it() -> None:
     service.photos.libraries["root"].all.photos.pop(0)
     with pytest.raises(RuntimeError, match="no longer in iCloud"):
         source.delete_photo(items["personal/a/original"])
+
+
+def test_delete_photo_keeps_a_photo_whose_xmp_sidecar_failed() -> None:
+    service = make_service()
+
+    def flaky_xmp(asset: Any) -> bytes:
+        raise ValueError(f"bad metadata in {asset.id}")
+
+    photo = service.photos.libraries["root"].all.photos[0]
+    photo.asset_record = {}  # has a record, so a sidecar would be built
+    source = ICloudPhotosSource(service, [Library.PERSONAL], lookup=by_name, xmp_builder=flaky_xmp)
+    items = {i.key: i for i in source.list_items()}
+    deleted: list[str] = []
+    photo.delete = lambda: deleted.append(photo.id)  # type: ignore[attr-defined]
+
+    with pytest.raises(DeleteRefused, match="xmp"):
+        source.delete_photo(items["personal/a/original"])
+
+    assert deleted == []
+    assert "personal/a/xmp" not in items
 
 
 def test_delete_photo_keeps_a_photo_with_files_the_backup_does_not_have() -> None:
