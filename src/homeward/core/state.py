@@ -5,11 +5,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from homeward.core.models import FileMeta, FileRecord
 
-SCHEMA_VERSION = 1
+# 2: archived files. An older Homeward must not open it: it would upload them again.
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -31,6 +32,16 @@ CREATE TABLE IF NOT EXISTS runs (
     actions INTEGER NOT NULL,
     errors INTEGER NOT NULL,
     blocked TEXT
+);
+CREATE TABLE IF NOT EXISTS archived (
+    pair TEXT NOT NULL,
+    path TEXT NOT NULL,
+    local_version TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    archived_at REAL NOT NULL,
+    PRIMARY KEY (pair, path)
 );
 -- What the files of a pair were synced between (see ``pair_identity``); added later,
 -- so a pair without a row predates it.
@@ -112,17 +123,71 @@ class StateDB:
             (pair, rec.path, rec.local_version, rec.remote_version, rec.size, rec.sha256,
              rec.synced_at),
         )  # fmt: skip
+        # Synced again (it came back to iCloud): no longer an archived NAS-only copy.
+        self._conn.execute("DELETE FROM archived WHERE pair = ? AND path = ?", (pair, rec.path))
         return rec
+
+    def archive(self, pair: str, local: FileMeta, sha256: str, rule: str) -> None:
+        """Remember that ``local`` is removed from iCloud and lives on only on the NAS.
+
+        Written before the iCloud delete, and the file's sync record stays until
+        ``forget`` after it: if the run stops in between, the next run sees the path
+        gone in iCloud but archived and leaves the NAS copy alone (the decision table
+        then forgets the record), or, if iCloud still has it, syncs it as before."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO archived VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pair, local.path, local.version, local.size, sha256, rule, time.time()),
+        )
+
+    def archived(self, pair: str) -> set[str]:
+        """Paths of the pair's archived files."""
+        rows = self._conn.execute("SELECT path FROM archived WHERE pair = ?", (pair,))
+        return {row[0] for row in rows}
+
+    def archived_rows(self, pair: str) -> list[tuple[Any, ...]]:
+        """The pair's archive records as stored, to carry them to another state file."""
+        rows = self._conn.execute(
+            "SELECT path, local_version, size, sha256, rule, archived_at FROM archived "
+            "WHERE pair = ?",
+            (pair,),
+        )
+        return list(rows)
+
+    def restore_archived(self, pair: str, rows: list[tuple[Any, ...]]) -> None:
+        """Write archive records read with ``archived_rows`` (another account's state)."""
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO archived VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(pair, *row) for row in rows],
+            )
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
+
+    def archived_totals(self, pair: str) -> tuple[int, int]:
+        """Number and total size of the pair's archived files."""
+        count, size = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM archived WHERE pair = ?", (pair,)
+        ).fetchone()
+        return int(count), int(size)
 
     def forget(self, pair: str, path: str) -> None:
         self._conn.execute("DELETE FROM files WHERE pair = ? AND path = ?", (pair, path))
 
-    def reset(self, pair: str) -> int:
+    def reset(self, pair: str, *, archived: bool = False) -> int:
         """Forget every file of a pair, so its next run is a first run again.
 
         Also forgets the pair's identity: a run still going with the old folders
-        may record files after this, and the next run must not build on those."""
+        may record files after this, and the next run must not build on those.
+        Archived files stay remembered unless ``archived`` is set (the pair is
+        removed or its NAS folder changed): otherwise a bidirectional pair would
+        upload them again.
+        """
         cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
+        if archived:
+            self._conn.execute("DELETE FROM archived WHERE pair = ?", (pair,))
         self.set_identity(pair, _RESET)
         return cursor.rowcount
 

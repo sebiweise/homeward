@@ -1,5 +1,6 @@
 """Apply a photos plan: downloads in parallel, links, and moves to the trash."""
 
+import hashlib
 import logging
 import os
 import shutil
@@ -29,6 +30,7 @@ from homeward.core.photos.model import (
     MAX_WORKERS,
     PREPARE_BATCH,
     PROGRESS_EVERY,
+    DeleteRefused,
     PhotoAction,
     PhotoActionKind,
     PhotoFailure,
@@ -38,9 +40,7 @@ from homeward.core.photos.model import (
     PhotoRunResult,
     PhotoSource,
 )
-from homeward.core.photos.plan import (
-    build_photo_plan,
-)
+from homeward.core.photos.plan import PhotoRules, build_photo_plan
 from homeward.core.planner import DeleteBrake
 from homeward.core.progress import Progress
 from homeward.core.trash import Trash
@@ -116,6 +116,15 @@ class PhotoExecutor:
             rest = [
                 a for a in rest if a.kind is not PhotoActionKind.DELETE or a.key not in plan.held
             ]
+            self.state.clear_full_listing(self.job)  # the approving run reads it all again
+        if plan.archive_blocked and not allow_deletes:
+            log.warning(
+                "archive limit: %s; they stay in iCloud until approved",
+                plan.archive_blocked,
+                extra={"event": "delete_brake"},
+            )
+            result.blocked = result.blocked or plan.archive_blocked
+            rest = [a for a in rest if a.kind is not PhotoActionKind.ARCHIVE]
             self.state.clear_full_listing(self.job)  # the approving run reads it all again
         if rest:
             self.progress.phase("linking", total=len(rest))
@@ -215,10 +224,62 @@ class PhotoExecutor:
                 self.state.mark_gone(self.job, action.key)
             case PhotoActionKind.DELETE:
                 self._delete(action)
+            case PhotoActionKind.ARCHIVE:
+                self._archive(action)
             case PhotoActionKind.RETURNED:
                 item = _need(action.item)
                 size = self._inside(action.path).stat().st_size
                 self.state.record(self.job, item.key, action.path, size, item.checksum)
+
+    def _archive(self, action: PhotoAction) -> None:
+        """Compare every file of the photo with iCloud byte for byte (SHA-256 of a fresh
+        download against the NAS file), then delete the photo in iCloud. iCloud keeps
+        it in "Recently Deleted" for 30 days. Any difference stops before deleting."""
+        delete = getattr(self.source, "delete_photo", None)
+        if delete is None:
+            raise RuntimeError("this photo source cannot delete photos in iCloud")
+        records = self.state.records(self.job)
+        items = list(action.archive_items)
+        self._prepare(items)
+        checked: dict[str, tuple[int, ...]] = {}  # NAS path -> its fingerprint when compared
+        for item in items:
+            record = records.get(item.key)
+            if record is None:
+                raise ArchiveMismatch(f"{item.filename} is not backed up; iCloud keeps the photo")
+            if not self._inside(record.path).is_file():
+                raise ArchiveMismatch(f"{record.path} is missing; iCloud keeps the photo")
+            checked[record.path] = _fingerprint(self._inside(record.path))
+            # A sidecar (made by Homeward) is compared with the one built from iCloud's
+            # metadata in this run, the same way.
+            if _sha256_file(self._inside(record.path)) != self._sha256_icloud(item):
+                raise ArchiveMismatch(f"{record.path} differs from iCloud; iCloud keeps the photo")
+        # The comparison downloads every file and can take long (videos): a file that a
+        # share user removed or changed meanwhile stops the delete as well.
+        for path, seen in checked.items():
+            target = self._inside(path)
+            if not target.is_file() or _fingerprint(target) != seen:
+                raise ArchiveMismatch(f"{path} changed during the check; iCloud keeps the photo")
+        keys = [item.key for item in items]
+        self.state.mark_archived(self.job, keys)  # first: see mark_archived
+        try:
+            delete(_need(action.item))
+        except DeleteRefused:  # refused before anything was sent to iCloud
+            self.state.unmark_archived(self.job, keys)
+            raise
+        # Any other error keeps the mark, as iCloud may have deleted the photo: if it
+        # did not, the next run still lists it and records it as RETURNED.
+        log.info(
+            "archived %s: kept on the NAS, moved to Recently Deleted in iCloud (rule %r)",
+            action.path, action.rule,
+        )  # fmt: skip
+
+    def _sha256_icloud(self, item: PhotoItem) -> str:
+        digest = hashlib.sha256()
+        with self.source.open_read(item) as raw:
+            stream = throttled(raw, self.throttle)
+            while chunk := stream.read(CHUNK):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _inside(self, relative: str) -> Path:
         """``root/relative``, refused (``SymlinkInPath``) if it crosses a symlink or no
@@ -351,6 +412,25 @@ def _need[T](value: T | None) -> T:
     return value
 
 
+class ArchiveMismatch(RuntimeError):
+    """A photo to archive is not exactly on the NAS; it stays in iCloud."""
+
+
+def _fingerprint(path: Path) -> tuple[int, ...]:
+    """Changes with every write, replace or rename onto the path: the inode change time
+    cannot be set back by a user, unlike the modification time."""
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class PhotoOutcome:
     plan: PhotoPlan
@@ -378,6 +458,7 @@ def backup_photos(
     remove_gone: bool = False,
     recycle_bin: Path | None = None,
     max_rate_kb: int | None = None,
+    rules: PhotoRules | None = None,
     confined: Confined | None = None,
 ) -> PhotoOutcome:
     if not root.is_dir() and state.records(job):
@@ -396,7 +477,8 @@ def backup_photos(
     plan = build_photo_plan(
         job, source, root, state, layout, albums=albums, progress=progress, now=now,
         mirror_deletes=mirror_deletes, selection=selection, brake=brake,
-        remove_gone=remove_gone, damaged=integrity.keys if integrity else frozenset(),
+        remove_gone=remove_gone, rules=rules,
+        damaged=integrity.keys if integrity else frozenset(),
     )  # fmt: skip
     if dry_run:
         return PhotoOutcome(plan, None)

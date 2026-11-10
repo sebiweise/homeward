@@ -19,3 +19,28 @@ def test_uses_wal_and_persists(tmp_path: Path) -> None:
         state.forget("p", "a.txt")
         assert state.records("p") == {}
         assert set(state.records("q")) == {"a.txt", "b.txt"}
+
+
+def test_archive_keeps_the_record_until_forget_and_survives_a_reset() -> None:
+    state = StateDB(":memory:")
+    local = FileMeta("a.txt", 3, 1.0, "l1")
+    state.record("p", local, FileMeta("a.txt", 3, 2.0, "r1"))
+    state.archive("p", local, "abc", "Alt")
+    # Written before the iCloud delete; the executor forgets the record after it.
+    assert set(state.records("p")) == {"a.txt"}
+    state.forget("p", "a.txt")
+    assert state.records("p") == {}
+    assert state.archived("p") == {"a.txt"}
+    assert state.archived_totals("p") == (1, 3)
+    state.reset("p")
+    assert state.archived("p") == {"a.txt"}
+    state.reset("p", archived=True)
+    assert state.archived("p") == set()
+
+
+def test_syncing_an_archived_path_again_ends_its_archive_entry() -> None:
+    state = StateDB(":memory:")
+    local = FileMeta("a.txt", 3, 1.0, "l1")
+    state.archive("p", local, "abc", "Alt")
+    state.record("p", local, FileMeta("a.txt", 3, 2.0, "r2"))
+    assert state.archived("p") == set()

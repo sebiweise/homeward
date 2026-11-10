@@ -24,6 +24,7 @@ from homeward.core.photos.model import (
     PREPARE_BATCH,
     PROGRESS_EVERY,
     SCHEME_FIELDS,
+    DeleteRefused,
     Library,
     PhotoAction,
     PhotoActionKind,
@@ -38,7 +39,7 @@ from homeward.core.photos.model import (
     safe_name,
     safe_relative,
 )
-from homeward.core.photos.plan import build_photo_plan
+from homeward.core.photos.plan import PhotoRules, build_photo_plan
 
 __all__ = [
     "DEFAULT_WORKERS",
@@ -48,6 +49,7 @@ __all__ = [
     "PREPARE_BATCH",
     "PROGRESS_EVERY",
     "SCHEME_FIELDS",
+    "DeleteRefused",
     "Library",
     "PhotoAction",
     "PhotoActionKind",
@@ -57,6 +59,7 @@ __all__ = [
     "PhotoLayout",
     "PhotoOutcome",
     "PhotoPlan",
+    "PhotoRules",
     "PhotoRunResult",
     "PhotoSource",
     "backup_photos",

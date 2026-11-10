@@ -2,12 +2,14 @@
 
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-SCHEMA_VERSION = 1
+# 2: archived photos. An older Homeward must not open it: it would mark them as gone.
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -18,6 +20,7 @@ CREATE TABLE IF NOT EXISTS photos (
     checksum TEXT,
     synced_at REAL NOT NULL,
     gone_at REAL,
+    archived_at REAL,
     PRIMARY KEY (job, key)
 );
 CREATE TABLE IF NOT EXISTS album_links (
@@ -45,7 +48,9 @@ CREATE TABLE IF NOT EXISTS full_listings (
 
 @dataclass(frozen=True, slots=True)
 class PhotoRecord:
-    """A photo file that is on the NAS. ``gone_at`` is set once iCloud no longer has it."""
+    """A photo file that is on the NAS. ``gone_at`` is set once iCloud no longer has it,
+    ``archived_at`` once a file rule archived it (Homeward deleted it in iCloud): an
+    archived photo lives on only on the NAS and is never marked as gone or deleted."""
 
     key: str
     path: str
@@ -53,6 +58,7 @@ class PhotoRecord:
     checksum: str | None
     synced_at: float
     gone_at: float | None
+    archived_at: float | None = None
 
 
 class PhotoStateDB:
@@ -69,6 +75,9 @@ class PhotoStateDB:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(full_listings)")}
         if "selection" not in columns:  # test builds 0.2.0-3 created it without
             self._conn.execute("ALTER TABLE full_listings ADD COLUMN selection TEXT")
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(photos)")}
+        if "archived_at" not in columns:  # databases of schema 1
+            self._conn.execute("ALTER TABLE photos ADD COLUMN archived_at REAL")
         # PRAGMA takes no bound parameters; SCHEMA_VERSION is a constant.
         # nosemgrep
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -89,14 +98,15 @@ class PhotoStateDB:
 
     def records(self, job: str) -> dict[str, PhotoRecord]:
         rows = self._conn.execute(
-            "SELECT key, path, size, checksum, synced_at, gone_at FROM photos WHERE job = ?",
+            "SELECT key, path, size, checksum, synced_at, gone_at, archived_at FROM photos "
+            "WHERE job = ?",
             (job,),
         )
         return {row[0]: PhotoRecord(*row) for row in rows}
 
     def record(self, job: str, key: str, path: str, size: int, checksum: str | None) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO photos VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            "INSERT OR REPLACE INTO photos VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)",
             (job, key, path, size, checksum, time.time()),
         )
 
@@ -108,6 +118,29 @@ class PhotoStateDB:
         self._conn.execute(
             "UPDATE photos SET gone_at = ? WHERE job = ? AND key = ?", (time.time(), job, key)
         )
+
+    def mark_archived(self, job: str, keys: Iterable[str]) -> None:
+        """The photo is deleted in iCloud by a file rule; its NAS files stay for good.
+        Marked before the delete and all keys at once: a run that stops halfway never
+        leaves a photo that is gone in iCloud without the mark (it would count as
+        deleted in iCloud). If iCloud still lists it later, it is ``RETURNED``."""
+        self._set_archived(job, keys, time.time())
+
+    def unmark_archived(self, job: str, keys: Iterable[str]) -> None:
+        """The delete was refused before it touched iCloud: the photo is not archived."""
+        self._set_archived(job, keys, None)
+
+    def _set_archived(self, job: str, keys: Iterable[str], when: float | None) -> None:
+        self._conn.execute("BEGIN")
+        try:
+            self._conn.executemany(
+                "UPDATE photos SET archived_at = ? WHERE job = ? AND key = ?",
+                [(when, job, key) for key in keys],
+            )
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
 
     def links(self, job: str) -> dict[str, tuple[str, str]]:
         """Album links of a job: link path -> (photo key, album name)."""

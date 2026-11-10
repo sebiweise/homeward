@@ -130,8 +130,9 @@ and *Bandwidth* in their dialogs):
 ### Photos backup
 
 One `[[photos]]` job backs up one Apple ID into one NAS folder. Photos only flow from
-iCloud to the NAS; Homeward never deletes anything in iCloud. A photo deleted in iCloud
-stays on the NAS, unless `mirror_deletes` is on (see below).
+iCloud to the NAS; Homeward only deletes in iCloud what an archive rule asks for (see
+[File rules](#file-rules)). A photo deleted in iCloud stays on the NAS, unless
+`mirror_deletes` is on (see below).
 
 ```toml
 [[photos]]
@@ -236,6 +237,68 @@ In `bidirectional` mode a rename or move on either side is carried out as "old n
 the trash, new name copied over" and does not count for the delete brake. iCloud Drive
 does not keep names apart that differ only in upper/lower case (`notes.txt`,
 `Notes.txt`); such a NAS file is not uploaded and shows up as skipped in every run.
+
+## File rules
+
+Every sync pair and photos backup can have rules (*Rules* in the job's dialog,
+`[[pair.rule]]` or `[[photos.rule]]` tables). For each file the first rule whose filters
+all match decides what happens; files no rule matches are synced as usual.
+
+```toml
+[[pair.rule]]
+name = "Videos"
+action = "ignore"
+extensions = ["mp4", "mov"]
+
+[[pair.rule]]
+name = "Alte Scans"
+action = "archive"
+patterns = ["Scans/*"]
+older_than = "3y"
+preview = false   # true (the default) only reports what would be archived
+```
+
+| Key | Meaning |
+| --- | --- |
+| `name` | required, any label; shown in run details and the event log |
+| `action` | required. `ignore`: never synced in either direction, never deleted. `archive`: kept on the NAS, then deleted in iCloud. |
+| `patterns` | globs against the file name, or the path when they hold a `/` (`Scans/Alt` covers that folder); case does not matter. For photos the path in the backup, e.g. `2019/*`. |
+| `extensions` | without the dot, case does not matter |
+| `min_size`, `max_size` | e.g. `"500MB"`, `"2GB"` (binary units) |
+| `older_than`, `newer_than` | e.g. `"30d"`, `"2w"`, `"18m"`, `"3y"` (a month is 30 days, a year 365). Drive: modification date; photos: date taken. |
+| `preview` | archive rules only, default `true`: the run lists the files under *Would be archived* and deletes nothing |
+| `enabled` | default `true` |
+
+`archive_limit` on the job (default 200) stops a run that would archive more files or
+photos until it is approved like the delete brake.
+
+Once the iCloud trash or "Recently Deleted" is emptied, an archived file exists only on
+the NAS. Keep an independent backup of the NAS folder (Hyper Backup, a USB disk) before
+you turn an archive rule on.
+
+Archiving is careful by design:
+
+- Drive pairs archive only in `download` and `bidirectional` mode. iCloud deletes a file
+  only after the NAS copy's SHA-256 checksum (a fingerprint of the content that changes
+  if a single byte differs) matches iCloud's content (hashed while downloading, known
+  from the last sync, or read from iCloud again); it goes to the iCloud trash.
+  Archived files are remembered: a bidirectional pair never uploads them again, and
+  deleting them on the NAS is not passed on. Changing a pair's NAS folder forgets them;
+  with another iCloud folder or account they stay on the NAS only.
+- Photos backups archive only photos of the personal library, never the Shared Library
+  or shared albums, as a whole (original, Live Photo video, RAW, edits), and only after
+  every file was downloaded once more from iCloud and matched the NAS file byte for
+  byte. A job that leaves out file types (videos, Live Photo videos, RAW, edits or XMP
+  sidecars) does not archive, since iCloud would delete files the NAS does not have; a
+  photo whose XMP sidecar (caption, keywords) could not be written stays in iCloud too.
+  The photo goes to "Recently Deleted" (30 days). Archived photos stay on the NAS and
+  in their album folders for good, also with `mirror_deletes`. Archive rules make the
+  backup read the whole library at least every 24 hours.
+- The first run of a job never archives; a file that changed on one side waits until
+  both sides match again. A dry run (*Test run*) shows everything a rule would do.
+- If an archived file shows up in iCloud again (restored from the trash), it is synced
+  again; an archive rule that still matches archives it again on a later run, so change
+  the rule or put an ignore rule above it to keep it in iCloud.
 
 ## Safety nets
 
