@@ -36,7 +36,7 @@ TOKEN_PATH = "/webman/login.cgi"
 API_PATH = "/api.cgi"
 MAX_BODY = 64 * 1024
 REQUEST_TIMEOUT = 30  # seconds a client may take to send a request
-MAX_FAILURES = 10  # wrong sign-ins in a row from one address before it is locked out
+MAX_FAILURES = 10  # wrong sign-ins from one address, each within LOCK_SECONDS, before a lock
 LOCK_SECONDS = 300
 
 
@@ -69,8 +69,10 @@ class Attempt(Enum):
 
 class LoginGuard:
     """Locks an address out for ``LOCK_SECONDS`` after ``MAX_FAILURES`` wrong sign-ins
-    in a row, so a weak password cannot be guessed quickly. Shared by all handler
-    threads."""
+    with less than ``LOCK_SECONDS`` between them, so a weak password cannot be guessed
+    quickly. A right password does not reset the count: behind a reverse proxy or an SSH
+    tunnel every client has the same address, and the open page of the real user must
+    not clear an attacker's count. Shared by all handler threads."""
 
     def __init__(self, paths: Paths, clock: Callable[[], float] = time.monotonic) -> None:
         self._paths = paths
@@ -95,7 +97,6 @@ class LoginGuard:
             if ok is None:
                 return Attempt.DENIED
             if ok:
-                self._failures.pop(client, None)
                 return Attempt.OK
             count += 1
             self._failures[client] = (count, now)

@@ -181,11 +181,13 @@ def test_login_guard_locks_an_address_after_wrong_sign_ins(tmp_path: Path) -> No
     assert "login_locked" in paths.events_file.read_text()
     now[0] += web.LOCK_SECONDS
     assert guard.attempt("10.0.0.2", True) is web.Attempt.OK
-    guard.attempt("10.0.0.3", False)
-    guard.attempt("10.0.0.3", True)
+    # A right password in between does not reset the count (one address for all
+    # clients behind a proxy); only a pause of LOCK_SECONDS does.
     for _ in range(web.MAX_FAILURES - 1):
-        guard.attempt("10.0.0.3", False)
-    assert guard.attempt("10.0.0.3", True) is web.Attempt.OK  # a success starts over
+        assert guard.attempt("10.0.0.3", False) is web.Attempt.DENIED
+    assert guard.attempt("10.0.0.3", True) is web.Attempt.OK
+    assert guard.attempt("10.0.0.3", False) is web.Attempt.DENIED
+    assert guard.attempt("10.0.0.3", True) is web.Attempt.LOCKED
 
 
 def test_login_guard_lets_no_parallel_guess_past_the_limit(tmp_path: Path) -> None:

@@ -107,8 +107,10 @@ command-line interface works the same way, for example
   The page has no TLS of its own, so over plain HTTP anyone on the network can read
   the web password and the Apple ID password you type in. Reach it through a reverse
   proxy with HTTPS or an SSH tunnel, also in your LAN, let only that proxy (or
-  `127.0.0.1`) reach port 8080, and never expose it to the internet as is. After 10 wrong sign-ins in a
-  row an address is locked out for 5 minutes (shown in the event log).
+  `127.0.0.1`) reach port 8080, and never expose it to the internet as is. After 10
+  wrong sign-ins with less than 5 minutes between them an address is locked out for 5
+  minutes (shown in the event log). Behind a proxy or an SSH tunnel all clients share
+  one address, so such a lock also keeps you out until it ends.
 - **Notifications**: there are no DSM notifications; failures show up on the web page,
   in the event log and in the container log.
 - **Trash**: deleted files go to `.homeward-papierkorb/` in the job's folder, that is
