@@ -69,6 +69,8 @@ class PhotoStateDB:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(full_listings)")}
         if "selection" not in columns:  # test builds 0.2.0-3 created it without
             self._conn.execute("ALTER TABLE full_listings ADD COLUMN selection TEXT")
+        # PRAGMA takes no bound parameters; SCHEMA_VERSION is a constant.
+        # nosemgrep
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:

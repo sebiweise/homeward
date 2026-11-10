@@ -38,8 +38,8 @@ reviews:
     - path: "src/homeward/**/*.py"
       instructions: >-
         Python 3.12, durchgehend Typannotationen (mypy strict), englischer
-        Code und Kommentare. Lint und Format übernimmt Ruff, Code-Smells
-        meldet SonarCloud: diese nicht wiederholen. Wichtigster Maßstab:
+        Code und Kommentare. Lint und Format übernimmt Ruff,
+        Sicherheitsfunde meldet der Security-Scan: diese nicht wiederholen. Wichtigster Maßstab:
         Kein Pfad darf Daten verlieren. Überschreiben oder Löschen nur mit
         wiederherstellbarer Kopie (Papierkorb in core/trash.py).
         Jedes Warten, jeder Retry und jeder Fehler muss für Nutzer sichtbar
@@ -71,7 +71,7 @@ reviews:
         bzw. Retry mit Event melden. fake*.py müssen das Verhalten der echten
         Adapter für Tests treu nachbilden; bei neuen Adapter-Funktionen auch
         die Fakes ergänzen. Protocol-Implementierungen erben explizit vom
-        Protocol (Sonar).
+        Protocol.
     - path: "src/homeward/auth/**/*.py"
       instructions: >-
         pyicloud-Session und 2FA. Keine Passwörter, Cookies oder Codes in
@@ -96,7 +96,7 @@ reviews:
         dokumentieren.
     - path: "package/ui/**/*.js"
       instructions: >-
-        Ext.js-UI für DSM 7.2. SonarCloud-Muster einhalten: Fire-and-forget-
+        Ext.js-UI für DSM 7.2. Diese Muster einhalten: Fire-and-forget-
         Promises (Event-Handler, load(...)-Aufrufe) mit `void` präfixen,
         ein Arrow mit Block-Body reicht nicht; `setTimeout(asyncFn, ms)` als
         `setTimeout(() => void asyncFn(), ms)` schreiben. Keine hartkodierten
@@ -128,7 +128,7 @@ reviews:
         Fremde Actions per Commit-SHA mit Versionskommentar pinnen
         (`owner/action@<sha> # vX.Y.Z`), minimale permissions setzen. Neue
         `pip install`-Zeilen nur als `pip install --only-binary :all:
-        --require-hashes -r requirements/<x>.txt` (Sonar-Security-Gate),
+        --require-hashes -r requirements/<x>.txt`,
         in YAML quoten. In Bash `[[ ]]` statt `[ ]`.
     - path: "{README.md,docs/user-guide.md}"
       instructions: >-

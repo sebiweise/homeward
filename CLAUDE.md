@@ -18,6 +18,7 @@ iCloud Drive (upload / download / bidirectional) with the NAS.
 - Python 3.12, type hints, English code and comments.
 - UI strings in `package/ui/texts/{enu,ger}/strings`.
 - Version comes from the git tag only.
+- No `Co-Authored-By` lines in commit messages.
 
 ## Architecture map
 Details in `docs/architecture.md` and `docs/adr/`; read those before reading code.

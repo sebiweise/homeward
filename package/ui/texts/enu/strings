@@ -258,7 +258,7 @@ sync_summary="Run summary."
 [error]
 invalid_window="The time window needs the form HH:MM-HH:MM, e.g. 22:00-06:00 ({0})."
 not_running="This run has already finished."
-not_authenticated="Your DSM session has expired. Please sign in to DSM again."
+not_authenticated="Your session has expired. Please sign in again."
 not_admin="Only administrators can use Homeward."
 unknown_method="This action is not supported by the installed version."
 post_required="This action is not supported by the installed version."

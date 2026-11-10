@@ -51,8 +51,10 @@ tables has a scenario in `tests/scenarios/test_decision_table.py`.
 Safety nets:
 
 - **First run** of a pair (no state yet) never deletes or overwrites.
-- **Delete brake**: a run that would delete more than 10 % of the tracked files or more
-  than 50 files stops until approved (`--allow-deletes`). Both limits are per pair.
+- **Delete brake**: a run that would delete more than 50 files, or more than 10 % of the
+  tracked files, stops until approved (`--allow-deletes`). The share only counts from
+  more than 5 deletions on (fixed), so tidying up a small folder needs no approval. Both
+  limits are per pair.
 - **Dry run**: `homeward sync --dry-run` prints the plan and changes nothing.
 - **Exclusions**: Synology folders, `.DS_Store`, the trash and temp files, plus patterns
   per pair.
@@ -164,8 +166,11 @@ several Apple IDs, each with its own login session and state file
   resource and checksum appears in the other is moved on the NAS (`MOVE`), not
   downloaded again.
 - **Weekly integrity check** (`integrity.py`): every recorded file is compared with its
-  downloaded size; a damaged one goes to the trash with its album links (same inode
-  only) so the plan restores it. Photos iCloud no longer has are only reported.
+  downloaded size. The check itself changes nothing: it hands the damaged keys to the
+  plan, which then reads the whole library and replaces (`REPLACE`: old file to the
+  trash, album links of the same inode relinked) only the photos iCloud still lists.
+  Photos iCloud no longer has, including those deleted since the last complete reading,
+  are only reported and stay in place.
 - Same name, different photo: `IMG_0001 (2).JPG`; existing NAS files are never overwritten.
 - Downloads stream into a temp file, are checked against the size iCloud reports and are
   renamed into place without replacing (`RENAME_NOREPLACE`, so DSM's indexer sees them),

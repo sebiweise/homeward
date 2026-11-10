@@ -143,7 +143,7 @@ def check_scheme(scheme: str) -> None:
     """Raise ValueError unless ``scheme`` only uses ``{year}``, ``{month}`` and ``{day}``."""
     try:
         rendered = scheme.format(**dict.fromkeys(SCHEME_FIELDS, "0"))
-    except (KeyError, IndexError, ValueError) as exc:
+    except (KeyError, IndexError, ValueError, AttributeError) as exc:  # {year.x}
         fields = ", ".join(f"{{{name}}}" for name in SCHEME_FIELDS)
         raise ValueError(f"folder_scheme may only use {fields}: {exc}") from None
     if PurePosixPath(rendered).is_absolute() or ".." in PurePosixPath(rendered).parts:
