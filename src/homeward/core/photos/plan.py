@@ -324,6 +324,12 @@ def _plan_archives(
         if rule is None or rule.action is not RuleAction.ARCHIVE:
             continue
         pending = _archive_pending(original, files, root, records, busy, rule, rules)
+        if pending is None and any(
+            (hit := rules.decide(f, layout, plan.started_at)) is not None
+            and hit.action is RuleAction.IGNORE
+            for f in files
+        ):
+            pending = "a file of it is ignored"  # iCloud would delete what the NAS leaves out
         record = records.get(original.key)
         shown = record.path if record is not None else original.filename
         plan.rule_hits.append(RuleHit(shown, rule.name, rule.action, pending))

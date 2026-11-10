@@ -76,6 +76,14 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
             raise ApiError("pair_not_found", entry["name"])
         pairs[index] = without_none({**pairs[index], **entry})
 
+    if entry["account"] != old.account and entry["local"] == str(old.local):
+        # Archived paths belong to the NAS folder, so they go along to the new account's
+        # state, written before the config names that account: a stop in between
+        # leaves them in both state files, never in neither (writing them is idempotent).
+        carried = _archived_rows(ctx, old)
+        if carried:
+            with StateDB(ctx.store.load().state_path(entry["account"])) as state:
+                state.restore_archived(entry["name"], carried)
     config = ctx.store.update(change)
     new = config.pair(entry["name"])
     if old.identity != new.identity:
@@ -85,14 +93,8 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
         # Archived paths belong to the NAS folder: dropped only when it changes, so a
         # new iCloud folder or account does not get them uploaded (see sync._records).
         moved = old.local != new.local
-        # With another account the state file is another one: carry the records over.
-        carried = [] if moved else _archived_rows(ctx, old)
-        _reset_state(ctx, old, archived=moved)
-        _reset_state(ctx, new, archived=moved)
-        if carried and old.account != new.account:
-            with StateDB(ctx.store.load().state_path(new.account)) as state:
-                state.restore_archived(new.name, carried)
-            _reset_state(ctx, old, archived=True)
+        _reset_state(ctx, new, archived=moved)  # keeps the archived paths carried over
+        _reset_state(ctx, old, archived=moved or old.account != new.account)
     return to_dict(new)
 
 

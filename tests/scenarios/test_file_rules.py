@@ -145,6 +145,26 @@ def test_archive_trashes_in_icloud_and_keeps_nas_copy(
     assert nas.trash == []
 
 
+def test_archive_keeps_the_icloud_file_when_the_nas_copy_changes_during_the_check(
+    state: StateDB, nas: FakeProvider, icloud: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _synced(state, nas, icloud, "old.txt", OLD)
+    hash_nas = nas.sha256
+
+    def hash_then_replace(path: str) -> str:  # a share user saves over it meanwhile
+        digest = hash_nas(path)
+        nas.put(path, "other", OLD)
+        return digest
+
+    monkeypatch.setattr(nas, "sha256", hash_then_replace)
+    outcome = _run(_pair(ARCHIVE_OLD, mode=SyncMode.DOWNLOAD), nas, icloud, state)
+
+    assert outcome.result is not None
+    assert "changed during the check" in outcome.result.failed[0].error
+    assert icloud.trash == []
+    assert state.archived("p") == set()
+
+
 def test_archive_downloads_a_new_file_first(
     state: StateDB, nas: FakeProvider, icloud: FakeProvider
 ) -> None:

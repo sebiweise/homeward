@@ -136,10 +136,15 @@ class Executor:
         assert local is not None
         if expected is None:
             expected = self.remote.sha256(remote.path)
+        seen = _fingerprint(self.local, local.path)
         actual = self.local.sha256(local.path)
         if local.size != remote.size or actual != expected:
             raise ArchiveMismatch(
                 f"the NAS copy of {action.path} differs from iCloud; iCloud keeps the file"
+            )
+        if _fingerprint(self.local, local.path) != seen:  # changed while hashing
+            raise ArchiveMismatch(
+                f"the NAS copy of {action.path} changed during the check; iCloud keeps the file"
             )
         self.state.archive(self.pair, local, actual, action.rule or "")  # first, see there
         self.remote.delete(remote.path)  # into the iCloud trash, recoverable there
@@ -212,3 +217,10 @@ def _need[T](value: T | None) -> T:
     if value is None:
         raise ValueError("plan action is missing required data")
     return value
+
+
+def _fingerprint(provider: Provider, path: str) -> object:
+    """What changes with every write or replace of the file, where the provider can
+    tell (the NAS can: inode and change time); None where it cannot."""
+    fingerprint = getattr(provider, "fingerprint", None)
+    return None if fingerprint is None else fingerprint(path)

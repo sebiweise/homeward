@@ -162,6 +162,23 @@ def test_archive_deletes_the_whole_photo_in_icloud_and_keeps_it_on_the_nas(
     assert (tmp_path / "Alben/Urlaub/IMG_1.HEIC").exists()
 
 
+def test_archive_keeps_a_photo_with_an_ignored_file(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_1.HEIC", b"still", created=OLD)
+    source.add("a1", "IMG_1.MOV", b"live", created=OLD, resource="original_video")
+    clock = Clock()
+    backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)  # both backed up
+    clock.next_day()
+
+    outcome = backup(source, tmp_path, pstate, IGNORE_MOV, ARCHIVE_OLD, clock=clock)
+
+    assert source.deleted == []  # iCloud would delete the ignored video with it
+    assert [h.pending for h in outcome.plan.rule_hits if h.rule == "alt"] == [
+        "a file of it is ignored"
+    ]
+
+
 def test_archive_keeps_the_photo_in_icloud_when_the_nas_copy_differs(
     source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
 ) -> None:
