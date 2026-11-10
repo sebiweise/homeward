@@ -8,13 +8,20 @@ password, the same web page as the DSM app.
 
 ## Quick start
 
-```sh
+```bash
 git clone https://github.com/sebiweise/homeward.git
 cd homeward
 cp docker-compose.example.yml docker-compose.yml   # adjust the paths
-echo "HOMEWARD_WEB_PASSWORD=<your password>" > .env
+mkdir -p config && sudo chown 1000:1000 config      # the container writes here
+# Asks for the password without showing it or letting the shell change it.
+(umask 077; IFS= read -rsp "Web password: " pw; echo
+ printf "HOMEWARD_WEB_PASSWORD='%s'\n" "$pw" > .env)
 docker compose up -d --build
 ```
+
+`.env` is readable only by you (mode 0600); for a `.env` you made before, run
+`chmod 600 .env`. The single quotes keep characters such as `$` as they are, so the
+password must not contain a `'` itself.
 
 Then open `http://<host>:8080/`, sign in with `admin` and the password from
 `HOMEWARD_WEB_PASSWORD`, add an Apple ID under **Apple IDs** and create photos backups
@@ -46,8 +53,11 @@ make sure that user owns `/config`.
 
 ## Headless, with the config file only
 
-Leave `HOMEWARD_WEB_PASSWORD` unset and write `config/config.toml` yourself (all options
-are in [architecture.md](architecture.md)); paths are the ones inside the container:
+Leave `HOMEWARD_WEB_PASSWORD` unset (remove its line from `docker-compose.yml`) and
+write `config/config.toml` yourself (all options are in
+[architecture.md](architecture.md)); paths are the ones inside the container. If the
+container already ran with a password, `docker restart` keeps it: run
+`docker compose up -d` so the container is created again without it.
 
 ```toml
 state_dir = "state"
@@ -85,8 +95,10 @@ command-line interface works the same way, for example
 ## Differences from the DSM package
 
 - **Sign-in**: HTTP Basic auth with one user and password instead of the DSM session.
-  The page has no TLS of its own: keep it in your LAN or put it behind a reverse proxy
-  with HTTPS, and never expose it to the internet as is. After 10 wrong sign-ins in a
+  The page has no TLS of its own, so over plain HTTP anyone on the network can read
+  the web password and the Apple ID password you type in. Reach it through a reverse
+  proxy with HTTPS or an SSH tunnel, also in your LAN, let only that proxy (or
+  `127.0.0.1`) reach port 8080, and never expose it to the internet as is. After 10 wrong sign-ins in a
   row an address is locked out for 5 minutes (shown in the event log).
 - **Notifications**: there are no DSM notifications; failures show up on the web page,
   in the event log and in the container log.
