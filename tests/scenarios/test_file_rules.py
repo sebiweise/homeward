@@ -1,5 +1,6 @@
 """File rules on Drive pairs: ignore and archive (keep on the NAS, trash in iCloud)."""
 
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -7,6 +8,7 @@ import pytest
 
 from homeward.core.config import PairConfig
 from homeward.core.models import ActionKind, FileMeta, SyncMode
+from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
 from homeward.core.sync import sync_pair
 from homeward.core.workflow import DAY, FileRule, RuleAction
@@ -314,3 +316,20 @@ def test_archived_paths_do_not_carry_over_to_other_folders(
 
     assert state.archived("p") == set()
     assert outcome.plan.first_run
+
+
+def test_delete_brake_and_archive_limit_are_both_reported(
+    state: StateDB, nas: FakeProvider, icloud: FakeProvider
+) -> None:
+    for i in range(2):
+        _synced(state, nas, icloud, f"{i}.txt", OLD)
+    _synced(state, nas, icloud, "gone.txt", RECENT)
+    icloud.remove("gone.txt")  # deleted in iCloud: a delete on the NAS
+    pair = replace(_pair(ARCHIVE_OLD, archive_limit=1), delete_brake=DeleteBrake(max_count=0))
+
+    blocked = _run(pair, nas, icloud, state)
+
+    assert blocked.plan.blocked is not None
+    assert "deletions exceed" in blocked.plan.blocked
+    assert "2 files would be archived" in blocked.plan.blocked
+    assert icloud.trash == []
