@@ -1,5 +1,6 @@
 """File rules on photos jobs: ignore files, archive old photos (delete them in iCloud)."""
 
+import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -326,6 +327,36 @@ def test_archive_keeps_the_photo_when_a_nas_file_changes_during_the_check(
     assert outcome.result is not None
     assert "changed during the check" in outcome.result.failed[0].error
     assert pstate.records("photos")["personal/a1/original"].archived_at is None
+
+
+def test_archive_keeps_the_photo_when_a_nas_file_is_replaced_keeping_size_and_mtime(
+    source: FakePhotoSource,
+    pstate: PhotoStateDB,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source.add("a1", "IMG_1.HEIC", created=OLD)
+    clock = Clock()
+    backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+    clock.next_day()
+    original = source.open_read
+
+    def open_and_replace(item: Any) -> Any:  # same size and mtime, other bytes
+        stream = original(item)
+        target = tmp_path / pstate.records("photos")["personal/a1/original"].path
+        info = target.stat()
+        other = target.with_name("other")
+        other.write_bytes(bytes(info.st_size))
+        os.utime(other, ns=(info.st_atime_ns, info.st_mtime_ns))
+        other.replace(target)
+        return stream
+
+    monkeypatch.setattr(source, "open_read", open_and_replace)
+    outcome = backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+
+    assert source.deleted == []
+    assert outcome.result is not None
+    assert "changed during the check" in outcome.result.failed[0].error
 
 
 def test_refused_delete_leaves_the_photo_unarchived(

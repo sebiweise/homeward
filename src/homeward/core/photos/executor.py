@@ -241,14 +241,14 @@ class PhotoExecutor:
         records = self.state.records(self.job)
         items = list(action.archive_items)
         self._prepare(items)
-        checked: dict[str, tuple[int, int]] = {}  # NAS path -> (size, mtime) when compared
+        checked: dict[str, tuple[int, ...]] = {}  # NAS path -> its fingerprint when compared
         for item in items:
             record = records.get(item.key)
             if record is None:
                 raise ArchiveMismatch(f"{item.filename} is not backed up; iCloud keeps the photo")
             if not self._inside(record.path).is_file():
                 raise ArchiveMismatch(f"{record.path} is missing; iCloud keeps the photo")
-            checked[record.path] = _size_mtime(self._inside(record.path))
+            checked[record.path] = _fingerprint(self._inside(record.path))
             # A sidecar (made by Homeward) is compared with the one built from iCloud's
             # metadata in this run, the same way.
             if _sha256_file(self._inside(record.path)) != self._sha256_icloud(item):
@@ -257,7 +257,7 @@ class PhotoExecutor:
         # share user removed or changed meanwhile stops the delete as well.
         for path, seen in checked.items():
             target = self._inside(path)
-            if not target.is_file() or _size_mtime(target) != seen:
+            if not target.is_file() or _fingerprint(target) != seen:
                 raise ArchiveMismatch(f"{path} changed during the check; iCloud keeps the photo")
         keys = [item.key for item in items]
         self.state.mark_archived(self.job, keys)  # first: see mark_archived
@@ -416,9 +416,11 @@ class ArchiveMismatch(RuntimeError):
     """A photo to archive is not exactly on the NAS; it stays in iCloud."""
 
 
-def _size_mtime(path: Path) -> tuple[int, int]:
+def _fingerprint(path: Path) -> tuple[int, ...]:
+    """Changes with every write, replace or rename onto the path: the inode change time
+    cannot be set back by a user, unlike the modification time."""
     info = path.stat()
-    return info.st_size, info.st_mtime_ns
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _sha256_file(path: Path) -> str:
