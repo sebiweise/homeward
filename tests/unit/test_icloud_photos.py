@@ -963,10 +963,10 @@ def test_delete_photo_looks_the_asset_up_again_and_deletes_it() -> None:
     source.delete_photo(items["personal/a/original"])
 
     assert deleted == ["a"]
-    with pytest.raises(RuntimeError, match="personal library"):
+    with pytest.raises(DeleteRefused, match="personal library"):
         source.delete_photo(next(i for k, i in items.items() if k.startswith("shared/")))
     service.photos.libraries["root"].all.photos.pop(0)
-    with pytest.raises(RuntimeError, match="no longer in iCloud"):
+    with pytest.raises(DeleteRefused, match="no longer in iCloud"):
         source.delete_photo(items["personal/a/original"])
 
 
