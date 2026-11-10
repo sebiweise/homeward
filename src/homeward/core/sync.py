@@ -1,5 +1,6 @@
 """One sync run for one pair: list both sides, plan, and (unless dry run) execute."""
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -58,7 +59,7 @@ def sync_pair(
         rules=pair.rules,
         # A dry run with changed folders keeps the old state: do not apply its archive.
         archived=state.archived(pair.name)
-        if state.identity(pair.name) in (None, pair.identity)
+        if _same_nas_folder(state.identity(pair.name), pair)
         else (),
         archive_limit=pair.archive_limit,
     )
@@ -78,6 +79,21 @@ def sync_pair(
     return SyncOutcome(plan, result)
 
 
+def _same_nas_folder(stored: str | None, pair: PairConfig) -> bool:
+    """Whether state recorded under the identity ``stored`` is for the pair's NAS folder.
+
+    None (state from before identities) and "" (reset, by whoever changed the pair and
+    already kept or dropped the archived paths) count as the same folder.
+    """
+    if not stored:
+        return True
+    try:
+        old = json.loads(stored)
+    except ValueError:
+        return False
+    return isinstance(old, list) and bool(old) and old[0] == str(pair.local)
+
+
 def _records(pair: PairConfig, state: StateDB, dry_run: bool) -> dict[str, FileRecord]:
     """The pair's last common state, unless it belongs to other folders or another
     account (changed in the UI or by hand, maybe while a run with the old ones was
@@ -90,9 +106,10 @@ def _records(pair: PairConfig, state: StateDB, dry_run: bool) -> dict[str, FileR
         )  # fmt: skip
         if dry_run:
             return {}
-        # Archived paths belong to the old folders: kept, they would hide files of the
-        # same name in the new NAS folder from the sync.
-        state.reset(pair.name, archived=True)
+        # Archived paths belong to the NAS folder: with another one they would hide its
+        # files of the same name from the sync; with the same one (only the iCloud side
+        # changed) they stay, or a bidirectional pair would upload them again.
+        state.reset(pair.name, archived=not _same_nas_folder(stored, pair))
     if not dry_run and stored != pair.identity:
         state.set_identity(pair.name, pair.identity)  # also for state from before identities
     return state.records(pair.name)

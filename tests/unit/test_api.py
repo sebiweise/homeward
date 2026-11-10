@@ -323,6 +323,26 @@ def test_changing_a_pairs_folder_resets_its_state(client: Client, tmp_path: Path
         assert state.records("docs") == {}
 
 
+def test_archived_files_are_forgotten_only_with_another_nas_folder(
+    client: Client, tmp_path: Path
+) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    state_path = client.paths.var_dir / "state" / "me.sqlite3"
+    with StateDB(state_path) as state:
+        state.archive("docs", FileMeta("old.txt", 1, 0.0, "v1"), "0" * 64, "alt")
+
+    (tmp_path / "cloud2").mkdir()
+    client.call("pairs.update", post=True, pair=_pair(tmp_path, remote=f"{tmp_path}/cloud2"))
+    with StateDB(state_path) as state:
+        assert state.archived("docs") == {"old.txt"}
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    client.call("pairs.update", post=True, pair=_pair(tmp_path, local=str(other)))
+    with StateDB(state_path) as state:
+        assert state.archived("docs") == set()
+
+
 def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:
     client.call("pairs.create", post=True, pair=_pair(tmp_path))
     client.call("pairs.run", post=True, name="docs", allow_deletes="true")

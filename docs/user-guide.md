@@ -283,8 +283,8 @@ Archiving is careful by design:
   if a single byte differs) matches iCloud's content (hashed while downloading, known
   from the last sync, or read from iCloud again); it goes to the iCloud trash.
   Archived files are remembered: a bidirectional pair never uploads them again, and
-  deleting them on the NAS is not passed on. Changing a pair's folders or account
-  forgets them.
+  deleting them on the NAS is not passed on. Changing a pair's NAS folder forgets them;
+  with another iCloud folder or account they stay on the NAS only.
 - Photos backups archive only photos of the personal library, never the Shared Library
   or shared albums, as a whole (original, Live Photo video, RAW, edits), and only after
   every file was downloaded once more from iCloud and matched the NAS file byte for

@@ -318,6 +318,23 @@ def test_archived_paths_do_not_carry_over_to_other_folders(
     assert outcome.plan.first_run
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_archived_paths_stay_when_only_the_icloud_side_changes(
+    dry_run: bool, state: StateDB, nas: FakeProvider, icloud: FakeProvider
+) -> None:
+    _synced(state, nas, icloud, "old.txt", OLD)
+    _run(_pair(ARCHIVE_OLD), nas, icloud, state)
+    assert "old.txt" not in icloud.files
+
+    other_remote = replace(_pair(ARCHIVE_OLD), remote="elsewhere")
+    outcome = _run(other_remote, nas, icloud, state, dry_run=dry_run)
+
+    assert state.archived("p") == {"old.txt"}
+    assert "old.txt" not in {a.path for a in outcome.plan.actions}
+    assert "old.txt" not in icloud.files
+    assert "old.txt" in nas.files
+
+
 def test_delete_brake_and_archive_limit_are_both_reported(
     state: StateDB, nas: FakeProvider, icloud: FakeProvider
 ) -> None:
