@@ -13,17 +13,20 @@ git clone https://github.com/sebiweise/homeward.git
 cd homeward
 cp docker-compose.example.yml docker-compose.yml   # adjust the paths
 mkdir -p config && sudo chown 1000:1000 config      # the container writes here
-touch .env && chmod 600 .env                         # readable only by you
-# Asks for the password without showing it or letting the shell change it.
-IFS= read -rsp "Web password: " pw; echo
-printf "HOMEWARD_WEB_PASSWORD='%s'\n" "$pw" >> .env; unset pw
+# Stops at the first failing step, so the password never lands in a readable file.
+( set -e
+  touch .env && chmod 600 .env                       # readable only by you
+  # Asks for the password without showing it or letting the shell change it.
+  IFS= read -rsp "Web password: " pw; echo
+  if [ -n "$(tail -c1 .env)" ]; then echo >> .env; fi  # end the last line first
+  printf "HOMEWARD_WEB_PASSWORD='%s'\n" "$pw" >> .env )
 docker compose up -d --build
 ```
 
-`.env` gets mode 0600 before the password goes in, and the line is added, so other
-entries of an existing `.env` stay (remove an older `HOMEWARD_WEB_PASSWORD` line
-first). The single quotes keep characters such as `$` as they are, so the password
-must not contain a `'` itself.
+`.env` gets mode 0600 before the password goes in (if that fails, nothing is
+written), and the line is added, so other entries of an existing `.env` stay (remove
+an older `HOMEWARD_WEB_PASSWORD` line first). The single quotes keep characters such
+as `$` as they are, so the password must not contain a `'` itself.
 
 Then open `http://127.0.0.1:8080/` on the host, sign in with `admin` and the password
 from `HOMEWARD_WEB_PASSWORD`, add an Apple ID under **Apple IDs** and create photos
