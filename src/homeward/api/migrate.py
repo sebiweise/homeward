@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from homeward.api.store import ConfigStore
+from homeward.core.rules import BACKUP_DIR
 from homeward.runtime import Paths
 
 DEFAULT_CONFIG = """\
@@ -26,7 +27,6 @@ state_dir = "state"
 [daemon]
 interval_minutes = 60
 """
-BACKUP_DIR = ".homeward-backup"
 # Never copied into a share: anyone who can read it could use them to reach the Apple ID.
 SESSION_DIRS = ("sessions", "sessions-pending")
 
