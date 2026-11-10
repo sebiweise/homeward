@@ -14,6 +14,7 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.server import Context, Request
 from homeward.core.config import HIDDEN_FOLDERS, in_system_folder
+from homeward.runtime import Level, Paths, record_event
 
 log = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ def _checked(raw: str) -> Path:
     return path
 
 
-def check_shared_folder(path: Path, key: str) -> None:
+def check_shared_folder(path: Path, key: str, paths: Paths | None = None) -> None:
     """On DSM, a folder of a pair or photos backup must lie inside a shared folder
     (``/volumeN/<share>/...``), and where it or a folder above it is a symlink, its
     target too. The same rule as the folder picker's, for paths typed in or saved
@@ -140,6 +141,7 @@ def check_shared_folder(path: Path, key: str) -> None:
         if configured:
             # Set, but none of its folders exists: refuse instead of checking nothing.
             log.warning("none of the HOMEWARD_VOLUMES folders exists: %s", configured)
+            record_event(Level.WARNING, "service", "volumes_missing", configured, paths=paths)
             raise ApiError("volumes_missing", configured)
         return
     if not any(path.is_relative_to(v) and path != v for v in volumes):

@@ -15,7 +15,8 @@ cp docker-compose.example.yml docker-compose.yml   # adjust the paths
 mkdir -p config && sudo chown 1000:1000 config      # the container writes here
 # Stops at the first failing step, so the password never lands in a readable file.
 ( set -e
-  touch .env && chmod 600 .env                       # readable only by you
+  touch .env
+  chmod 600 .env                                     # readable only by you
   # Asks for the password without showing it or letting the shell change it.
   IFS= read -rsp "Web password: " pw; echo
   if [ -n "$(tail -c1 .env)" ]; then echo >> .env; fi  # end the last line first

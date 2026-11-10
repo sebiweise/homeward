@@ -255,6 +255,8 @@ folder_missing="Ein Ordner dieses Laufs fehlt (z. B. umbenannt, gelöscht oder d
 notices_cleared="Hinweise ausgeblendet."
 login_locked="Zu viele falsche Anmeldungen an der Webseite von einer Adresse; sie ist für einige Minuten gesperrt."
 web_start_failed="Die Webseite kann nicht starten; prüfe HOMEWARD_WEB_PORT und das Container-Log."
+web_error="Die Webseite konnte eine Anfrage nicht beantworten; siehe Container-Log."
+volumes_missing="Keiner der Ordner in HOMEWARD_VOLUMES existiert; prüfe die Volumes des Containers."
 sync_summary="Zusammenfassung des Laufs."
 
 [error]

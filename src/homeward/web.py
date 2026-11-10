@@ -228,9 +228,12 @@ def make_server(
             log.debug("%s %s", self.address_string(), format % args)
 
         def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-            # Server errors belong in the container log; the rest stays at debug level.
+            # Server errors belong in the container log and the event log; the rest
+            # stays at debug level.
             if str(code).isdigit() and int(code) >= 500:
-                log.warning("%s %s answered %s", self.command, self.path.partition("?")[0], code)
+                message = f"{self.command} {self.path.partition('?')[0]} answered {code}"
+                log.warning("%s", message)
+                record_event(Level.ERROR, "service", "web_error", message, paths=paths)
             else:
                 super().log_request(code, size)
 
