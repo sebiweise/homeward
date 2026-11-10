@@ -383,7 +383,8 @@ class ICloudPhotosSource(PhotoSource):
     def _unlisted(self, item: PhotoItem, asset: Any) -> list[str]:
         """Files iCloud deletes with the photo that this run did not list (so did not
         back up): a Live Photo video without a download URL, a RAW alternative or edit
-        a job option left out."""
+        a job option left out, or an XMP sidecar (caption, keywords) that could not be
+        built."""
         resources = _resources(asset)
         record = getattr(asset, "asset_record", None)
         if record is not None:
@@ -393,7 +394,19 @@ class ICloudPhotosSource(PhotoSource):
         if getattr(asset, "is_live_photo", False):
             expected.add("original_video")
         prefix = item.key.rsplit("/", 1)[0]
-        return sorted(key for key in expected if f"{prefix}/{key}" not in self._urls)
+        missing = [key for key in expected if f"{prefix}/{key}" not in self._urls]
+        if self.options.xmp and record is not None and self._xmp_missing(asset, prefix):
+            missing.append("xmp")
+        return sorted(missing)
+
+    def _xmp_missing(self, asset: Any, prefix: str) -> bool:
+        """Whether the photo has metadata for a sidecar that this run did not list."""
+        try:
+            data = self._xmp_builder(asset)
+        except Exception as exc:
+            log.warning("no XMP sidecar for %s, so iCloud keeps it: %s", asset.id, exc)
+            return True
+        return bool(data) and f"{prefix}/xmp" not in self._blobs
 
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Renew URLs that may have expired since listing, a batch lookup per library."""

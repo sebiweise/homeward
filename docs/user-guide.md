@@ -288,8 +288,10 @@ Archiving is careful by design:
 - Photos backups archive only photos of the personal library, never the Shared Library
   or shared albums, as a whole (original, Live Photo video, RAW, edits), and only after
   every file was downloaded once more from iCloud and matched the NAS file byte for
-  byte. A job that leaves out file types (videos, Live Photo videos, RAW or edits) does
-  not archive, since iCloud would delete files the NAS does not have. The photo goes
+  byte. A job that leaves out file types (videos, Live Photo videos, RAW, edits or XMP
+  sidecars) does not archive, since iCloud would delete files the NAS does not have; a
+  photo whose XMP sidecar (caption, keywords) could not be written stays in iCloud too.
+  The photo goes
   to "Recently Deleted" (30 days). Archived photos stay on the NAS
   and in their album folders for good, also with `mirror_deletes`. Archive rules make the
   backup read the whole library at least every 24 hours.
