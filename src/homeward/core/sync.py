@@ -1,5 +1,6 @@
 """One sync run for one pair: list both sides, plan, and (unless dry run) execute."""
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -7,11 +8,13 @@ from datetime import date
 from homeward.core.config import PairConfig
 from homeward.core.executor import Executor, RunResult
 from homeward.core.limits import throttle_for
-from homeward.core.models import FileMeta, FolderMissing, Plan
+from homeward.core.models import FileMeta, FileRecord, FolderMissing, Plan
 from homeward.core.planner import build_plan
 from homeward.core.progress import Progress
 from homeward.core.provider import Provider
 from homeward.core.state import StateDB
+
+log = logging.getLogger("homeward.core.sync")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +39,7 @@ def sync_pair(
     progress.phase("listing")
     local_files = local.list_files()
     remote_files = remote.list_files()
-    records = state.records(pair.name)
+    records = _records(pair, state, dry_run)
     if records:
         _check_present(local, local_files, f"NAS folder {pair.local}", len(records))
         _check_present(remote, remote_files, f"remote folder {pair.remote}", len(records))
@@ -67,6 +70,24 @@ def sync_pair(
         blocked=plan.blocked if result is None or result.blocked else None,
     )
     return SyncOutcome(plan, result)
+
+
+def _records(pair: PairConfig, state: StateDB, dry_run: bool) -> dict[str, FileRecord]:
+    """The pair's last common state, unless it belongs to other folders or another
+    account (changed in the UI or by hand, maybe while a run with the old ones was
+    still going): then the run is a first run, which never deletes or overwrites."""
+    stored = state.identity(pair.name)
+    if stored is not None and stored != pair.identity:
+        log.info(
+            "pair %s: its folders or account changed since its state was recorded; "
+            "this is a first run again (no deletes, no overwrites)", pair.name,
+        )  # fmt: skip
+        if dry_run:
+            return {}
+        state.reset(pair.name)
+    if not dry_run and stored != pair.identity:
+        state.set_identity(pair.name, pair.identity)  # also for state from before identities
+    return state.records(pair.name)
 
 
 def _check_present(provider: Provider, files: dict[str, FileMeta], what: str, known: int) -> None:

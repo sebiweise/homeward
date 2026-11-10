@@ -1,5 +1,7 @@
-"""Configuration file (TOML) with the state directory and the sync pairs."""
+"""Configuration file (TOML): the state directory, Apple ID accounts, sync pairs and
+photos jobs."""
 
+import json
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -16,6 +18,7 @@ from homeward.core.photos import (
     check_scheme,
 )
 from homeward.core.planner import DeleteBrake
+from homeward.core.rules import DEFAULT_EXCLUDES, TRASH_DIR
 
 DEFAULT_CONFIG_PATH = Path("/var/packages/homeward/var/config.toml")
 REMOTE_PROVIDERS = ("icloud_drive", "folder")
@@ -29,6 +32,15 @@ MAX_INTERVAL_MINUTES = 7 * 24 * 60
 
 class ConfigError(ValueError):
     """The configuration file is missing, unreadable or invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class AccountConfig:
+    """An Apple ID the DSM UI signed in (``[[account]]``); pairs and photos jobs
+    name it in ``account``."""
+
+    name: str
+    apple_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +61,15 @@ class PairConfig:
     interval_minutes: int | None = None  # None: the global interval
     window: TimeWindow | None = None  # scheduled runs start only in these hours
     max_rate_kb: int | None = None  # transfer limit in KB/s; None: no limit
+
+    @property
+    def identity(self) -> str:
+        """What the pair's sync state belongs to: changing one of these makes it
+        meaningless, and the next run starts over as a first run."""
+        return json.dumps(
+            [str(self.local), self.remote, self.account, self.remote_provider],
+            ensure_ascii=False,
+        )
 
 
 FOLDER_OPTIONS = (
@@ -95,6 +116,24 @@ class Config:
     pairs: tuple[PairConfig, ...]
     photos: tuple[PhotosConfig, ...] = ()
     interval_minutes: int = DEFAULT_INTERVAL_MINUTES
+    accounts: tuple[AccountConfig, ...] = ()
+
+    def account(self, name: str) -> AccountConfig | None:
+        for account in self.accounts:
+            if account.name == name:
+                return account
+        return None
+
+    def apple_id_for(self, account: str, apple_id: str | None = None) -> str | None:
+        """The Apple ID to sign in with for ``account``: ``apple_id`` set on the pair
+        or photos job, else the one of its ``[[account]]`` table, else the account
+        name when it is an Apple ID itself; None when nothing names one."""
+        if apple_id:
+            return apple_id
+        table = self.account(account)
+        if table is not None and table.apple_id:
+            return table.apple_id
+        return account if "@" in account else None
 
     def photos_job(self, name: str) -> PhotosConfig:
         for job in self.photos:
@@ -148,8 +187,57 @@ def parse_config(data: Mapping[str, Any], base: Path = Path(".")) -> Config:
     if not isinstance(daemon, dict):
         raise ConfigError("'daemon' must be a table")
     interval = check_interval(daemon.get("interval_minutes", DEFAULT_INTERVAL_MINUTES), "daemon")
-    return Config(state_dir=state_dir if state_dir.is_absolute() else base / state_dir,
-                  pairs=parsed, photos=photos, interval_minutes=interval)  # fmt: skip
+    state_dir = state_dir if state_dir.is_absolute() else base / state_dir
+    for pair in parsed:
+        _check_folder(pair.local, f"pair {pair.name!r}", "local", state_dir)
+        if pair.remote_provider == "folder":
+            _check_folder(Path(pair.remote), f"pair {pair.name!r}", "remote", state_dir)
+    for job in photos:
+        _check_folder(job.target, f"photos {job.name!r}", "target", state_dir)
+    return Config(state_dir=state_dir, pairs=parsed, photos=photos, interval_minutes=interval,
+                  accounts=_parse_accounts(data.get("account", [])))  # fmt: skip
+
+
+def _parse_accounts(entries: object) -> tuple[AccountConfig, ...]:
+    if not isinstance(entries, list):
+        raise ConfigError("'account' must be a list of [[account]] tables")
+    accounts = []
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"account #{index} must be a table")
+        name = _get(entry, "name", str, None, f"account #{index}")
+        if not name.strip():
+            raise ConfigError(f"account #{index}: 'name' must not be empty")
+        apple_id = _get(entry, "apple_id", str, "", f"account {name!r}")
+        accounts.append(AccountConfig(name=name, apple_id=apple_id.strip()))
+    names = [account.name for account in accounts]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ConfigError(f"duplicate account names: {', '.join(duplicates)}")
+    return tuple(accounts)
+
+
+# Folders no pair or photos backup may use: Synology's recycle bin and snapshots,
+# Homeward's own trash and DSM's "@" folders (@eaDir, @appstore ...).
+_HIDDEN_FOLDERS = frozenset({TRASH_DIR, *(n for n in DEFAULT_EXCLUDES if n.startswith("#"))})
+
+
+def _check_folder(path: Path, where: str, key: str, state_dir: Path) -> None:
+    """The checks the DSM UI makes, for folders written into the file by hand: no
+    ``..``, no hidden folder, and neither inside nor around the state folder (it
+    holds the Apple ID sessions, which a sync would otherwise copy)."""
+    if ".." in path.parts:
+        raise ConfigError(f"{where}: {key} must not contain '..'")
+    if any(part.startswith("@") or part in _HIDDEN_FOLDERS for part in path.parts):
+        raise ConfigError(
+            f"{where}: {key} must not be in a recycle bin, snapshot, trash or DSM system folder"
+        )
+    real, state = path.resolve(), state_dir.resolve()
+    if real.is_relative_to(state) or state.is_relative_to(real):
+        raise ConfigError(
+            f"{where}: {key} must neither be in nor contain the state folder {state_dir} "
+            "(it holds the Apple ID sessions)"
+        )
 
 
 def check_interval(value: object, where: str) -> int:

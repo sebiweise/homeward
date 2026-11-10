@@ -49,24 +49,13 @@ service_postinst() {
         --find-links "${WHEELHOUSE}" "homeward[icloud]" \
         || fail "Could not install Homeward into ${VENV}."
 
-    mkdir -p "${PKG_VAR}/state"
-    if [ ! -f "${CONFIG}" ]; then
-        echo "Writing the default configuration to ${CONFIG}"
-        cat > "${CONFIG}" <<CONF
-# Homeward configuration. Sync pairs are added here (later through the DSM UI).
-# See docs/architecture.md for all options.
-state_dir = "state"
+    # The default config and the state folder; shared with the spksrc package.
+    lifecycle --init || fail "Could not write the default configuration to ${CONFIG}."
+}
 
-[daemon]
-interval_minutes = 60
-
-# [[pair]]
-# name = "docs"
-# local = "${PKG_SHARE}/Documents"
-# remote = "Documents"
-# mode = "upload"
-CONF
-    fi
+# Lifecycle steps both packages share live in Python: homeward.api.migrate.
+lifecycle() {
+    HOMEWARD_VAR="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" "${VENV}/bin/python" -m homeward.api.migrate "$@"
 }
 
 service_preupgrade() {
@@ -74,8 +63,7 @@ service_preupgrade() {
 }
 
 service_postupgrade() {
-    HOMEWARD_VAR="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" "${VENV}/bin/python" -m homeward.api.migrate \
-        || echo "Could not update ${CONFIG}; check it in the Homeward app."
+    lifecycle || echo "Could not update ${CONFIG}; check it in the Homeward app."
     return 0
 }
 
@@ -91,28 +79,19 @@ service_postuninst() {
     :
 }
 
-# Copy config and state into the package's share before DSM deletes var/, so a
-# reinstall can pick them up again. The synced files themselves live in shares
-# and are never touched by an uninstall. The iCloud sessions (trusted-session
-# cookies) stay behind: anyone who can read the share could use them to reach the
-# Apple ID, so a reinstall asks to sign in again instead.
+# Copy config and state (without the iCloud sessions) into the package's share
+# before DSM deletes var/, so a reinstall can pick them up again; see
+# homeward.api.migrate.backup. Should Python not run any more, at least the
+# config is saved.
 backup_var() {
     if [ ! -d "${PKG_SHARE}" ] || [ ! -f "${CONFIG}" ]; then
         return 0
     fi
+    lifecycle --backup "${PKG_SHARE}" && return 0
     dest="${PKG_SHARE}/.homeward-backup/$(date +%Y-%m-%d_%H%M%S)"
-    echo "Saving configuration and state (without the iCloud sessions) to ${dest}"
-    mkdir -p "${dest}" && cp -p "${CONFIG}" "${dest}/" || return 0
-    if [ -d "${PKG_VAR}/state" ]; then
-        mkdir -p "${dest}/state"
-        for entry in "${PKG_VAR}/state"/* "${PKG_VAR}/state"/.[!.]*; do
-            [ -e "${entry}" ] || continue
-            case "$(basename "${entry}")" in
-                sessions | sessions-pending) continue ;;
-            esac
-            cp -pR "${entry}" "${dest}/state/"
-        done
-    fi
+    echo "Saving only the configuration to ${dest}"
+    mkdir -p "${dest}" && cp -p "${CONFIG}" "${dest}/"
+    return 0
 }
 
 daemon_running() {
@@ -128,7 +107,7 @@ service_start() {
     # inside the package and survive upgrades.
     # The redirect only catches output from before the log file is opened.
     # shellcheck disable=SC2094
-    HOME="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" \
+    HOME="${PKG_VAR}" HOMEWARD_VAR="${PKG_VAR}" HOMEWARD_CONFIG="${CONFIG}" \
         nohup "${VENV}/bin/homeward-daemon" --config "${CONFIG}" --log-file "${LOG_FILE}" \
         >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"

@@ -55,48 +55,48 @@ class FakeService:
 
 
 def test_no_session_needs_login(tmp_path: Path) -> None:
-    with pytest.raises(LoginRequired, match="homeward login --account seb"):
-        open_service("seb", "seb@example.com", tmp_path, factory=FakeService)
-    assert status("seb", "seb@example.com", tmp_path, factory=FakeService) == "login_required"
+    with pytest.raises(LoginRequired, match="homeward login --account alice"):
+        open_service("alice", "alice@example.com", tmp_path, factory=FakeService)
+    assert status("alice", "alice@example.com", tmp_path, factory=FakeService) == "login_required"
 
 
 def test_login_with_2fa_then_reuse_session(tmp_path: Path) -> None:
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     assert flow.login("secret") is True
     with pytest.raises(LoginError):
         flow.verify_2fa("000000")
     flow.verify_2fa(" 123456 ")
 
-    mode = stat.S_IMODE(session_dir(tmp_path, "seb").stat().st_mode)
+    mode = stat.S_IMODE(session_dir(tmp_path, "alice").stat().st_mode)
     assert mode == 0o700
-    service: Any = open_service("seb", "seb@example.com", tmp_path, factory=FakeService)
-    assert service.apple_id == "seb@example.com"
-    assert status("seb", "seb@example.com", tmp_path, factory=FakeService) == "ok"
+    service: Any = open_service("alice", "alice@example.com", tmp_path, factory=FakeService)
+    assert service.apple_id == "alice@example.com"
+    assert status("alice", "alice@example.com", tmp_path, factory=FakeService) == "ok"
 
-    logout("seb", tmp_path)
-    assert status("seb", "seb@example.com", tmp_path, factory=FakeService) == "login_required"
+    logout("alice", tmp_path)
+    assert status("alice", "alice@example.com", tmp_path, factory=FakeService) == "login_required"
 
 
 def test_wrong_password(tmp_path: Path) -> None:
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     with pytest.raises(LoginError, match="Invalid"):
         flow.login("nope")
 
 
 def test_expired_session_is_login_required(tmp_path: Path) -> None:
-    session_dir(tmp_path, "seb").mkdir(parents=True)  # cookies exist, but not trusted
+    session_dir(tmp_path, "alice").mkdir(parents=True)  # cookies exist, but not trusted
     with pytest.raises(LoginRequired, match="Invalid"):
-        open_service("seb", "seb@example.com", tmp_path, factory=FakeService)
+        open_service("alice", "alice@example.com", tmp_path, factory=FakeService)
 
 
 def test_verify_before_login(tmp_path: Path) -> None:
-    flow = LoginFlow("seb", "x", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "x", tmp_path, factory=FakeService)
     with pytest.raises(LoginError):
         flow.verify_2fa("1")
 
 
 def test_accounts_have_separate_sessions(tmp_path: Path) -> None:
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     flow.login("secret")
     flow.verify_2fa("123456")
     assert status("anna", "anna@example.com", tmp_path, factory=FakeService) == "login_required"
@@ -104,42 +104,42 @@ def test_accounts_have_separate_sessions(tmp_path: Path) -> None:
 
 
 def _sign_in(tmp_path: Path) -> None:
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     flow.login("secret")
     flow.verify_2fa("123456")
 
 
 def test_sign_in_again_ignores_the_stored_session(tmp_path: Path) -> None:
     _sign_in(tmp_path)
-    old = session_dir(tmp_path, "seb") / "trusted"
+    old = session_dir(tmp_path, "alice") / "trusted"
     old.write_text("broken")
 
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     assert flow.login("secret") is True  # fresh cookies: Apple asks for a code again
     assert old.read_text() == "broken"  # syncs keep the old session meanwhile
     flow.verify_2fa("123456")
 
     assert old.read_text() == "ok"
-    assert not (tmp_path / "sessions-pending" / "seb").exists()
-    assert status("seb", "seb@example.com", tmp_path, factory=FakeService) == "ok"
+    assert not (tmp_path / "sessions-pending" / "alice").exists()
+    assert status("alice", "alice@example.com", tmp_path, factory=FakeService) == "ok"
 
 
 def test_failed_sign_in_again_keeps_the_stored_session(tmp_path: Path) -> None:
     _sign_in(tmp_path)
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     with pytest.raises(LoginError):
         flow.login("nope")
-    flow = LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService)
+    flow = LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService)
     flow.login("secret")
     with pytest.raises(LoginError):
         flow.verify_2fa("000000")
-    assert status("seb", "seb@example.com", tmp_path, factory=FakeService) == "ok"
+    assert status("alice", "alice@example.com", tmp_path, factory=FakeService) == "ok"
 
 
 def test_logout_drops_a_pending_sign_in(tmp_path: Path) -> None:
-    LoginFlow("seb", "seb@example.com", tmp_path, factory=FakeService).login("secret")
-    logout("seb", tmp_path)
-    assert not (tmp_path / "sessions-pending" / "seb").exists()
+    LoginFlow("alice", "alice@example.com", tmp_path, factory=FakeService).login("secret")
+    logout("alice", tmp_path)
+    assert not (tmp_path / "sessions-pending" / "alice").exists()
 
 
 def test_session_rejected_by_apple() -> None:

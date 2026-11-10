@@ -5,35 +5,29 @@ the table; the downloaded photos stay where they are.
 """
 
 import json
-import string
-from pathlib import Path, PurePosixPath
+from dataclasses import fields
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, without_none
+from homeward.api.handlers.common import check_name, check_nas_folder, without_none
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
-from homeward.core.config import DEFAULT_TRASH_DAYS
-from homeward.core.photos import DEFAULT_WORKERS, MAX_WORKERS
+from homeward.core.config import DEFAULT_TRASH_DAYS, PhotosConfig
+from homeward.core.photos import DEFAULT_WORKERS, MAX_WORKERS, Library, PhotoLayout, check_scheme
 from homeward.core.planner import DeleteBrake
 from homeward.runtime import RunRequest, request_run
 
-LIBRARIES = ("personal", "shared", "shared_albums")
-SCHEME_FIELDS = ("year", "month", "day")
+LIBRARIES = tuple(lib.value for lib in Library)
+_CORE = {f.name: f.default for f in fields(PhotosConfig)}
+_LAYOUT = PhotoLayout()
 # option -> default; the same defaults as the photos backup in the core
 SWITCHES = {
-    "albums": True,
-    "favorites": True,
-    "videos": True,
-    "live_videos": True,
-    "raw_alternative": True,
-    "edited": True,
-    "xmp": True,
-    "hidden": False,
-    "mirror_deletes": False,  # photos deleted in iCloud are deleted on the NAS too
-    "source_folders": True,  # own folders for the shared library and shared albums
-}
+    **{key: _CORE[key] for key in ("albums", "favorites", "videos", "live_videos",
+                                   "raw_alternative", "edited", "xmp", "hidden")},
+    "mirror_deletes": _CORE["mirror_deletes"],  # deleted in iCloud: deleted on the NAS too
+    "source_folders": _LAYOUT.source_folders,  # own folders for shared library and albums
+}  # fmt: skip
 # Settings of the "Advanced" section, with the core's defaults.
 DEFAULT_BRAKE = DeleteBrake()
 ADVANCED = {
@@ -46,12 +40,12 @@ ADVANCED = {
 # nothing changed in iCloud costs one request.
 NEW_JOB_INTERVAL_MINUTES = 30
 FOLDERS = {
-    "folder_scheme": "{year}/{month}",
-    "shared_folder": "Geteilte Mediathek",
-    "albums_folder": "Alben",
-    "favorites_folder": "Favoriten",
-    "hidden_folder": "Ausgeblendet",
-    "shared_albums_folder": "Geteilte Alben",
+    "folder_scheme": _LAYOUT.scheme,
+    "shared_folder": _LAYOUT.shared_folder,
+    "albums_folder": _LAYOUT.albums_folder,
+    "favorites_folder": _LAYOUT.favorites_folder,
+    "hidden_folder": _LAYOUT.hidden_folder,
+    "shared_albums_folder": _LAYOUT.shared_albums_folder,
 }
 
 
@@ -169,18 +163,16 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
 
     name = check_name(text("name"), "photos")
     account = check_name(text("account"), "account")
-    accounts = {a["name"]: a for a in ctx.store.read().get("account", []) if isinstance(a, dict)}
-    if account not in accounts:
+    table = ctx.store.load().account(account)
+    if table is None:
         raise ApiError("account_not_found", account)
-    target = Path(text("target"))
-    if not target.is_absolute() or ".." in target.parts:
-        raise ApiError("invalid_param", "target")
+    target = check_nas_folder(ctx, text("target"), "target")
     if not target.is_dir():
         raise ApiError("local_missing", str(target))
     entry: dict[str, Any] = {
         "name": name,
         "account": account,
-        "apple_id": accounts[account].get("apple_id", ""),
+        "apple_id": table.apple_id,
         "target": str(target),
         "libraries": _libraries(data),
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
@@ -245,9 +237,6 @@ def _folder(key: str, value: str) -> str:
 
 def _check_scheme(scheme: str) -> None:
     try:
-        fields = {f for _, f, _, _ in string.Formatter().parse(scheme) if f is not None}
+        check_scheme(scheme)
     except ValueError:
         raise ApiError("invalid_scheme", scheme) from None
-    path = PurePosixPath(scheme)
-    if not fields <= set(SCHEME_FIELDS) or path.is_absolute() or ".." in path.parts:
-        raise ApiError("invalid_scheme", scheme)

@@ -258,7 +258,7 @@ sync_summary="Zusammenfassung des Laufs."
 [error]
 invalid_window="Das Zeitfenster braucht die Form HH:MM-HH:MM, z. B. 22:00-06:00 ({0})."
 not_running="Dieser Lauf ist schon beendet."
-not_authenticated="Deine DSM-Sitzung ist abgelaufen. Bitte melde dich erneut bei DSM an."
+not_authenticated="Deine Sitzung ist abgelaufen. Bitte melde dich erneut an."
 not_admin="Nur Administratoren können Homeward verwenden."
 unknown_method="Diese Aktion wird von der installierten Version nicht unterstützt."
 post_required="Diese Aktion wird von der installierten Version nicht unterstützt."
