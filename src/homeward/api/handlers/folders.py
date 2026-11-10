@@ -133,6 +133,9 @@ def check_shared_folder(path: Path, key: str) -> None:
     to check against."""
     volumes = _volumes()
     if not volumes:
+        if os.environ.get("HOMEWARD_VOLUMES", ""):
+            # Set, but none of its folders exists: refuse instead of checking nothing.
+            raise ApiError("invalid_param", key)
         return
     if not any(path.is_relative_to(v) and path != v for v in volumes):
         raise ApiError("invalid_param", key)

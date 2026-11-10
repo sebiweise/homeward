@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from homeward import container
+from homeward import container, web
 from homeward.api.accounts import UnavailableBackend
 from homeward.api.errors import ApiError
 from homeward.runtime import Paths
@@ -155,3 +155,42 @@ def test_container_runs_the_daemon_on_the_config(
     assert container.main(["--once"]) == 0
     assert calls == [["--config", str(tmp_path / "config.toml"), "--once"]]
     assert (tmp_path / "config.toml").exists()
+
+
+def test_login_guard_locks_an_address_after_wrong_sign_ins(tmp_path: Path) -> None:
+    now = [1000.0]
+    paths = Paths(var_dir=tmp_path, config=tmp_path / "config.toml")
+    guard = web.LoginGuard(paths, clock=lambda: now[0])
+    for _ in range(web.MAX_FAILURES - 1):
+        guard.failed("10.0.0.2")
+    assert not guard.locked("10.0.0.2")
+    guard.failed("10.0.0.2")
+    assert guard.locked("10.0.0.2")
+    assert not guard.locked("10.0.0.3")
+    assert "login_locked" in paths.events_file.read_text()
+    now[0] += web.LOCK_SECONDS
+    assert not guard.locked("10.0.0.2")
+    guard.failed("10.0.0.3")
+    guard.succeeded("10.0.0.3")
+    assert not guard.locked("10.0.0.3")
+
+
+def test_server_locks_out_after_too_many_wrong_passwords(server: str) -> None:
+    wrong = {"Authorization": _basic("admin", "x")}
+    for _ in range(web.MAX_FAILURES):
+        assert _status(server + "/", wrong) == 401
+    assert _status(server + "/", {"Authorization": GOOD}) == 429
+
+
+def test_container_reports_a_bad_port_or_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOMEWARD_VAR", str(tmp_path))
+    monkeypatch.delenv("HOMEWARD_CONFIG", raising=False)
+    monkeypatch.setenv("HOMEWARD_WEB_PASSWORD", "pw")
+    monkeypatch.setenv("HOMEWARD_WEB_PORT", "web")
+    monkeypatch.setattr(container.scheduler, "main", lambda argv: 0)
+    assert container.main([]) == 1
+    monkeypatch.delenv("HOMEWARD_WEB_PASSWORD")
+    (tmp_path / "config.toml").write_text("not = [toml")
+    assert container.main([]) == 1

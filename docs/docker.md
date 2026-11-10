@@ -86,9 +86,12 @@ command-line interface works the same way, for example
 
 - **Sign-in**: HTTP Basic auth with one user and password instead of the DSM session.
   The page has no TLS of its own: keep it in your LAN or put it behind a reverse proxy
-  with HTTPS, and never expose it to the internet as is.
+  with HTTPS, and never expose it to the internet as is. After 10 wrong sign-ins in a
+  row an address is locked out for 5 minutes (shown in the event log).
 - **Notifications**: there are no DSM notifications; failures show up on the web page,
   in the event log and in the container log.
-- **Trash**: deleted files go to `.homeward-papierkorb/` in the job's folder. A
+- **Trash**: deleted files go to `.homeward-papierkorb/` in the job's folder, that is
+  on the host folder you mounted; it is emptied only after the days set as `trash_days`
+  (0 = never). A
   Synology `#recycle` folder is used only if the mounted folder has one (a whole
   Synology share mounted at `/data/<share>`).

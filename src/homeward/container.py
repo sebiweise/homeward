@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from homeward.api.accounts import default_backend
+from homeward.api.errors import ApiError
 from homeward.api.store import ConfigStore
 from homeward.daemon import scheduler
 from homeward.runtime import Paths
@@ -59,14 +60,23 @@ def start_web(paths: Paths, environ: Mapping[str, str]) -> threading.Thread | No
     if not password:
         log.info("web page off (HOMEWARD_WEB_PASSWORD is not set), running from the config file")
         return None
+    # All interfaces: inside a container only that lets the published port reach it.
     host = environ.get("HOMEWARD_WEB_HOST", "0.0.0.0")
-    port = int(environ.get("HOMEWARD_WEB_PORT", "8080"))
+    raw_port = environ.get("HOMEWARD_WEB_PORT", "8080")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        raise ValueError(f"HOMEWARD_WEB_PORT is not a port number: {raw_port!r}") from None
     ui_dir = Path(environ.get("HOMEWARD_UI_DIR", "/app/ui"))
     credentials = Credentials(environ.get("HOMEWARD_WEB_USER", "admin"), password)
     server = make_server(host, port, ui_dir, paths, credentials, lambda: default_backend(paths))
     thread = threading.Thread(target=server.serve_forever, name="web", daemon=True)
     thread.start()
     log.info("web page on http://%s:%d/ (user %s)", host, port, credentials.user)
+    log.warning(
+        "the web page has no TLS of its own: keep it in your LAN or put it behind a "
+        "reverse proxy with HTTPS (see docs/docker.md)"
+    )
     return thread
 
 
@@ -79,11 +89,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         stream=sys.stdout,
     )
     paths = Paths.from_env()
-    if ensure_config(paths):
-        log.info("wrote the default configuration to %s", paths.config)
-    for name in ConfigStore(paths).migrate():
-        log.info("pair %s: set beta = true (bidirectional sync is in beta)", name)
-    start_web(paths, os.environ)
+    try:
+        if ensure_config(paths):
+            log.info("wrote the default configuration to %s", paths.config)
+        for name in ConfigStore(paths).migrate():
+            log.info("pair %s: set beta = true (bidirectional sync is in beta)", name)
+    except OSError as exc:
+        log.error(
+            "cannot write %s (%s): the container's user must own the folder mounted "
+            "at /config", paths.config, exc.strerror or exc,
+        )  # fmt: skip
+        return 1
+    except ApiError as exc:
+        log.error("the configuration %s cannot be read: %s", paths.config, exc.message or exc.code)
+        return 1
+    try:
+        start_web(paths, os.environ)
+    except (OSError, ValueError) as exc:
+        log.error("the web page cannot start: %s", exc)
+        return 1
     return scheduler.main(["--config", str(paths.config), *extra])
 
 
