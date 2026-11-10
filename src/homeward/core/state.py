@@ -43,7 +43,15 @@ CREATE TABLE IF NOT EXISTS archived (
     archived_at REAL NOT NULL,
     PRIMARY KEY (pair, path)
 );
+-- What the files of a pair were synced between (see ``pair_identity``); added later,
+-- so a pair without a row predates it.
+CREATE TABLE IF NOT EXISTS pair_identity (
+    pair TEXT PRIMARY KEY,
+    identity TEXT NOT NULL
+);
 """
+# Stored by ``reset``: no identity matches it, so the next run is a first run.
+_RESET = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +78,8 @@ class StateDB:
         if version > SCHEMA_VERSION:
             raise RuntimeError(f"state database {path} is newer than this Homeward version")
         self._conn.executescript(_SCHEMA)
+        # PRAGMA takes no bound parameters; SCHEMA_VERSION is a constant.
+        # nosemgrep
         self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -143,13 +153,27 @@ class StateDB:
     def reset(self, pair: str, *, archived: bool = False) -> int:
         """Forget every file of a pair, so its next run is a first run again.
 
+        Also forgets the pair's identity: a run still going with the old folders
+        may record files after this, and the next run must not build on those.
         Archived files stay remembered unless ``archived`` is set (the pair is
         removed): otherwise a bidirectional pair would upload them again.
         """
         cursor = self._conn.execute("DELETE FROM files WHERE pair = ?", (pair,))
         if archived:
             self._conn.execute("DELETE FROM archived WHERE pair = ?", (pair,))
+        self.set_identity(pair, _RESET)
         return cursor.rowcount
+
+    def identity(self, pair: str) -> str | None:
+        """The identity the pair's files were last synced with; None for state from
+        before identities were stored."""
+        row = self._conn.execute(
+            "SELECT identity FROM pair_identity WHERE pair = ?", (pair,)
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def set_identity(self, pair: str, identity: str) -> None:
+        self._conn.execute("INSERT OR REPLACE INTO pair_identity VALUES (?, ?)", (pair, identity))
 
     def totals(self, pair: str) -> tuple[int, int]:
         """Number and total size of the files the pair keeps in sync."""
@@ -165,6 +189,8 @@ class StateDB:
         if pair is not None:
             query += " WHERE pair = ?"
             args = (pair,)
+        # Constant SQL; the values are bound.
+        # nosemgrep
         rows = self._conn.execute(query + " ORDER BY id DESC LIMIT ?", (*args, limit))
         return [
             RunRecord(pair, started, finished, bool(dry), actions, errors, blocked)

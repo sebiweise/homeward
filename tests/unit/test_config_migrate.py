@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from homeward.api.migrate import main
+from homeward.api.migrate import DEFAULT_CONFIG, backup, init, main
 from homeward.api.store import ConfigStore
 from homeward.runtime import Paths
 
@@ -53,6 +53,54 @@ def test_main_reads_the_package_paths(
     monkeypatch.setenv("HOMEWARD_VAR", str(tmp_path))
     monkeypatch.delenv("HOMEWARD_CONFIG", raising=False)
 
-    assert main() == 0
+    assert main([]) == 0
     assert "docs" in capsys.readouterr().out
     assert "beta = true" in (tmp_path / "config.toml").read_text()
+
+
+def test_init_writes_a_valid_default_config_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOMEWARD_VAR", str(tmp_path))
+    monkeypatch.delenv("HOMEWARD_CONFIG", raising=False)
+    assert main(["--init"]) == 0
+    assert "default configuration" in capsys.readouterr().out
+    assert (tmp_path / "state").is_dir()
+    config = ConfigStore(_paths(tmp_path)).load()
+    assert config.pairs == () and config.interval_minutes == 60
+
+    (tmp_path / "config.toml").write_text(OLD)
+    assert main(["--init"]) == 0  # an existing config is kept
+    assert capsys.readouterr().out == ""
+    assert (tmp_path / "config.toml").read_text() == OLD
+
+
+def test_backup_leaves_the_icloud_sessions_behind(tmp_path: Path) -> None:
+    var, share = tmp_path / "var", tmp_path / "share"
+    paths = Paths(var_dir=var, config=var / "config.toml")
+    share.mkdir()
+    assert backup(paths, share) is None  # no config yet: nothing to save
+    init(paths)
+    (var / "state" / "me.sqlite3").write_text("state")
+    (var / "state" / ".hidden").write_text("x")
+    for folder in ("sessions", "sessions-pending"):
+        (var / "state" / folder / "me").mkdir(parents=True)
+        (var / "state" / folder / "me" / "trusted").write_text("cookie")
+
+    dest = backup(paths, share, now=0)
+    assert dest is not None and dest.parent == share / ".homeward-backup"
+    assert (dest / "config.toml").read_text() == DEFAULT_CONFIG
+    assert sorted(p.name for p in (dest / "state").iterdir()) == [".hidden", "me.sqlite3"]
+    assert backup(paths, tmp_path / "no-share") is None
+
+
+def test_main_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOMEWARD_VAR", str(tmp_path / "var"))
+    monkeypatch.delenv("HOMEWARD_CONFIG", raising=False)
+    (tmp_path / "share").mkdir()
+    assert main(["--init"]) == 0
+    assert main(["--backup", str(tmp_path / "share")]) == 0
+    assert "without the iCloud sessions" in capsys.readouterr().out
+    assert list((tmp_path / "share" / ".homeward-backup").glob("*/config.toml"))
