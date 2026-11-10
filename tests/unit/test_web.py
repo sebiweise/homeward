@@ -216,3 +216,7 @@ def test_container_reports_a_bad_port_or_config(
     monkeypatch.delenv("HOMEWARD_WEB_PASSWORD")
     (tmp_path / "config.toml").write_text("not = [toml")
     assert container.main([]) == 1
+    assert (
+        "config_error"
+        in Paths(var_dir=tmp_path, config=tmp_path / "config.toml").events_file.read_text()
+    )

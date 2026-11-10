@@ -24,7 +24,7 @@ from homeward.api.accounts import default_backend
 from homeward.api.errors import ApiError
 from homeward.api.store import ConfigStore
 from homeward.daemon import scheduler
-from homeward.runtime import Paths
+from homeward.runtime import Level, Paths, record_event
 from homeward.web import Credentials, make_server
 
 log = logging.getLogger("homeward.container")
@@ -101,7 +101,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )  # fmt: skip
         return 1
     except ApiError as exc:
-        log.error("the configuration %s cannot be read: %s", paths.config, exc.message or exc.code)
+        message = exc.message or exc.code
+        log.error("the configuration %s cannot be read: %s", paths.config, message)
+        # Shown on the page and in the event log; never raises (the log line stays).
+        record_event(Level.ERROR, "service", "config_error", message, paths=paths)
         return 1
     try:
         start_web(paths, os.environ)
