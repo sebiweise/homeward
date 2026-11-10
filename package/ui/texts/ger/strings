@@ -254,6 +254,7 @@ already_running="Für diese Apple-ID läuft noch ein anderer Lauf; dieser wurde 
 folder_missing="Ein Ordner dieses Laufs fehlt (z. B. umbenannt, gelöscht oder der freigegebene Ordner ist nicht eingebunden). Der Lauf hat nichts verändert; er läuft wieder, sobald der Ordner da ist."
 notices_cleared="Hinweise ausgeblendet."
 login_locked="Zu viele falsche Anmeldungen an der Webseite von einer Adresse; sie ist für einige Minuten gesperrt."
+web_start_failed="Die Webseite kann nicht starten; prüfe HOMEWARD_WEB_PORT und das Container-Log."
 sync_summary="Zusammenfassung des Laufs."
 
 [error]
