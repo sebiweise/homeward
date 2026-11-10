@@ -30,6 +30,7 @@ from homeward.core.photos.model import (
     MAX_WORKERS,
     PREPARE_BATCH,
     PROGRESS_EVERY,
+    DeleteRefused,
     PhotoAction,
     PhotoActionKind,
     PhotoFailure,
@@ -124,6 +125,7 @@ class PhotoExecutor:
             )
             result.blocked = result.blocked or plan.archive_blocked
             rest = [a for a in rest if a.kind is not PhotoActionKind.ARCHIVE]
+            self.state.clear_full_listing(self.job)  # the approving run reads it all again
         if rest:
             self.progress.phase("linking", total=len(rest))
         for action in rest:
@@ -249,8 +251,13 @@ class PhotoExecutor:
                 continue
             if _sha256_file(self._inside(record.path)) != self._sha256_icloud(item):
                 raise ArchiveMismatch(f"{record.path} differs from iCloud; iCloud keeps the photo")
-        delete(_need(action.item))
-        self.state.mark_archived(self.job, [item.key for item in items])
+        keys = [item.key for item in items]
+        self.state.mark_archived(self.job, keys)  # first: see mark_archived
+        try:
+            delete(_need(action.item))
+        except DeleteRefused:
+            self.state.unmark_archived(self.job, keys)
+            raise
         log.info(
             "archived %s: kept on the NAS, moved to Recently Deleted in iCloud (rule %r)",
             action.path, action.rule,

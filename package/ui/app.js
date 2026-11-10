@@ -1165,15 +1165,20 @@ async function scheduleDialog() {
 
 // --- file rules ------------------------------------------------------------------------
 
-const SIZE_UNITS = ["KB", "MB", "GB", "TB"];
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
 const AGE_UNITS = ["d", "w", "m", "y"];
 
 // "500MB" -> ["500", "MB"], "3y" -> ["3", "y"]; empty for an unset filter.
 function splitAmount(text, units, fallback) {
-    const match = /^(\d+(?:[.,]\d+)?)\s*([a-z]*)$/i.exec(text || "");
+    const match = /^\s*(\d+(?:[.,]\d+)?)\s*([a-z]*)\s*$/i.exec(text || "");
     if (!match) return ["", fallback];
-    const unit = units.find((u) => u.toLowerCase() === match[2].toLowerCase());
-    return unit ? [match[1], unit] : [match[1], match[2].toUpperCase() === "B" ? "B" : fallback];
+    let suffix = match[2];
+    if (units === SIZE_UNITS) {
+        // Like parse_size: no unit means bytes, "k"/"m"/"g"/"t" mean KB/MB/GB/TB.
+        suffix = /^[kmgt]$/i.test(suffix) ? `${suffix}B` : suffix || "B";
+    }
+    const unit = units.find((u) => u.toLowerCase() === suffix.toLowerCase());
+    return [match[1], unit || fallback];
 }
 
 function listText(values) {
@@ -1350,7 +1355,7 @@ function pairDialog(pair) {
         rules.node,
         field(
             t("rule:archive_limit"),
-            el("input", { name: "archive_limit", type: "number", min: 0, step: 1, value: p.archive_limit ?? 200 }),
+            el("input", { name: "archive_limit", type: "number", min: 0, step: 1, required: true, value: p.archive_limit ?? 200 }),
             t("rule:archive_limit_hint")
         ),
         jobIntervalField(p.interval_minutes),
@@ -1415,7 +1420,7 @@ async function photosDialog(job) {
                     key === "folder_scheme" ? t("photos:folder_scheme_hint") : null))),
         rules.node,
         field(t("rule:archive_limit_photos"),
-            el("input", { name: "archive_limit", type: "number", min: 0, step: 1, value: j.archive_limit ?? 200 }),
+            el("input", { name: "archive_limit", type: "number", min: 0, step: 1, required: true, value: j.archive_limit ?? 200 }),
             t("rule:archive_limit_photos_hint")),
         jobIntervalField(j.interval_minutes),
         ...limitFields(j),

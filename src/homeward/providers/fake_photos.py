@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import BinaryIO
 
-from homeward.core.photos import Library, PhotoItem, PhotoSource
+from homeward.core.photos import DeleteRefused, Library, PhotoItem, PhotoSource
 
 _tokens = itertools.count(1)
 
@@ -109,6 +109,11 @@ class FakePhotoSource(PhotoSource):
         """Delete the whole photo (all its files), like iCloud's "Recently Deleted"."""
         if item.key in self.fail_keys:
             raise OSError(f"simulated failure for {item.key}")
-        for key in [k for k, i in self.items.items() if i.asset_id == item.asset_id]:
+        if item.library is not Library.PERSONAL:  # like ICloudPhotosSource.delete_photo
+            raise DeleteRefused(f"{item.filename}: only photos of the personal library are deleted")
+        keys = [k for k, i in self.items.items() if i.asset_id == item.asset_id]
+        if not keys:
+            raise DeleteRefused(f"{item.filename} is no longer in iCloud")
+        for key in keys:
             self.remove(key)
         self.deleted.append(item.asset_id)

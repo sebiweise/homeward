@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from homeward.core.photos import FAVORITES_ALBUM, Library
+from homeward.core.photos import FAVORITES_ALBUM, DeleteRefused, Library
 from homeward.providers.icloud_photos import (
     RENEW_AFTER,
     ICloudPhotosSource,
@@ -964,3 +964,18 @@ def test_delete_photo_looks_the_asset_up_again_and_deletes_it() -> None:
     service.photos.libraries["root"].all.photos.pop(0)
     with pytest.raises(RuntimeError, match="no longer in iCloud"):
         source.delete_photo(items["personal/a/original"])
+
+
+def test_delete_photo_keeps_a_photo_with_files_the_backup_does_not_have() -> None:
+    service = make_service()
+    live = service.photos.libraries["root"].all.photos[1]
+    del live.resources["original_video"]  # a Live Photo whose video had no download URL
+    source = ICloudPhotosSource(service, [Library.PERSONAL], lookup=by_name)
+    items = {i.key: i for i in source.list_items()}
+    deleted: list[str] = []
+    live.delete = lambda: deleted.append(live.id)  # type: ignore[attr-defined]
+
+    with pytest.raises(DeleteRefused, match="original_video"):
+        source.delete_photo(items["personal/b/original"])
+
+    assert deleted == []

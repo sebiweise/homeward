@@ -1077,7 +1077,10 @@ def test_photos_rules(client: Client, tmp_path: Path) -> None:
     created = client.call(
         "photos.create", post=True, photos=_photos(tmp_path, rules=rules, archive_limit=10)
     )
-    assert created["rules"] == [{"name": "Alt", "action": "archive", "older_than": "3y"}]
+    # Shown with their defaults, as the pairs list shows its rules.
+    assert created["rules"] == [
+        {"name": "Alt", "action": "archive", "older_than": "3y", "preview": True, "enabled": True}
+    ]
     assert created["archive_limit"] == 10
     assert client.call("photos.defaults")["rules"] == []
 

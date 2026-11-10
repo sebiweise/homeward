@@ -75,6 +75,11 @@ class PhotoItem:
         )
 
 
+class DeleteRefused(RuntimeError):
+    """The photo source refused to delete a photo before touching it in iCloud (e.g.
+    iCloud holds a file of it that the backup does not have)."""
+
+
 class PhotoSource(Protocol):
     """The iCloud side of a photos job, implemented in ``homeward.providers``."""
 

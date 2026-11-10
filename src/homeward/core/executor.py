@@ -141,8 +141,9 @@ class Executor:
             raise ArchiveMismatch(
                 f"the NAS copy of {action.path} differs from iCloud; iCloud keeps the file"
             )
+        self.state.archive(self.pair, local, actual, action.rule or "")  # first, see there
         self.remote.delete(remote.path)  # into the iCloud trash, recoverable there
-        self.state.archive(self.pair, local, actual, action.rule or "")
+        self.state.forget(self.pair, local.path)
         log.info(
             "archived %s: kept on the NAS, moved to the iCloud trash (rule %r)",
             action.path, action.rule,

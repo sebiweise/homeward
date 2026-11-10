@@ -20,6 +20,7 @@ from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 from homeward.core.config import DEFAULT_TRASH_DAYS, PhotosConfig
+from homeward.core.config import parse_rules as parse_config_rules
 from homeward.core.photos import DEFAULT_WORKERS, MAX_WORKERS, Library, PhotoLayout, check_scheme
 from homeward.core.planner import DeleteBrake
 from homeward.core.workflow import DEFAULT_ARCHIVE_LIMIT
@@ -66,7 +67,10 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
         "window": entry.get("window"),
         "max_rate_kb": entry.get("max_rate_kb"),
         "album_names": list(entry.get("album_names", [])),
-        "rules": list(entry.get("rule", [])),
+        # Parsed like a pair's rules, so the defaults (preview, enabled) are filled in.
+        "rules": [
+            rule.to_table() for rule in parse_config_rules(entry, f"photos {entry['name']!r}")
+        ],
         "archive_limit": entry.get("archive_limit", DEFAULT_ARCHIVE_LIMIT),
     }
     result |= {key: entry.get(key, default) for key, default in SWITCHES.items()}

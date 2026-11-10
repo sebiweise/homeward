@@ -8,6 +8,7 @@ import pytest
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import (
     FULL_LISTING_HOURS,
+    DeleteRefused,
     Library,
     PhotoActionKind,
     PhotoOutcome,
@@ -59,11 +60,12 @@ def backup(
     mirror: bool = False,
     dry_run: bool = False,
     can_delete: bool = True,
+    complete: bool = True,
 ) -> PhotoOutcome:
     return backup_photos(
         "photos", source, root, state, today=lambda: TODAY, now=clock or (lambda: NOW),
         mirror_deletes=mirror, selection="s", allow_deletes=allow, dry_run=dry_run,
-        rules=PhotoRules(rules, limit, can_delete),
+        rules=PhotoRules(rules, limit, can_delete, complete),
     )  # fmt: skip
 
 
@@ -261,4 +263,40 @@ def test_restored_archived_photo_is_backed_up_again(
     outcome = backup(source, tmp_path, pstate, clock=clock)
 
     assert outcome.plan.counts() == {PhotoActionKind.RETURNED: 1}
+    assert pstate.records("photos")["personal/a1/original"].archived_at is None
+
+
+def test_archive_waits_while_not_all_file_types_are_backed_up(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_1.HEIC", created=OLD)
+    clock = Clock()
+    backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock, complete=False)
+    clock.next_day()
+
+    outcome = backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock, complete=False)
+
+    assert outcome.plan.rule_hits[0].pending == "not all file types backed up"
+    assert source.deleted == []
+
+
+def test_refused_delete_leaves_the_photo_unarchived(
+    source: FakePhotoSource,
+    pstate: PhotoStateDB,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source.add("a1", "IMG_1.HEIC", created=OLD)
+    clock = Clock()
+    backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+    clock.next_day()
+
+    def refuse(item: object) -> None:
+        raise DeleteRefused("has files the listing did not show")
+
+    monkeypatch.setattr(source, "delete_photo", refuse)
+    outcome = backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+
+    assert outcome.result is not None
+    assert "did not show" in outcome.result.failed[0].error
     assert pstate.records("photos")["personal/a1/original"].archived_at is None

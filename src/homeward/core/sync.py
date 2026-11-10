@@ -56,7 +56,10 @@ def sync_pair(
         remote_case_insensitive=getattr(remote, "case_insensitive", False),
         remote_identity=getattr(remote, "file_identity", None),
         rules=pair.rules,
-        archived=state.archived(pair.name),
+        # A dry run with changed folders keeps the old state: do not apply its archive.
+        archived=state.archived(pair.name)
+        if state.identity(pair.name) in (None, pair.identity)
+        else (),
         archive_limit=pair.archive_limit,
     )
     result = None
@@ -87,7 +90,9 @@ def _records(pair: PairConfig, state: StateDB, dry_run: bool) -> dict[str, FileR
         )  # fmt: skip
         if dry_run:
             return {}
-        state.reset(pair.name)
+        # Archived paths belong to the old folders: kept, they would hide files of the
+        # same name in the new NAS folder from the sync.
+        state.reset(pair.name, archived=True)
     if not dry_run and stored != pair.identity:
         state.set_identity(pair.name, pair.identity)  # also for state from before identities
     return state.records(pair.name)
