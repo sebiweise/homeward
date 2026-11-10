@@ -139,8 +139,16 @@ def secure_ipc_dirs(paths: Paths) -> None:
 
 def _trusted_dir(path: Path, *, warn: bool = True) -> bool:
     """Whether the daemon may act on requests in ``path``: a real folder of its own
-    user that neither the group nor others can write to."""
-    st = os.lstat(path)
+    user that neither the group nor others can write to. A folder that vanished or
+    cannot be read is not trusted; that must not end the daemon's cycle."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False  # removed after the caller's is_dir(): nothing to take
+    except OSError as exc:
+        if warn:
+            log.warning("ignoring requests in %s: %s", path, exc)
+        return False
     if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not st.st_mode & 0o022:
         return True
     if warn:
