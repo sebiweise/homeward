@@ -5,6 +5,13 @@ All notable changes to Homeward are listed here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- Homeward runs as a Docker container (`Dockerfile`, `docker-compose.example.yml`,
+  [docs/docker.md](docs/docker.md)): headless from `config.toml`, or with the DSM app's
+  page behind a password (`HOMEWARD_WEB_PASSWORD`). The folder picker lists the folders
+  mounted below `/data` (`HOMEWARD_VOLUMES`).
+
 ### Security
 
 - Symlinks below a sync or photos backup folder are never followed: reads, writes,

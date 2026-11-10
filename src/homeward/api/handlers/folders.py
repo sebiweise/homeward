@@ -6,6 +6,7 @@ live at ``/volumeN/<share>`` on DSM. DSM's own folders (``@eaDir``, ``@appstore`
 ...), the recycle bin, Homeward's trash and dot folders are never shown or browsed.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -13,17 +14,23 @@ from typing import Any
 from homeward.api.errors import ApiError
 from homeward.api.server import Context, Request
 from homeward.core.config import HIDDEN_FOLDERS, in_system_folder
+from homeward.runtime import Level, Paths, record_event
+
+log = logging.getLogger(__name__)
 
 # Where the volumes are mounted; tests and the UI dev server point it elsewhere.
 ROOT = Path("/")
 MAX_ENTRIES = 2000
 
 
-def list_folders(_ctx: Context, request: Request) -> dict[str, Any]:
+def list_folders(ctx: Context, request: Request) -> dict[str, Any]:
     """Without ``path`` the shared folders, else the subfolders of ``path``."""
     path = request.params.get("path", "").strip()
     if not path:
-        shares = [_entry(share) for volume in _volumes() for share in _children(volume)]
+        volumes = _volumes()
+        if not volumes:
+            _check_configured_volumes(ctx.paths)
+        shares = [_entry(share) for volume in volumes for share in _children(volume)]
         return {"path": None, "parent": None, "folders": shares, "truncated": False}
     folder = _checked(path)
     children = _children(folder)
@@ -57,8 +64,23 @@ def create(_ctx: Context, request: Request) -> dict[str, Any]:
     return _entry(folder)
 
 
+def _check_configured_volumes(paths: Paths | None) -> None:
+    """Raise ``volumes_missing`` (with a log line and an event) when HOMEWARD_VOLUMES is
+    set but none of its folders exists."""
+    configured = os.environ.get("HOMEWARD_VOLUMES", "")
+    if configured:
+        log.warning("none of the HOMEWARD_VOLUMES folders exists: %s", configured)
+        record_event(Level.WARNING, "service", "volumes_missing", configured, paths=paths)
+        raise ApiError("volumes_missing", configured)
+
+
 def _volumes() -> list[Path]:
-    """Mounted volumes (``/volume1``, ``/volumeUSB1`` ...)."""
+    """Mounted volumes (``/volume1``, ``/volumeUSB1`` ...), or outside DSM the folders
+    listed in ``HOMEWARD_VOLUMES`` (separated by ``:``, e.g. ``/data`` in Docker)."""
+    configured = os.environ.get("HOMEWARD_VOLUMES", "")
+    if configured:
+        paths = [Path(item) for item in configured.split(":") if item]
+        return [path for path in paths if path.is_absolute() and path.is_dir()]
     try:
         candidates = sorted(ROOT.glob("volume*"))
     except OSError:
@@ -119,14 +141,16 @@ def _checked(raw: str) -> Path:
     return path
 
 
-def check_shared_folder(path: Path, key: str) -> None:
+def check_shared_folder(path: Path, key: str, paths: Paths | None = None) -> None:
     """On DSM, a folder of a pair or photos backup must lie inside a shared folder
     (``/volumeN/<share>/...``), and where it or a folder above it is a symlink, its
     target too. The same rule as the folder picker's, for paths typed in or saved
-    by an older UI. A system without ``/volumeN`` (a container, plain Linux, tests)
-    has no shared folders to check against."""
+    by an older UI. In a container the folders of ``HOMEWARD_VOLUMES`` take the place
+    of the volumes; a system with neither (plain Linux, tests) has no shared folders
+    to check against."""
     volumes = _volumes()
     if not volumes:
+        _check_configured_volumes(paths)  # refuse instead of checking nothing
         return
     if not any(path.is_relative_to(v) and path != v for v in volumes):
         raise ApiError("invalid_param", key)
