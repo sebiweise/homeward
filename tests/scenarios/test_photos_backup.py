@@ -1,20 +1,24 @@
 """Photos backup scenarios against the fake iCloud Photos source and a real temp folder."""
 
+import errno
 import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
+from homeward.core.files import link_noreplace
 from homeward.core.photo_state import PhotoStateDB
 from homeward.core.photos import (
     FAVORITES_ALBUM,
     Library,
+    PhotoAction,
     PhotoActionKind,
     PhotoLayout,
     backup_photos,
     check_scheme,
 )
+from homeward.core.photos.executor import PhotoExecutor
 from homeward.core.progress import Progress
 from homeward.providers.fake_photos import FakePhotoSource
 
@@ -576,3 +580,142 @@ def test_progress_follows_the_phases(
     downloading = [s for s in snapshots if s["phase"] == "downloading"][-1]
     assert (downloading["done"], downloading["total"], downloading["bytes"]) == (3, 3, 30)
     assert snapshots[-1]["done"] == snapshots[-1]["total"] == 3  # the album links
+
+
+def test_album_links_never_follow_a_symlinked_photo(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A share user replaced the Year/Month file with a symlink to a file outside the
+    # backup; neither a hard link nor the copy fallback may pull it into an album.
+    root, secret = tmp_path / "root", tmp_path / "secret.txt"
+    secret.write_text("secret")
+    photo = root / "2024" / "05" / "a.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.symlink_to(secret)
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    album = root / "Alben" / "Urlaub" / "a.jpg"
+    with pytest.raises(OSError):
+        executor._link(photo, album)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    with pytest.raises(OSError):
+        executor._link(photo, album)
+    assert not album.exists()
+
+
+def _no_hard_links(*_args: object, **_kwargs: object) -> None:
+    raise OSError(errno.EXDEV, "no hard links here")
+
+
+def test_downloads_never_follow_a_symlinked_folder(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (root / "2024").mkdir(parents=True)
+    outside.mkdir()
+    (root / "2024" / "05").symlink_to(outside, target_is_directory=True)
+    item = source.add("a1", "a.jpg", b"one", created=at(2024, 5))
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    with pytest.raises(OSError):
+        executor._fetch(PhotoAction(PhotoActionKind.DOWNLOAD, "2024/05/a.jpg", item=item))
+    assert not list(outside.iterdir())
+
+
+def test_album_links_never_go_through_a_symlinked_album_folder(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    photo = root / "2024" / "05" / "a.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.write_text("photo")
+    outside.mkdir()
+    (root / "Alben").symlink_to(outside, target_is_directory=True)
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    with pytest.raises(OSError):
+        executor._link(photo, root / "Alben" / "Urlaub" / "a.jpg")
+    assert not list(outside.iterdir())
+
+
+def test_album_links_refuse_a_folder_swapped_right_after_mkdir(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The album folder passes the first check; a share user swaps it for a symlink
+    # between its creation and the link. The check after mkdir must catch that.
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    photo = root / "2024" / "05" / "a.jpg"
+    photo.parent.mkdir(parents=True)
+    photo.write_text("photo")
+    outside.mkdir()
+    album = root / "Alben" / "Urlaub"
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    mkdir, swapped = Path.mkdir, list[Path]()
+
+    def mkdir_then_swap(self: Path, *args: object, **kwargs: object) -> None:
+        mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self == album and not swapped:
+            swapped.append(self)
+            self.rmdir()
+            self.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_then_swap)
+    with pytest.raises(OSError):
+        executor._link(photo, album / "a.jpg")
+    assert album.is_symlink()  # the swap really happened
+    assert not list(outside.iterdir())
+
+
+def test_link_noreplace_links_a_symlink_itself(tmp_path: Path) -> None:
+    secret, link = tmp_path / "secret.txt", tmp_path / "link"
+    secret.write_text("secret")
+    link.symlink_to(secret)
+    link_noreplace(link, tmp_path / "copy")
+    assert (tmp_path / "copy").is_symlink()  # not a second name for secret.txt
+    assert secret.stat().st_nlink == 1
+
+
+def test_moves_never_go_through_symlinked_folders(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.jpg").write_text("not a backup file")
+    (root / "2024").mkdir(parents=True)
+    (root / "2024" / "05").symlink_to(outside, target_is_directory=True)
+    (root / "2024" / "06").mkdir()
+    (root / "2024" / "06" / "b.jpg").write_text("photo")
+    (root / "2025").symlink_to(outside, target_is_directory=True)
+    executor = PhotoExecutor(source, root, pstate, "photos")
+    item = source.add("a1", "a.jpg", created=at(2024, 5))
+    # A file from outside is never pulled into the share ...
+    with pytest.raises(OSError):
+        executor._move(PhotoAction(PhotoActionKind.MOVE, "2023/01/a.jpg", item=item,
+                                   target="2024/05/a.jpg"))  # fmt: skip
+    assert not (root / "2023").exists()
+    # ... and a photo never moved out of the backup.
+    with pytest.raises(OSError):
+        executor._move(PhotoAction(PhotoActionKind.MOVE, "2025/01/b.jpg", item=item,
+                                   target="2024/06/b.jpg"))  # fmt: skip
+    assert (root / "2024" / "06" / "b.jpg").read_text() == "photo"
+    assert sorted(p.name for p in outside.iterdir()) == ["a.jpg"]
+
+
+def test_unlink_and_delete_never_go_through_symlinked_folders(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    # Album folder and Year/Month folder both lead to the same folder outside: the
+    # file there is "the same file" for samefile, but must not be deleted.
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.jpg").write_text("keep")
+    (root / "2024").mkdir(parents=True)
+    (root / "Alben").mkdir()
+    (root / "2024" / "05").symlink_to(outside, target_is_directory=True)
+    (root / "Alben" / "Urlaub").symlink_to(outside, target_is_directory=True)
+    executor = PhotoExecutor(source, root, pstate, "photos", today=lambda: TODAY)
+    pstate.add_link("photos", "Alben/Urlaub/a.jpg", "k1", "Urlaub")
+    with pytest.raises(OSError):
+        executor._unlink(PhotoAction(PhotoActionKind.UNLINK, "Alben/Urlaub/a.jpg", key="k1",
+                                     target="2024/05/a.jpg", album="Urlaub"))  # fmt: skip
+    with pytest.raises(OSError):
+        executor._delete(PhotoAction(PhotoActionKind.DELETE, "2024/05/a.jpg", key="k1"))
+    assert (outside / "a.jpg").read_text() == "keep"
+    assert not (root / ".homeward-papierkorb").exists()

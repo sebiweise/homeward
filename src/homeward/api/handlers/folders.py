@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import HIDDEN_FOLDERS
 from homeward.api.server import Context, Request
+from homeward.core.config import HIDDEN_FOLDERS, in_system_folder
 
 # Where the volumes are mounted; tests and the UI dev server point it elsewhere.
 ROOT = Path("/")
@@ -135,7 +135,14 @@ def check_shared_folder(path: Path, key: str) -> None:
 
 
 def _on_volume(real: Path) -> bool:
-    return any(real.is_relative_to(v.resolve()) and real != v.resolve() for v in _volumes())
+    """Whether the resolved ``real`` lies inside a shared folder: below a volume and
+    not in one of DSM's "@" folders there (``@appstore``, ``@appdata`` ...), the
+    recycle bin or Homeward's trash, wherever a symlink pointed."""
+    for volume in _volumes():
+        root = volume.resolve()
+        if real.is_relative_to(root) and real != root:
+            return not in_system_folder(real.relative_to(root))
+    return False
 
 
 def _entry(path: Path) -> dict[str, Any]:

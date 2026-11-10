@@ -14,6 +14,19 @@ All notable changes to Homeward are listed here. Versions follow
   preview, the first run never archives, and `archive_limit` (200) holds bigger runs
   until approved. See "File rules" in the user guide.
 
+### Security
+
+- Symlinks below a sync or photos backup folder are never followed: reads, writes,
+  moves, deletes and album links through one fail with an error for that file. Where
+  a folder really leads is checked when the config is loaded and when a run starts; a
+  folder in a DSM system folder (`@…`), a recycle bin, snapshot or trash, or in or
+  around Homeward's own folders is refused (the config counts as invalid). A folder
+  swapped for a symlink during a run stops the run.
+- A `#recycle` or Homeward trash that is a symlink is not used, and never emptied.
+- The uninstall backup `.homeward-backup` is never synced.
+- The daemon only acts on "run now" and cancel requests in private folders (0700) of
+  its own user, written by that user, and makes older request folders private at start.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

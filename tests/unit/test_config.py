@@ -353,3 +353,38 @@ def test_pair_rules_invalid(change: tuple[str, str], message: str) -> None:
     text = RULES.replace(*change)
     with pytest.raises(ConfigError, match=message):
         parse_config(tomllib.loads(text))
+
+
+@pytest.mark.parametrize("target", ["var/requests", "var/login/x", "var", "@appdata/homeward"])
+def test_folders_are_checked_where_their_symlinks_lead(tmp_path: Path, target: str) -> None:
+    # A share user may turn a synced folder into a symlink after it was saved; the
+    # daemon checks again on every load. Synced content in var/requests could forge
+    # "run now" requests, @appdata is where DSM really keeps the package's var folder.
+    (tmp_path / target).mkdir(parents=True)
+    (tmp_path / "share").mkdir()
+    link = tmp_path / "share" / "x"
+    link.symlink_to(tmp_path / target, target_is_directory=True)
+    for local in (link, link / "sub"):
+        pair = {"name": "x", "local": str(local), "remote": "r", "mode": "upload"}
+        with pytest.raises(ConfigError, match="local"):
+            parse_config({"pair": [pair]}, base=tmp_path / "var")
+
+
+def test_symlinks_to_ordinary_folders_are_accepted(tmp_path: Path) -> None:
+    real = tmp_path / "share" / "real"
+    real.mkdir(parents=True)
+    (tmp_path / "share" / "alias").symlink_to(real, target_is_directory=True)
+    for local in (real, tmp_path / "share" / "alias"):
+        pair = {"name": "x", "local": str(local), "remote": "r", "mode": "upload"}
+        config = parse_config({"pair": [pair]}, base=tmp_path / "var")
+        assert config.pairs[0].local == local
+
+
+def test_folders_in_homeward_var_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOMEWARD_VAR", str(tmp_path / "pkgvar"))
+    pair = {"name": "x", "local": str(tmp_path / "pkgvar" / "cancel"), "remote": "r",
+            "mode": "upload"}  # fmt: skip
+    with pytest.raises(ConfigError, match="Homeward's own files"):
+        parse_config({"pair": [pair]}, base=tmp_path / "var")
