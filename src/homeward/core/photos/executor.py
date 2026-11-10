@@ -263,9 +263,11 @@ class PhotoExecutor:
         self.state.mark_archived(self.job, keys)  # first: see mark_archived
         try:
             delete(_need(action.item))
-        except DeleteRefused:
+        except DeleteRefused:  # refused before anything was sent to iCloud
             self.state.unmark_archived(self.job, keys)
             raise
+        # Any other error keeps the mark, as iCloud may have deleted the photo: if it
+        # did not, the next run still lists it and records it as RETURNED.
         log.info(
             "archived %s: kept on the NAS, moved to Recently Deleted in iCloud (rule %r)",
             action.path, action.rule,

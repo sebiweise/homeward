@@ -10,7 +10,7 @@ from homeward.core.config import PairConfig
 from homeward.core.models import ActionKind, FileMeta, SyncMode
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
-from homeward.core.sync import sync_pair
+from homeward.core.sync import _same_nas_folder, sync_pair
 from homeward.core.workflow import DAY, FileRule, RuleAction
 from homeward.providers.fake import FakeProvider
 
@@ -350,3 +350,15 @@ def test_delete_brake_and_archive_limit_are_both_reported(
     assert "deletions exceed" in blocked.plan.blocked
     assert "2 files would be archived" in blocked.plan.blocked
     assert icloud.trash == []
+
+
+@pytest.mark.parametrize(
+    ("stored", "same"),
+    [(None, True), ("", True), ('["/x", "r"]', True), ('["/y", "r"]', False),
+     ("{not json", True), ("{}", True), ("[]", True)],
+)  # fmt: skip
+def test_archived_paths_are_dropped_only_for_a_known_other_nas_folder(
+    stored: str | None, same: bool
+) -> None:
+    pair = PairConfig(name="p", local=Path("/x"), remote="r", mode=SyncMode.BIDIRECTIONAL)
+    assert _same_nas_folder(stored, pair) is same

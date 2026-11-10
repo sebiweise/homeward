@@ -80,7 +80,8 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
     new = config.pair(entry["name"])
     if old.identity != new.identity:
         # A run still going with the old folders may record files after this reset;
-        # the next run sees the identity no longer matches and starts over anyway.
+        # the next run sees the identity no longer matches and starts over anyway. The
+        # same holds for files it archives meanwhile: they stay in the old account's state.
         # Archived paths belong to the NAS folder: dropped only when it changes, so a
         # new iCloud folder or account does not get them uploaded (see sync._records).
         moved = old.local != new.local

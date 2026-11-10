@@ -83,15 +83,23 @@ def _same_nas_folder(stored: str | None, pair: PairConfig) -> bool:
     """Whether state recorded under the identity ``stored`` is for the pair's NAS folder.
 
     None (state from before identities) and "" (reset, by whoever changed the pair and
-    already kept or dropped the archived paths) count as the same folder.
+    already kept or dropped the archived paths) count as the same folder, and so does an
+    identity that cannot be read: keeping archived paths never uploads or deletes.
     """
     if not stored:
         return True
     try:
         old = json.loads(stored)
     except ValueError:
-        return False
-    return isinstance(old, list) and bool(old) and old[0] == str(pair.local)
+        old = None
+    if not isinstance(old, list) or not old:
+        log.warning(
+            "%s: the stored state does not say which NAS folder it was for; archived files "
+            "stay remembered",
+            pair.name,
+        )
+        return True
+    return bool(old[0] == str(pair.local))
 
 
 def _records(pair: PairConfig, state: StateDB, dry_run: bool) -> dict[str, FileRecord]:

@@ -291,9 +291,8 @@ Archiving is careful by design:
   byte. A job that leaves out file types (videos, Live Photo videos, RAW, edits or XMP
   sidecars) does not archive, since iCloud would delete files the NAS does not have; a
   photo whose XMP sidecar (caption, keywords) could not be written stays in iCloud too.
-  The photo goes
-  to "Recently Deleted" (30 days). Archived photos stay on the NAS
-  and in their album folders for good, also with `mirror_deletes`. Archive rules make the
+  The photo goes to "Recently Deleted" (30 days). Archived photos stay on the NAS and
+  in their album folders for good, also with `mirror_deletes`. Archive rules make the
   backup read the whole library at least every 24 hours.
 - The first run of a job never archives; a file that changed on one side waits until
   both sides match again. A dry run (*Test run*) shows everything a rule would do.
