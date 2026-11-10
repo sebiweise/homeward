@@ -15,6 +15,7 @@ from homeward.api.accounts import LoginResult, SessionState, UnavailableBackend
 from homeward.api.auth import DsmAuthenticator
 from homeward.api.cgi import handle, write_response
 from homeward.api.errors import ApiError
+from homeward.api.handlers import pairs
 from homeward.api.store import KEEP_BACKUPS, ConfigStore
 from homeward.core.config import parse_config
 from homeward.core.models import FileMeta
@@ -365,6 +366,26 @@ def test_archived_files_move_with_the_pair_to_another_account(
         outcome = sync_pair(pair, nas, cloud, state, dry_run=dry_run)
     assert "old.txt" not in {a.path for a in outcome.plan.actions}
     assert "old.txt" not in cloud.files
+
+
+def test_archived_files_reach_the_new_account_before_the_config_changes(
+    client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    state_dir = client.paths.var_dir / "state"
+    with StateDB(state_dir / "me.sqlite3") as state:
+        state.archive("docs", FakeProvider("nas").put("old.txt", "x"), "0" * 64, "alt")
+
+    def stop(*args: object, **kwargs: object) -> None:  # the process ends right after
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pairs, "_reset_state", stop)
+    with pytest.raises(KeyboardInterrupt):
+        client.call("pairs.update", post=True, pair=_pair(tmp_path, account="other"))
+
+    assert ConfigStore(client.paths).load().pair("docs").account == "other"
+    with StateDB(state_dir / "other.sqlite3") as state:
+        assert state.archived("docs") == {"old.txt"}
 
 
 def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:

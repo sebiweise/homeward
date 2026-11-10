@@ -76,6 +76,10 @@ class FakeProvider(Provider):
         self.files[new_path] = self.files.pop(path)
         return self._meta(new_path)
 
+    def fingerprint(self, path: str) -> tuple[int, bytes]:
+        entry = self.files[path]
+        return id(entry), entry.data
+
     def sha256(self, path: str) -> str:
         return hashlib.sha256(self.files[path].data).hexdigest()
 
