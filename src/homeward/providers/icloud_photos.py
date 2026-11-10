@@ -400,13 +400,14 @@ class ICloudPhotosSource(PhotoSource):
         return sorted(missing)
 
     def _xmp_missing(self, asset: Any, prefix: str) -> bool:
-        """Whether the photo has metadata for a sidecar that this run did not list."""
+        """Whether the photo has metadata that the sidecar this run listed (and the
+        backup wrote) does not hold, for example changed since the listing."""
         try:
             data = self._xmp_builder(asset)
         except Exception as exc:
             log.warning("no XMP sidecar for %s, so iCloud keeps it: %s", asset.id, exc)
             return True
-        return bool(data) and f"{prefix}/xmp" not in self._blobs
+        return bool(data) and self._blobs.get(f"{prefix}/xmp") != data
 
     def prepare(self, items: Sequence[PhotoItem]) -> None:
         """Renew URLs that may have expired since listing, a batch lookup per library."""

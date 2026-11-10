@@ -282,6 +282,25 @@ def test_archive_waits_while_not_all_file_types_are_backed_up(
     assert source.deleted == []
 
 
+def test_archive_keeps_the_photo_when_its_sidecar_on_the_nas_differs(
+    source: FakePhotoSource, pstate: PhotoStateDB, tmp_path: Path
+) -> None:
+    source.add("a1", "IMG_1.HEIC", created=OLD)
+    source.add("a1", "IMG_1.HEIC.xmp", b"<xmp/>", created=OLD, resource="xmp",
+               sidecar_for="original")  # fmt: skip
+    clock = Clock()
+    backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+    sidecar = tmp_path / pstate.records("photos")["personal/a1/xmp"].path
+    sidecar.write_bytes(b"<xmp>damaged</xmp>")  # same name, other content
+    clock.next_day()
+
+    outcome = backup(source, tmp_path, pstate, ARCHIVE_OLD, clock=clock)
+
+    assert source.deleted == []
+    assert outcome.result is not None
+    assert "IMG_1.HEIC.xmp differs from iCloud" in outcome.result.failed[0].error
+
+
 def test_refused_delete_leaves_the_photo_unarchived(
     source: FakePhotoSource,
     pstate: PhotoStateDB,
