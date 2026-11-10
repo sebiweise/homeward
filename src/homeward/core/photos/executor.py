@@ -245,10 +245,10 @@ class PhotoExecutor:
             record = records.get(item.key)
             if record is None:
                 raise ArchiveMismatch(f"{item.filename} is not backed up; iCloud keeps the photo")
-            if item.sidecar_for is not None:
-                if not self._inside(record.path).is_file():  # made by Homeward, not iCloud
-                    raise ArchiveMismatch(f"{record.path} is missing; iCloud keeps the photo")
-                continue
+            if not self._inside(record.path).is_file():
+                raise ArchiveMismatch(f"{record.path} is missing; iCloud keeps the photo")
+            # A sidecar (made by Homeward) is compared with the one built from iCloud's
+            # metadata in this run, the same way.
             if _sha256_file(self._inside(record.path)) != self._sha256_icloud(item):
                 raise ArchiveMismatch(f"{record.path} differs from iCloud; iCloud keeps the photo")
         keys = [item.key for item in items]

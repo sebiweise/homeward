@@ -990,6 +990,25 @@ def test_delete_photo_keeps_a_photo_whose_xmp_sidecar_failed() -> None:
     assert "personal/a/xmp" not in items
 
 
+def test_delete_photo_keeps_a_photo_whose_metadata_changed_since_the_listing() -> None:
+    service = make_service()
+    photo = service.photos.libraries["root"].all.photos[0]
+    photo.asset_record = {}
+    captions = iter([b"<xmp>old</xmp>", b"<xmp>new caption</xmp>"])
+    source = ICloudPhotosSource(
+        service, [Library.PERSONAL], lookup=by_name, xmp_builder=lambda a: next(captions)
+    )
+    items = {i.key: i for i in source.list_items()}
+    assert "personal/a/xmp" in items
+    deleted: list[str] = []
+    photo.delete = lambda: deleted.append(photo.id)  # type: ignore[attr-defined]
+
+    with pytest.raises(DeleteRefused, match="xmp"):
+        source.delete_photo(items["personal/a/original"])
+
+    assert deleted == []
+
+
 def test_delete_photo_keeps_a_photo_with_files_the_backup_does_not_have() -> None:
     service = make_service()
     live = service.photos.libraries["root"].all.photos[1]
