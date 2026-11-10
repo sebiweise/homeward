@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from homeward.api.errors import ApiError
+from homeward.api.handlers.folders import check_shared_folder
 from homeward.api.server import Context
 from homeward.apple_errors import classify
-from homeward.core.config import Config
-from homeward.core.rules import DEFAULT_EXCLUDES, TRASH_DIR
+from homeward.core.config import PACKAGE_DIR, Config, in_system_folder
 from homeward.core.state import StateDB
 from homeward.runtime import Event, Level
 
@@ -27,29 +27,23 @@ def check_name(value: str, what: str) -> str:
     return value
 
 
-# Folders a job never syncs into: Synology's #recycle and #snapshot and Homeward's own
-# trash (DSM's "@" folders such as @eaDir are hidden by their prefix).
-HIDDEN_FOLDERS = frozenset({TRASH_DIR, *(n for n in DEFAULT_EXCLUDES if n.startswith("#"))})
-PACKAGE_DIR = Path("/var/packages/homeward")
-
-
 def check_nas_folder(ctx: Context, value: str, key: str) -> Path:
     """A NAS folder a pair or photos backup may use: absolute, without ``..``, none of
-    the hidden folders above, and neither inside nor around the package's own data
-    (config, Apple ID sessions, state), which the daemon could otherwise read or
+    the hidden folders (``core.config.HIDDEN_FOLDERS``) on the path or on where its
+    symlinks lead, and neither inside nor around the package's own data (config,
+    Apple ID sessions, state), which the daemon could otherwise read or
     overwrite: a sync of a folder that contains it would copy the sessions too. On
     DSM it must also lie inside a shared folder (``folders.check_shared_folder``)."""
     path = Path(value)
     if not path.is_absolute() or ".." in path.parts:
         raise ApiError("invalid_param", key)
-    if any(part.startswith("@") or part in HIDDEN_FOLDERS for part in path.parts):
-        raise ApiError("invalid_param", key)
     real = path.resolve()
+    # Also where a symlink leads: a share link into @appstore/homeward or @appdata.
+    if in_system_folder(path) or in_system_folder(real):
+        raise ApiError("invalid_param", key)
     private = [f.resolve() for f in (PACKAGE_DIR, ctx.paths.var_dir, ctx.store.load().state_dir)]
     if any(real.is_relative_to(folder) or folder.is_relative_to(real) for folder in private):
         raise ApiError("invalid_param", key)
-    from homeward.api.handlers.folders import check_shared_folder  # it imports this module
-
     check_shared_folder(path, key)
     return path
 
