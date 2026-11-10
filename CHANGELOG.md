@@ -11,6 +11,12 @@ All notable changes to Homeward are listed here. Versions follow
   [docs/docker.md](docs/docker.md)): headless from `config.toml`, or with the DSM app's
   page behind a password (`HOMEWARD_WEB_PASSWORD`). The folder picker lists the folders
   mounted below `/data` (`HOMEWARD_VOLUMES`).
+- File rules for sync pairs and photos backups: filters on name or path, extension,
+  size and age pick an action per file. *Ignore* keeps files out of the sync in both
+  directions; *Archive* keeps files on the NAS and deletes them in iCloud (Drive trash or
+  "Recently Deleted") once their content is verified. New archive rules start in
+  preview, the first run never archives, and `archive_limit` (200) holds bigger runs
+  until approved. See "File rules" in the user guide.
 
 ### Security
 

@@ -67,6 +67,7 @@ class ActionKind(StrEnum):
     RECORD = "record"
     FORGET = "forget"
     SKIP = "skip"
+    ARCHIVE = "archive"  # keep on the NAS (download if needed), then trash in iCloud
 
 
 DELETE_KINDS = frozenset({ActionKind.DELETE_LOCAL, ActionKind.DELETE_REMOTE})
@@ -81,6 +82,7 @@ class Action:
     time: the executor compares contents first and only records the file if they match.
     ``renamed_to`` marks a delete whose content reappears under that new path on the
     same side, i.e. one half of a rename or move (the other half is a transfer).
+    ``rule`` names the file rule that chose an archive action.
     """
 
     kind: ActionKind
@@ -92,6 +94,22 @@ class Action:
     verify_content: bool = False
     conflict_path: str | None = None
     renamed_to: str | None = None
+    rule: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuleHit:
+    """A file a rule matched in this run.
+
+    ``action`` is ``ignore`` or ``archive``. ``pending`` says why a matched archive
+    does not happen in this run: the rule is still in preview, it is the pair's first
+    run, or the file first needs another sync step (e.g. it changed on the NAS).
+    """
+
+    path: str
+    rule: str
+    action: str
+    pending: str | None = None
 
 
 @dataclass(slots=True)
@@ -104,6 +122,7 @@ class Plan:
     tracked: int
     actions: list[Action] = field(default_factory=list)
     blocked: str | None = None
+    rule_hits: list[RuleHit] = field(default_factory=list)
 
     @property
     def deletes(self) -> int:
@@ -111,6 +130,10 @@ class Plan:
         return sum(
             1 for action in self.actions if action.kind in DELETE_KINDS and not action.renamed_to
         )
+
+    @property
+    def archives(self) -> int:
+        return sum(1 for action in self.actions if action.kind is ActionKind.ARCHIVE)
 
     @property
     def renames(self) -> int:

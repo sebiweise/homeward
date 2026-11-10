@@ -9,13 +9,21 @@ from dataclasses import fields
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, check_nas_folder, without_none
+from homeward.api.handlers.common import (
+    check_name,
+    check_nas_folder,
+    parse_archive_limit,
+    parse_rules,
+    without_none,
+)
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
 from homeward.core.config import DEFAULT_TRASH_DAYS, PhotosConfig
+from homeward.core.config import parse_rules as parse_config_rules
 from homeward.core.photos import DEFAULT_WORKERS, MAX_WORKERS, Library, PhotoLayout, check_scheme
 from homeward.core.planner import DeleteBrake
+from homeward.core.workflow import DEFAULT_ARCHIVE_LIMIT
 from homeward.runtime import RunRequest, request_run
 
 LIBRARIES = tuple(lib.value for lib in Library)
@@ -59,6 +67,11 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
         "window": entry.get("window"),
         "max_rate_kb": entry.get("max_rate_kb"),
         "album_names": list(entry.get("album_names", [])),
+        # Parsed like a pair's rules, so the defaults (preview, enabled) are filled in.
+        "rules": [
+            rule.to_table() for rule in parse_config_rules(entry, f"photos {entry['name']!r}")
+        ],
+        "archive_limit": entry.get("archive_limit", DEFAULT_ARCHIVE_LIMIT),
     }
     result |= {key: entry.get(key, default) for key, default in SWITCHES.items()}
     result |= {key: entry.get(key, default) for key, default in ADVANCED.items()}
@@ -68,7 +81,8 @@ def to_dict(entry: dict[str, Any]) -> dict[str, Any]:
 
 def defaults(_ctx: Context, _request: Request) -> dict[str, Any]:
     return {
-        "libraries": list(LIBRARIES), "album_names": [],
+        "libraries": list(LIBRARIES), "album_names": [], "rules": [],
+        "archive_limit": DEFAULT_ARCHIVE_LIMIT,
         "interval_minutes": NEW_JOB_INTERVAL_MINUTES, **SWITCHES, **ADVANCED, **FOLDERS,
     }  # fmt: skip
 
@@ -177,6 +191,9 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "libraries": _libraries(data),
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
         **parse_limits(data),
+        # Checked in full by the config parser when the store saves the job.
+        "rule": parse_rules(data),
+        "archive_limit": parse_archive_limit(data),
     }
     for key, switch in SWITCHES.items():
         enabled = data.get(key, switch)

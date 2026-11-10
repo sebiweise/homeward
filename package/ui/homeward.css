@@ -153,6 +153,16 @@ fieldset { border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px 
   display: flex; flex-direction: column; gap: 6px; }
 legend { color: var(--muted); padding: 0 4px; }
 td.path { word-break: break-all; }
+.rules { display: flex; flex-direction: column; gap: 8px; }
+fieldset.rules-box, fieldset.rule { min-width: 0; }
+fieldset.rule { background: var(--panel); }
+fieldset.rule .row > label { min-width: 0; }
+fieldset.rule .row > label > input, fieldset.rule .row > label > select { width: 100%; box-sizing: border-box; }
+fieldset.rule select { background: #fff; }
+fieldset.rule .toolbar { margin: 0; }
+.amount-row { display: flex; gap: 6px; }
+.amount-row input { flex: 1; min-width: 0; }
+label.check[hidden] { display: none; }
 details.advanced { border: 1px solid var(--line); border-radius: 3px; padding: 6px 12px; }
 details.advanced[open] { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; }
 details.advanced > summary { cursor: pointer; color: var(--muted); }

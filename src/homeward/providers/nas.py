@@ -116,6 +116,12 @@ class NasProvider(Provider):
         rename_noreplace(source, target)
         return self._meta(new_path, target)
 
+    def fingerprint(self, path: str) -> tuple[int, ...]:
+        """Changes with every write, replace or rename onto the path: the inode change
+        time cannot be set back by a user, unlike the modification time."""
+        info = self._full(path).stat()
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
     def sha256(self, path: str) -> str:
         digest = hashlib.sha256()
         with self._full(path).open("rb") as fh:

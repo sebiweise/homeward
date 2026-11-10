@@ -11,7 +11,13 @@ import json
 from typing import Any
 
 from homeward.api.errors import ApiError
-from homeward.api.handlers.common import check_name, check_nas_folder, without_none
+from homeward.api.handlers.common import (
+    check_name,
+    check_nas_folder,
+    parse_archive_limit,
+    parse_rules,
+    without_none,
+)
 from homeward.api.handlers.settings import parse_interval, parse_limits
 from homeward.api.server import Context, Request
 from homeward.api.store import RawConfig
@@ -37,6 +43,8 @@ def to_dict(pair: PairConfig) -> dict[str, Any]:
         "interval_minutes": pair.interval_minutes,
         "window": str(pair.window) if pair.window else None,
         "max_rate_kb": pair.max_rate_kb,
+        "rules": [rule.to_table() for rule in pair.rules],
+        "archive_limit": pair.archive_limit,
     }
 
 
@@ -68,13 +76,25 @@ def update(ctx: Context, request: Request) -> dict[str, Any]:
             raise ApiError("pair_not_found", entry["name"])
         pairs[index] = without_none({**pairs[index], **entry})
 
+    if entry["account"] != old.account and entry["local"] == str(old.local):
+        # Archived paths belong to the NAS folder, so they go along to the new account's
+        # state, written before the config names that account: a stop in between
+        # leaves them in both state files, never in neither (writing them is idempotent).
+        carried = _archived_rows(ctx, old)
+        if carried:
+            with StateDB(ctx.store.load().state_path(entry["account"])) as state:
+                state.restore_archived(entry["name"], carried)
     config = ctx.store.update(change)
     new = config.pair(entry["name"])
     if old.identity != new.identity:
         # A run still going with the old folders may record files after this reset;
-        # the next run sees the identity no longer matches and starts over anyway.
-        _reset_state(ctx, old)
-        _reset_state(ctx, new)
+        # the next run sees the identity no longer matches and starts over anyway. The
+        # same holds for files it archives meanwhile: they stay in the old account's state.
+        # Archived paths belong to the NAS folder: dropped only when it changes, so a
+        # new iCloud folder or account does not get them uploaded (see sync._records).
+        moved = old.local != new.local
+        _reset_state(ctx, new, archived=moved)  # keeps the archived paths carried over
+        _reset_state(ctx, old, archived=moved or old.account != new.account)
     return to_dict(new)
 
 
@@ -87,7 +107,7 @@ def delete(ctx: Context, request: Request) -> dict[str, Any]:
         raw["pair"] = [p for p in raw.get("pair", []) if p.get("name") != name]
 
     ctx.store.update(change)
-    _reset_state(ctx, pair)
+    _reset_state(ctx, pair, archived=True)
     return {"name": name}
 
 
@@ -111,11 +131,19 @@ def _find(ctx: Context, name: str) -> PairConfig:
     raise ApiError("pair_not_found", name, status=404)
 
 
-def _reset_state(ctx: Context, pair: PairConfig) -> None:
+def _archived_rows(ctx: Context, pair: PairConfig) -> list[tuple[Any, ...]]:
+    path = ctx.store.load().state_path(pair.account)
+    if not path.exists():
+        return []
+    with StateDB(path) as state:
+        return state.archived_rows(pair.name)
+
+
+def _reset_state(ctx: Context, pair: PairConfig, *, archived: bool = False) -> None:
     path = ctx.store.load().state_path(pair.account)
     if path.exists():
         with StateDB(path) as state:
-            state.reset(pair.name)
+            state.reset(pair.name, archived=archived)
 
 
 def _entry(ctx: Context, request: Request) -> dict[str, Any]:
@@ -150,6 +178,7 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
     if provider == "folder":  # a NAS folder too, see cli._remote_provider
         remote = str(check_nas_folder(ctx, remote, "remote"))
     exclude = _exclude(data)
+    rules = parse_rules(data)
     ratio, count = _delete_brake(data)
     return {
         "name": check_name(text("name"), "pair"),
@@ -166,6 +195,9 @@ def _entry(ctx: Context, request: Request) -> dict[str, Any]:
         "max_delete_count": count,
         "interval_minutes": parse_interval(data.get("interval_minutes")),  # None: global
         **parse_limits(data),
+        # Checked in full by the config parser when the store saves the pair.
+        "rule": rules,
+        "archive_limit": parse_archive_limit(data),
     }
 
 

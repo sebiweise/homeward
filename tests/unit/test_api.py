@@ -15,11 +15,14 @@ from homeward.api.accounts import LoginResult, SessionState, UnavailableBackend
 from homeward.api.auth import DsmAuthenticator
 from homeward.api.cgi import handle, write_response
 from homeward.api.errors import ApiError
+from homeward.api.handlers import pairs
 from homeward.api.store import KEEP_BACKUPS, ConfigStore
 from homeward.core.config import parse_config
 from homeward.core.models import FileMeta
 from homeward.core.planner import DeleteBrake
 from homeward.core.state import StateDB
+from homeward.core.sync import sync_pair
+from homeward.providers.fake import FakeProvider
 from homeward.runtime import (
     Level,
     Paths,
@@ -207,6 +210,37 @@ def test_pair_validation(client: Client, tmp_path: Path) -> None:
     assert not client.paths.config.exists()
 
 
+def test_pair_rules(client: Client, tmp_path: Path) -> None:
+    rules = [
+        {"name": " Videos ", "action": "ignore", "extensions": ["mp4"], "min_size": "",
+         "older_than": None},
+        {"name": "Alt", "action": "archive", "older_than": "36m", "preview": False},
+    ]  # fmt: skip
+    pair = _pair(tmp_path, mode="download", rules=rules, archive_limit=20)
+    created = client.call("pairs.create", post=True, pair=pair)
+    assert created["archive_limit"] == 20
+    assert created["rules"] == [
+        {"name": "Videos", "action": "ignore", "extensions": ["mp4"], "preview": True,
+         "enabled": True},
+        {"name": "Alt", "action": "archive", "older_than": "36m", "preview": False,
+         "enabled": True},
+    ]  # fmt: skip
+    saved = tomllib.loads(client.paths.config.read_text())["pair"][0]["rule"]
+    assert saved[1] == {"name": "Alt", "action": "archive", "older_than": "36m", "preview": False}
+
+    cleared = client.call("pairs.update", post=True, pair=_pair(tmp_path, mode="download"))
+    assert cleared["rules"] == []
+
+    upload = _pair(tmp_path, mode="upload", rules=rules)
+    with pytest.raises(ApiError) as excinfo:
+        client.call("pairs.update", post=True, pair=upload)
+    assert _error(excinfo) == "config_invalid"
+    for bad in ({"rules": "x"}, {"rules": ["x"]}, {"archive_limit": -1}):
+        with pytest.raises(ApiError) as excinfo:
+            client.call("pairs.update", post=True, pair=_pair(tmp_path, **bad))
+        assert _error(excinfo) == "invalid_param", bad
+
+
 def test_pair_folders_stay_out_of_hidden_and_package_folders(
     client: Client, tmp_path: Path
 ) -> None:
@@ -290,6 +324,68 @@ def test_changing_a_pairs_folder_resets_its_state(client: Client, tmp_path: Path
     client.call("pairs.update", post=True, pair=_pair(tmp_path, local=str(other)))
     with StateDB(state_path) as state:
         assert state.records("docs") == {}
+
+
+def test_archived_files_are_forgotten_only_with_another_nas_folder(
+    client: Client, tmp_path: Path
+) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    state_path = client.paths.var_dir / "state" / "me.sqlite3"
+    with StateDB(state_path) as state:
+        state.archive("docs", FileMeta("old.txt", 1, 0.0, "v1"), "0" * 64, "alt")
+
+    (tmp_path / "cloud2").mkdir()
+    client.call("pairs.update", post=True, pair=_pair(tmp_path, remote=f"{tmp_path}/cloud2"))
+    with StateDB(state_path) as state:
+        assert state.archived("docs") == {"old.txt"}
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    client.call("pairs.update", post=True, pair=_pair(tmp_path, local=str(other)))
+    with StateDB(state_path) as state:
+        assert state.archived("docs") == set()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_archived_files_move_with_the_pair_to_another_account(
+    dry_run: bool, client: Client, tmp_path: Path
+) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    state_dir = client.paths.var_dir / "state"
+    nas, cloud = FakeProvider("nas"), FakeProvider("icloud")
+    with StateDB(state_dir / "me.sqlite3") as state:
+        state.archive("docs", nas.put("old.txt", "kept on the NAS only"), "0" * 64, "alt")
+
+    client.call("pairs.update", post=True, pair=_pair(tmp_path, account="other"))
+
+    with StateDB(state_dir / "me.sqlite3") as state:
+        assert state.archived("docs") == set()
+    pair = ConfigStore(client.paths).load().pair("docs")
+    with StateDB(state_dir / "other.sqlite3") as state:
+        assert state.archived("docs") == {"old.txt"}
+        outcome = sync_pair(pair, nas, cloud, state, dry_run=dry_run)
+    assert "old.txt" not in {a.path for a in outcome.plan.actions}
+    assert "old.txt" not in cloud.files
+
+
+def test_archived_files_reach_the_new_account_before_the_config_changes(
+    client: Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.call("pairs.create", post=True, pair=_pair(tmp_path))
+    state_dir = client.paths.var_dir / "state"
+    with StateDB(state_dir / "me.sqlite3") as state:
+        state.archive("docs", FakeProvider("nas").put("old.txt", "x"), "0" * 64, "alt")
+
+    def stop(*args: object, **kwargs: object) -> None:  # the process ends right after
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pairs, "_reset_state", stop)
+    with pytest.raises(KeyboardInterrupt):
+        client.call("pairs.update", post=True, pair=_pair(tmp_path, account="other"))
+
+    assert ConfigStore(client.paths).load().pair("docs").account == "other"
+    with StateDB(state_dir / "other.sqlite3") as state:
+        assert state.archived("docs") == {"old.txt"}
 
 
 def test_run_now_queues_a_request(client: Client, tmp_path: Path) -> None:
@@ -1069,3 +1165,22 @@ def test_time_window_and_bandwidth(client: Client, tmp_path: Path) -> None:
         with pytest.raises(ApiError) as excinfo:
             client.call("pairs.update", post=True, pair=_pair(tmp_path, **bad))
         assert _error(excinfo) == code, bad
+
+
+def test_photos_rules(client: Client, tmp_path: Path) -> None:
+    client.call("accounts.add", post=True, name="me", apple_id="a@b.de", password="pw")
+    rules = [{"name": "Alt", "action": "archive", "older_than": "3y", "min_size": ""}]
+    created = client.call(
+        "photos.create", post=True, photos=_photos(tmp_path, rules=rules, archive_limit=10)
+    )
+    # Shown with their defaults, as the pairs list shows its rules.
+    assert created["rules"] == [
+        {"name": "Alt", "action": "archive", "older_than": "3y", "preview": True, "enabled": True}
+    ]
+    assert created["archive_limit"] == 10
+    assert client.call("photos.defaults")["rules"] == []
+
+    bad = _photos(tmp_path, rules=[{"name": "x", "action": "archive", "older_than": "bald"}])
+    with pytest.raises(ApiError) as excinfo:
+        client.call("photos.update", post=True, photos=bad)
+    assert _error(excinfo) == "config_invalid"
