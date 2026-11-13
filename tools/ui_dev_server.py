@@ -89,7 +89,8 @@ def serve(port: int) -> None:
             self.end_headers()
             self.wfile.write(payload.encode())
 
-    print(f"Homeward UI on http://localhost:{port}/ (data in {var_dir})")
+    url = f"http://localhost:{port}/"  # NOSONAR: loopback-only dev server, plain HTTP by design
+    print(f"Homeward UI on {url} (data in {var_dir})")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 

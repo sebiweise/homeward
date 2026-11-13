@@ -20,7 +20,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: 'pip install --only-binary :all: -e ".[dev]"'
+      # The dev tools from the hashed lock file, then the package itself without dependencies.
+      - run: 'pip install --only-binary :all: --require-hashes -r requirements/dev.txt'
+      - run: 'pip install --only-binary :all: --no-deps -e .'
       # The same pinned pyicloud the package bundles, so its tests run instead of skipping.
       - run: 'pip install --only-binary :all: --require-hashes -r requirements/icloud.txt'
       - run: ruff check .
