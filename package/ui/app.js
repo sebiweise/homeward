@@ -1170,7 +1170,8 @@ const AGE_UNITS = ["d", "w", "m", "y"];
 
 // "500MB" -> ["500", "MB"], "3y" -> ["3", "y"]; empty for an unset filter.
 function splitAmount(text, units, fallback) {
-    const match = /^\s*(\d+(?:[.,]\d+)?)\s*([a-z]*)\s*$/i.exec(text || "");
+    // Trimmed first: whitespace on both sides of an optional unit would backtrack.
+    const match = /^(\d+(?:[.,]\d+)?)\s*([a-z]*)$/i.exec((text || "").trim());
     if (!match) return ["", fallback];
     let suffix = match[2];
     if (units === SIZE_UNITS) {
