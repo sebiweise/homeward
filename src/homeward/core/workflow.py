@@ -17,7 +17,9 @@ DEFAULT_ARCHIVE_LIMIT = 200
 _AGE_UNITS = {"d": 1, "w": 7, "m": 30, "y": 365}
 _SIZE_UNITS = {"": 1, "b": 1, "kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}
 _AGE = re.compile(r"^\s*(\d+)\s*([dwmy])\s*$", re.IGNORECASE)
-_SIZE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*([kmgt]?b?)\s*$", re.IGNORECASE)
+# Matched against the stripped text: optional whitespace on both sides of an optional
+# unit would make the pattern backtrack polynomially.
+_SIZE = re.compile(r"^(\d+(?:[.,]\d+)?)\s*([kmgt]?b?)$", re.IGNORECASE)
 
 
 class RuleAction(StrEnum):
@@ -38,7 +40,7 @@ def parse_age(text: str) -> int:
 
 def parse_size(text: str) -> int:
     """``"500MB"`` / ``"1.5 GB"`` / ``"100kb"`` to bytes (binary units)."""
-    match = _SIZE.match(text)
+    match = _SIZE.match(text.strip())
     if not match:
         raise ValueError(f'size {text!r} must be a number with KB, MB, GB or TB, e.g. "500MB"')
     unit = match.group(2).lower()
