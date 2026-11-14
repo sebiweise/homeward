@@ -6,4 +6,4 @@
 cffi==2.1.1
 charset_normalizer==3.5.2
 cryptography==48.0.1
-pydantic_core==2.50.2
+pydantic_core==2.50.4
