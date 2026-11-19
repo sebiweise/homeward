@@ -11,7 +11,7 @@ ARG HOMEWARD_VERSION=
 RUN if [ -n "${HOMEWARD_VERSION}" ]; then export SETUPTOOLS_SCM_PRETEND_VERSION="${HOMEWARD_VERSION}"; fi \
     && pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 # The same pinned dependencies (with hashes) the .spk bundles.
 COPY requirements/icloud.txt /tmp/icloud.txt
 RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r /tmp/icloud.txt \
