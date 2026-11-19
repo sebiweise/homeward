@@ -4,10 +4,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
     # Version updates wait a week: most hijacked releases are pulled within
     # days. Security updates are not delayed by this.
     cooldown:
       default-days: 7
+    labels: [dependencies]
+    commit-message:
+      prefix: "chore(deps)"
     groups:
       dev-tools:
         patterns: ["pytest*", "ruff", "mypy"]
@@ -28,8 +34,14 @@ updates:
       - /spksrc/spk/homeward/src
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
     cooldown:
       default-days: 7
+    labels: [dependencies]
+    commit-message:
+      prefix: "chore(deps)"
     groups:
       bundled:
         patterns: ["*"]
@@ -58,8 +70,31 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
     cooldown:
       default-days: 7
+    labels: [dependencies]
+    commit-message:
+      prefix: "ci"
     groups:
-      actions:
+      github-actions:
+        patterns: ["*"]
+
+  # Base image of the Docker image.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 7
+    labels: [dependencies]
+    commit-message:
+      prefix: "chore(docker)"
+    groups:
+      docker:
         patterns: ["*"]
