@@ -60,6 +60,11 @@ updates:
       # tools/spksrc_requirements.py); raise major versions by hand.
       - dependency-name: cryptography
         update-types: ["version-update:semver-major"]
+      # graphify's tree-sitter packages follow graphifyy: regenerate
+      # requirements/graphify.txt (command at its top) instead. Bumped one by one
+      # they broke its resolution (tree-sitter-php 0.25 against graphifyy's
+      # <0.25), which pip and SonarCloud's dependency analysis then fail on.
+      - dependency-name: "tree-sitter*"
 
   - package-ecosystem: github-actions
     directory: /

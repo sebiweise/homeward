@@ -125,8 +125,8 @@ reviews:
         echtes Warten.
     - path: "{.github/workflows/**,.claude/hooks/**}"
       instructions: >-
-        Fremde Actions per Commit-SHA mit Versionskommentar pinnen
-        (`owner/action@<sha> # vX.Y.Z`), minimale permissions setzen. Neue
+        Actions per Versions-Tag einbinden (`owner/action@vX`, Major-Tag,
+        wo die Action einen hat), minimale permissions setzen. Neue
         `pip install`-Zeilen nur als `pip install --only-binary :all:
         --require-hashes -r requirements/<x>.txt`,
         in YAML quoten. In Bash `[[ ]]` statt `[ ]`.
